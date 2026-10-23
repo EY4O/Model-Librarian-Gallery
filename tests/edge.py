@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -87,6 +88,8 @@ class Edge:
                 return m.get("result", {})
 
     async def js(self, expr: str):
+        if re.match(r"\s*(const|let)\b", expr):  # its own block, so the next call can declare the same names
+            expr = "{" + expr + "\n}"
         r = await self.call("Runtime.evaluate", expression=expr, awaitPromise=True, returnByValue=True)
         if r.get("exceptionDetails"):
             raise RuntimeError(str(r["exceptionDetails"])[:500])

@@ -38,7 +38,7 @@ def server(sample_dir, tmp_path_factory):
     deadline = time.time() + 90
     while time.time() < deadline:
         st = api("/status")
-        if st["files"] and not st["scanning"] and not st["queued"] and not st["thumbs_pending"]:
+        if st["files"] and not st["scanning"] and not st["queued"] and not st["thumbs_pending"] and not st.get("meta_pending"):
             break
         time.sleep(0.3)
     yield url, api
@@ -151,3 +151,85 @@ def test_empty_library_offers_to_add_a_folder(tmp_path):
     finally:
         p.terminate()
         p.wait(10)
+
+
+def test_search_marks_tags_and_details(server):
+    url, api = server
+
+    async def go():
+        async with page(url) as e:
+            await e.wait("document.querySelectorAll('.tile').length >= 8")
+            # typing model:… and a space makes a chip; the grid narrows to it
+            await e.js("const q = document.getElementById('q'); q.focus(); q.value = 'lora:aurelia '; q.dispatchEvent(new Event('input')); true")
+            await e.wait("document.querySelector('#chips .chip .v')?.textContent === 'aurelia'")
+            want = api("/files?q=lora:aurelia")["total"]
+            await e.wait(f"document.getElementById('count').textContent === '{want} items'")
+            # suggestions for a field
+            await e.js("const q = document.getElementById('q'); q.value = 'model:dre'; q.dispatchEvent(new Event('input')); true")
+            await e.wait("!document.getElementById('suggest').hidden && document.getElementById('suggest').textContent.includes('dreamy_mix_v3')")
+            assert "null" not in await e.js("document.getElementById('suggest').textContent")
+            await e.js("document.querySelector('.s-item').dispatchEvent(new MouseEvent('mousedown', {bubbles: true})); true")
+            await e.wait("document.querySelectorAll('#chips .chip').length === 2")
+            both = api("/files?q=" + "lora:aurelia%20model:dreamy_mix_v3")["total"]
+            await e.wait(f"document.getElementById('count').textContent.startsWith('{both} item')")
+            # Backspace in the empty box removes the last chip; the clear button removes the rest
+            await e.js("const q = document.getElementById('q'); q.value = ''; q.dispatchEvent(new KeyboardEvent('keydown', {key: 'Backspace', bubbles: true})); true")
+            await e.wait("document.querySelectorAll('#chips .chip').length === 1")
+            await e.click("#q-clear")
+            await e.wait("!document.querySelector('#chips .chip')")
+            # no matches: says so and offers to clear
+            await e.js("const q = document.getElementById('q'); q.value = 'zzzznotthere'; q.dispatchEvent(new Event('input')); true")
+            await e.wait("document.querySelector('#empty h2')?.textContent === 'No matches'")
+            await e.click("#empty .btn")
+            await e.wait("document.querySelector('.tile')")
+
+            # the details of a ComfyUI image: prompt, settings, models, workflow, tags
+            first = next(i for i in api("/files?q=has:workflow")["items"])
+            await e.js(f"const q = document.getElementById('q'); q.value = {json.dumps(first['name'].split('.')[0].replace('_', ' '))}; q.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', bubbles: true}})); true")
+            await e.wait("document.getElementById('count').textContent === '1 item'")
+            await e.wait("document.querySelector('.tile')")
+            await e.click(".tile")
+            await e.wait("document.querySelector('.v-panel .models')")
+            panel = await e.js("document.getElementById('v-panel').textContent")
+            info = api(f"/file/{first['id']}/info")
+            assert info["generation"]["positive"] in panel and "Copy workflow" in panel and "Seed" in panel
+            assert "NaN" not in panel and "object" not in panel
+            # rating and favourite from the keyboard, shown on the tile too
+            await e.key("4")
+            await e.wait("document.querySelectorAll('#v-stars .star.on').length === 4")
+            await e.key("f")
+            await e.wait("document.getElementById('v-fav').getAttribute('aria-pressed') === 'true'")
+            assert api(f"/file/{first['id']}/info")["rating"] == 4
+            # a tag, added in the panel
+            await e.js("const t = document.querySelector('.tag-input'); t.value = 'ui-test'; t.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true})); true")
+            await e.wait("[...document.querySelectorAll('.tags .chip')].some(c => c.textContent.includes('ui-test'))")
+            assert "ui-test" in {t["name"] for t in api(f"/file/{first['id']}/info")["tags"]}
+            # clicking a model filters by it
+            await e.js("document.querySelector('.model .link').click(); true")
+            await e.wait("document.getElementById('viewer').hidden && document.querySelector('#chips .chip')")
+            assert await e.js("document.querySelector('#chips .chip .k').textContent") == "model"
+            await e.click("#q-clear")
+            await e.wait("!document.querySelector('#chips .chip')")
+            # the favourites filter
+            await e.click("#f-fav")
+            await e.wait("document.getElementById('count').textContent === '1 item'")
+            await e.wait("document.querySelector('.tile .t-fav')")
+            await e.click("#f-fav")
+            # Recently viewed has what was opened
+            await e.click("#view-recent")
+            await e.wait("document.getElementById('view-title').textContent === 'Recently viewed' && document.querySelector('.tile')")
+            assert await e.js("document.querySelector('.tile').getAttribute('aria-label')") == first["name"]
+            await e.click("#view-all")
+            await e.wait("document.querySelectorAll('.tile').length > 4")
+            # keyboard: arrows move between tiles, Enter opens
+            await e.js("document.querySelector('.tile').focus(); true")
+            before = await e.js("document.activeElement.getAttribute('aria-label')")
+            await e.js("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowRight', bubbles: true})); true")
+            second = await e.js("document.activeElement.getAttribute('aria-label')")
+            assert before and second and second != before
+            await e.js("document.activeElement.click(); true")
+            await e.wait("!document.getElementById('viewer').hidden")
+            assert (await e.js("document.getElementById('v-name').textContent")) == second
+            await e.key("Escape")
+            assert not await e.js("window.__errors.length")
+    asyncio.run(go())

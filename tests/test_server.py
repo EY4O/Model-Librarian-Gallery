@@ -139,3 +139,47 @@ def test_reveal_only_indexed_files(lib, media, monkeypatch):
         assert r.status == 200 and opened and opened[0][0] == "explorer" and opened[0][2].endswith("0.png")
         assert (await c.post("/api/file/424242/reveal", headers=H)).status == 404
     run(lib, fn)
+
+
+def test_info_marks_tags_workflow_and_search(lib, media):
+    import random
+    from sample_media import generation, make_image
+    make_image(str(media / "a.png"), (128, 128), 0, generation(0, random.Random(0), (128, 128)))
+    make_image(str(media / "b.png"), (128, 128), 1)
+    with lib.db.write() as c:
+        fid = c.execute("INSERT INTO folders (path, added) VALUES (?, ?)", (str(media), time.time())).lastrowid
+    scan.scan_folder(lib.db, {"id": fid, "path": str(media)})
+    with lib.db.read() as c:
+        rows = c.execute("SELECT f.id, f.rel, f.kind, d.path FROM files f JOIN folders d ON d.id=f.folder_id").fetchall()
+    for r in rows:
+        lib.meta.read_one(r)
+
+    async def fn(c):
+        items = (await (await c.get("/api/files", headers=H)).json())["items"]
+        a = next(i for i in items if i["name"] == "a.png")
+        info = await (await c.get(f"/api/file/{a['id']}/info", headers=H)).json()
+        assert info["generation"]["source"] == "comfyui" and info["uses"][0]["name"] == "sample_xl_base"
+        assert (await c.get("/api/file/999/info", headers=H)).status == 404
+        r = await c.post(f"/api/file/{a['id']}/mark", json={"rating": 5, "favorite": True}, headers=H)
+        assert await r.json() == {"rating": 5, "favorite": 1}
+        assert (await c.post(f"/api/file/{a['id']}/mark", json={"rating": "x"}, headers=H)).status == 400
+        assert (await c.post("/api/file/999/mark", json={"rating": 1}, headers=H)).status == 404
+        r = await c.post(f"/api/file/{a['id']}/tags", json={"add": ["keep"], "remove": ["sample"]}, headers=H)
+        assert "keep" in {t["name"] for t in (await r.json())["tags"]}
+        assert (await c.post(f"/api/file/{a['id']}/tags", json={"add": "keep"}, headers=H)).status == 400
+        wf = await c.get(f"/api/file/{a['id']}/workflow?download=1&t={TOKEN}")
+        assert wf.status == 200 and "attachment" in wf.headers["Content-Disposition"] and (await wf.json())["nodes"]
+        api_graph = await (await c.get(f"/api/file/{a['id']}/workflow?part=prompt", headers=H)).json()
+        assert api_graph["13"]["class_type"] == "KSampler"
+        b = next(i for i in items if i["name"] == "b.png")
+        assert (await c.get(f"/api/file/{b['id']}/workflow", headers=H)).status == 404
+        s = await (await c.get("/api/suggest?field=model&q=sample", headers=H)).json()
+        assert s["items"][0]["name"] == "sample_xl_base"
+        found = await (await c.get("/api/files?q=" + "is:fav%20tag:keep", headers=H)).json()
+        assert [i["name"] for i in found["items"]] == ["a.png"] and found["items"][0]["rating"] == 5
+        assert (await c.post(f"/api/file/{b['id']}/viewed", headers=H)).status == 200
+        recent = await (await c.get("/api/files?sort=viewed", headers=H)).json()
+        assert [i["name"] for i in recent["items"]] == ["b.png"]
+        days = await (await c.get("/api/days?q=is:fav", headers=H)).json()
+        assert sum(d["n"] for d in days["days"]) == 1
+    run(lib, fn)

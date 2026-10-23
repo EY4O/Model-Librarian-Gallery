@@ -103,23 +103,6 @@ def scan_folder(db, folder: dict, *, skip_eagle: bool = True, progress=None, sto
     touched: list[int] = []
     pending: list[tuple] = []  # (op, args)
 
-    def flush():
-        if not touched and not pending:
-            return
-        with db.write() as c:
-            if touched:
-                c.executemany("UPDATE files SET last_seen=?, missing=0 WHERE id=?", [(now, i) for i in touched])
-            for op, args in pending:
-                if op == "insert":
-                    c.execute("INSERT INTO files (folder_id, rel, name, ext, kind, size, mtime, fp, width, height, first_seen, last_seen)"
-                              " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", args)
-                elif op == "change":
-                    c.execute("UPDATE files SET size=?, mtime=?, fp=?, width=?, height=?, last_seen=?, missing=0, thumb=0 WHERE id=?", args)
-                elif op == "move":
-                    c.execute("UPDATE files SET folder_id=?, rel=?, name=?, ext=?, size=?, mtime=?, last_seen=?, missing=0 WHERE id=?", args)
-        touched.clear()
-        pending.clear()
-
     for full, rel, entry in walk(root, skip_eagle):
         if stop and stop():
             break
@@ -127,36 +110,14 @@ def scan_folder(db, folder: dict, *, skip_eagle: bool = True, progress=None, sto
         counts["seen"] += 1
         try:
             st = entry.stat()
-            size, mtime = st.st_size, st.st_mtime
-            old = known.get(rel)
-            if old and old["size"] == size and abs(old["mtime"] - mtime) < 1e-6:
-                counts["unchanged"] += 1
-                if old["missing"]:  # it's back (a drive plugged in again): no longer missing
-                    touched.append(old["id"])
-            else:
-                fp = fingerprint(full, size)
-                name = os.path.basename(rel)
-                ext = os.path.splitext(name)[1].lower()
-                kind = kind_of(name)
-                w, h = image_size(full) if kind == "image" else (None, None)
-                if old:
-                    pending.append(("change", (size, mtime, fp, w, h, now, old["id"])))
-                    counts["changed"] += 1
-                else:
-                    moved = _moved_from(db, fp, size, pending)
-                    if moved:
-                        pending.append(("move", (fid, rel, name, ext, size, mtime, now, moved)))
-                        counts["moved"] += 1
-                    else:
-                        pending.append(("insert", (fid, rel, name, ext, kind, size, mtime, fp, w, h, now, now)))
-                        counts["added"] += 1
+            _visit(db, fid, full, rel, st.st_size, st.st_mtime, known.get(rel), now, touched, pending, counts)
         except OSError:
             counts["errors"] += 1
         if len(touched) + len(pending) >= BATCH:
-            flush()
+            _flush(db, now, touched, pending)
             if progress:
                 progress(dict(counts))
-    flush()
+    _flush(db, now, touched, pending)
 
     stopped = bool(stop and stop())
     with db.write() as c:
@@ -172,6 +133,90 @@ def scan_folder(db, folder: dict, *, skip_eagle: bool = True, progress=None, sto
         c.execute("UPDATE folders SET online=1, last_scan=?, file_count=? WHERE id=?", (now, n, fid))
     if progress:
         progress(dict(counts))
+    return counts
+
+
+def _visit(db, fid, full, rel, size, mtime, old, now, touched, pending, counts) -> None:
+    """One file found on disk: unchanged, changed, moved here from elsewhere, or new."""
+    if old and old["size"] == size and abs(old["mtime"] - mtime) < 1e-6:
+        counts["unchanged"] += 1
+        if old["missing"]:  # it's back (a drive plugged in again): no longer missing
+            touched.append(old["id"])
+        return
+    fp = fingerprint(full, size)
+    name = os.path.basename(rel)
+    ext = os.path.splitext(name)[1].lower()
+    kind = kind_of(name)
+    w, h = image_size(full) if kind == "image" else (None, None)
+    if old:
+        pending.append(("change", (size, mtime, fp, w, h, now, old["id"])))
+        counts["changed"] += 1
+        return
+    moved = _moved_from(db, fp, size, pending)
+    if moved:
+        pending.append(("move", (fid, rel, name, ext, size, mtime, now, moved)))
+        counts["moved"] += 1
+    else:
+        pending.append(("insert", (fid, rel, name, ext, kind, size, mtime, fp, w, h, now, now)))
+        counts["added"] += 1
+
+
+def _flush(db, now, touched: list, pending: list) -> None:
+    if not touched and not pending:
+        return
+    with db.write() as c:
+        if touched:
+            c.executemany("UPDATE files SET last_seen=?, missing=0 WHERE id=?", [(now, i) for i in touched])
+        for op, args in pending:
+            if op == "insert":
+                c.execute("INSERT INTO files (folder_id, rel, name, ext, kind, size, mtime, fp, width, height, first_seen, last_seen)"
+                          " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", args)
+            elif op == "change":
+                c.execute("UPDATE files SET size=?, mtime=?, fp=?, width=?, height=?, last_seen=?, missing=0, thumb=0, meta=0 WHERE id=?", args)
+            elif op == "move":
+                c.execute("UPDATE files SET folder_id=?, rel=?, name=?, ext=?, size=?, mtime=?, last_seen=?, missing=0, meta=0 WHERE id=?", args)
+    touched.clear()
+    pending.clear()
+
+
+def index_files(db, folder: dict, rels: list[str], *, skip_eagle: bool = True) -> dict:
+    """Bring just these files (paths inside the folder, with /) up to date: what the folder watcher does
+    when something changes, instead of walking the whole folder. A path that's gone is marked missing."""
+    root, fid = folder["path"], folder["id"]
+    now = time.time()
+    counts = {"seen": 0, "added": 0, "changed": 0, "moved": 0, "missing": 0, "unchanged": 0, "errors": 0, "offline": False}
+    rels = [r for r in dict.fromkeys(rels) if kind_of(r) and not any(skip_dir(p, skip_eagle) for p in r.split("/")[:-1])]
+    if not rels:
+        return counts
+    touched: list[int] = []
+    pending: list[tuple] = []
+    for i in range(0, len(rels), 500):
+        part = rels[i:i + 500]
+        with db.read() as c:
+            known = {r["rel"]: r for r in c.execute(f"SELECT id, rel, size, mtime, missing FROM files WHERE folder_id=? AND rel IN ({','.join('?' * len(part))})",
+                                                     (fid, *part))}
+        gone = []
+        for rel in part:
+            full = os.path.join(root, *rel.split("/"))
+            try:
+                st = os.stat(full)
+            except OSError:
+                if rel in known and not known[rel]["missing"]:
+                    gone.append(known[rel]["id"])
+                continue
+            counts["seen"] += 1
+            try:
+                _visit(db, fid, full, rel, st.st_size, st.st_mtime, known.get(rel), now, touched, pending, counts)
+            except OSError:
+                counts["errors"] += 1
+        _flush(db, now, touched, pending)
+        if gone:
+            with db.write() as c:
+                c.executemany("UPDATE files SET missing=1 WHERE id=?", [(g,) for g in gone])
+            counts["missing"] += len(gone)
+    with db.write() as c:
+        n = c.execute("SELECT COUNT(*) FROM files WHERE folder_id=? AND missing=0", (fid,)).fetchone()[0]
+        c.execute("UPDATE folders SET file_count=? WHERE id=?", (n, fid))
     return counts
 
 

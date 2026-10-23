@@ -1,4 +1,4 @@
-// Model Librarian Gallery: the library grid, folders and the viewer.
+// Model Librarian Gallery: the library grid, folders, search and the viewer.
 // The grid is virtual: only the tiles on screen exist, and items are fetched a page at a time, so it
 // scrolls the same at 200 files or 250,000. Day headings come from a per-day count (one small request),
 // so every tile's place is known without fetching the pages above it.
@@ -33,6 +33,10 @@ const SVG = {
   play: '<path d="M7 4.5v15l13-7.5Z"/>',
   explorer: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5Z"/><path d="M12 11v5M9.5 13.5 12 16l2.5-2.5"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+  save: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14"/>',
+  heart: '<path d="M12 20.5s-7.5-4.6-9.5-9.3C1.2 7.9 3.3 4.5 6.8 4.5c2 0 3.4 1.1 4.2 2.3h2c.8-1.2 2.2-2.3 4.2-2.3 3.5 0 5.6 3.4 4.3 6.7-2 4.7-9.5 9.3-9.5 9.3Z"/>',
+  filter: '<path d="M4 5h16l-6.5 7.5V19l-3-1.5v-5Z"/>',
+  graph: '<rect x="3" y="4" width="6" height="5" rx="1.2"/><rect x="15" y="4" width="6" height="5" rx="1.2"/><rect x="9" y="15" width="6" height="5" rx="1.2"/><path d="M6 9v2.5h12V9M12 11.5V15"/>',
 };
 function icon(name) {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -66,12 +70,16 @@ function toast(text, err = false) {
 const fmtSize = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
 const fmtDur = (s) => (s == null ? "" : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`);
 const fmtDate = (t) => new Date(t * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+const fmtNum = (v) => (v == null ? "—" : Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100));
 const plural = (n, one, many = one + "s") => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 const baseName = (p) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
 const store = {
   get(k, d) { try { const v = localStorage.getItem("mlg." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem("mlg." + k, JSON.stringify(v)); } catch {} },
 };
+async function copyText(text, what = "Copied") {
+  try { await navigator.clipboard.writeText(text); toast(`${what}.`); } catch { toast("Couldn't copy here: select the text and press Ctrl+C.", true); }
+}
 
 function dayLabel(day) {
   // "2026-10-23" in local time -> Today, Yesterday, a weekday this past week, else the date
@@ -87,27 +95,148 @@ function dayLabel(day) {
 
 // ---------------------------------------------------------------- state
 const state = {
-  folders: [], folder: null, random: false, seed: 1 + Math.floor(Math.random() * 1e9),
+  folders: [], view: "all", folder: null, seed: 1 + Math.floor(Math.random() * 1e9),
   sort: store.get("sort", "newest"), kind: store.get("kind", ""), tile: store.get("tile", 176),
-  total: 0, groups: [], pages: new Map(), loading: new Set(), gen: 0,
+  chips: [], text: "",                     // the search: filter chips, and the words typed
+  total: 0, groups: [], pages: new Map(), loading: new Set(), gen: 0, focus: -1,
 };
+
+// ---------------------------------------------------------------- the search
+const FIELDS = ["model", "lora", "tag", "sampler", "scheduler", "seed", "steps", "rating", "is", "has", "no", "neg", "vae", "ext"];
+const SUGGESTED = new Set(["model", "lora", "tag", "sampler", "scheduler", "vae"]);
+const quote = (v) => (/[\s"]/.test(v) ? `"${v.replaceAll('"', "")}"` : v);
+const chipText = (c) => `${c.key}:${quote(c.value)}`;
+const queryString = () => [...state.chips.map(chipText), state.text.trim()].filter(Boolean).join(" ");
+const HINTS = [
+  ["model:", "a checkpoint or diffusion model"], ["lora:", "a LoRA"], ["tag:", "one of your tags"],
+  ["sampler:", "a sampler"], ["seed:", "an exact seed"], ["rating:4", "rated 4 or more"],
+  ["is:fav", "your favourites"], ["has:workflow", "a ComfyUI workflow is saved"], ["no:prompt", "no generation data"],
+  ["neg:", "words in the negative prompt"],
+];
+
+function renderChips() {
+  $("chips").replaceChildren(...state.chips.map((c, i) => h("span.chip", { title: chipText(c) },
+    h("span.k", {}, c.key), h("span.v", {}, c.value),
+    h("button.x", { type: "button", "aria-label": `Remove ${chipText(c)}`, onclick: () => { state.chips.splice(i, 1); searchChanged(); $("q").focus(); } }, icon("remove")))));
+  $("q-clear").hidden = !state.chips.length && !state.text;
+  $("q").placeholder = state.chips.length ? "" : "Search prompts, models, tags…";
+  $("f-fav").setAttribute("aria-pressed", String(state.chips.some((c) => c.key === "is" && c.value === "fav")));
+  const r = state.chips.find((c) => c.key === "rating");
+  $("f-rating").value = r ? (r.value === "5" ? "5" : r.value.replace(">=", "")) : "";
+}
+
+function addChip(key, value, { replace = false } = {}) {
+  value = String(value).trim();
+  if (!value) return;
+  if (replace) state.chips = state.chips.filter((c) => c.key !== key);
+  if (!state.chips.some((c) => c.key === key && c.value.toLowerCase() === value.toLowerCase())) state.chips.push({ key, value });
+  searchChanged();
+}
+
+function removeChips(test) {
+  state.chips = state.chips.filter((c) => !test(c));
+  searchChanged();
+}
+
+let searchTimer = null;
+function searchChanged({ now = true } = {}) {
+  renderChips();
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => reload(true), now ? 0 : 260);
+}
+
+// "model:krea" or 'lora:"paper cut"' typed and confirmed becomes a chip
+function takeChips(text, final) {
+  const re = /(?:^|\s)(\w+):("[^"]*"|\S+)(?=\s|$)/g;
+  let rest = text, m, took = false;
+  while ((m = re.exec(text))) {
+    const key = m[1].toLowerCase(), value = m[2].replace(/^"|"$/g, "");
+    const end = m.index + m[0].length;
+    if (!FIELDS.includes(key) || !value || (!final && end === text.length)) continue; // still typing it
+    state.chips.push({ key, value });
+    rest = rest.replace(m[0].trim(), "");
+    took = true;
+  }
+  return { rest: rest.replace(/\s{2,}/g, " ").trimStart(), took };
+}
+
+let suggestFor = null, suggestIndex = -1;
+async function showSuggest() {
+  const box = $("suggest"), input = $("q");
+  const before = input.value.slice(0, input.selectionStart ?? input.value.length);
+  const m = before.match(/(?:^|\s)(\w+):("?[^"\s]*)$/);
+  if (m && SUGGESTED.has(m[1].toLowerCase())) {
+    const field = m[1].toLowerCase(), q = m[2].replace(/^"/, "");
+    const key = `${field}:${q}`;
+    suggestFor = key;
+    const { items } = await api(`/suggest?field=${field}&q=${encodeURIComponent(q)}`).catch(() => ({ items: [] }));
+    if (suggestFor !== key) return; // typed on meanwhile
+    renderSuggest(items.map((it) => ({ label: it.name, hint: it.n.toLocaleString(), pick: () => pickSuggestion(field, it.name, m[0]) })),
+      items.length ? null : `No ${field === "model" ? "models" : field + "s"} matching "${q}" yet`);
+  } else if (!input.value && document.activeElement === input) {
+    suggestFor = null;
+    renderSuggest(HINTS.map(([k, hint]) => ({ label: k, hint, pick: () => { input.value = k; input.focus(); onInput(); } })), null, "Search by");
+  } else {
+    suggestFor = null;
+    box.hidden = true;
+  }
+}
+
+function renderSuggest(items, empty, title) {
+  const box = $("suggest");
+  suggestIndex = -1;
+  box.replaceChildren(...[
+    title ? h("div.s-title", {}, title) : null,
+    ...items.map((it, i) => h("button.s-item", { type: "button", role: "option", id: `sug-${i}`, onmousedown: (e) => { e.preventDefault(); it.pick(); } },
+      h("span", {}, it.label), h("span.s-hint", {}, it.hint))),
+    empty ? h("div.s-empty", {}, empty) : null].filter(Boolean));
+  box.hidden = !items.length && !empty;
+  box._items = items;
+}
+
+function moveSuggest(d) {
+  const box = $("suggest"), items = box._items || [];
+  if (box.hidden || !items.length) return false;
+  suggestIndex = (suggestIndex + d + items.length) % items.length;
+  box.querySelectorAll(".s-item").forEach((b, i) => b.classList.toggle("on", i === suggestIndex));
+  $("q").setAttribute("aria-activedescendant", `sug-${suggestIndex}`);
+  return true;
+}
+
+function pickSuggestion(field, name, typed) {
+  const input = $("q");
+  input.value = input.value.replace(typed.trim(), "").replace(/\s{2,}/g, " ").trim();
+  state.text = input.value;
+  $("suggest").hidden = true;
+  addChip(field, name);
+  input.focus();
+}
+
+function onInput() {
+  const input = $("q");
+  const { rest, took } = takeChips(input.value, false);
+  if (took) input.value = rest;
+  state.text = input.value;
+  renderChips();
+  searchChanged({ now: took });
+  showSuggest();
+}
 
 // ---------------------------------------------------------------- sidebar
 async function loadFolders() {
   const { folders } = await api("/folders");
   state.folders = folders;
-  if (state.folder && !folders.some((f) => f.id === state.folder)) state.folder = null;
+  if (state.folder && !folders.some((f) => f.id === state.folder)) { state.folder = null; state.view = "all"; }
   renderSide();
 }
 
 function renderSide() {
   const total = state.folders.reduce((s, f) => s + (f.online ? f.file_count : 0), 0);
   $("all-count").textContent = total ? total.toLocaleString() : "";
-  $("view-all").classList.toggle("sel", !state.folder && !state.random);
-  $("view-random").classList.toggle("sel", state.random);
+  for (const v of ["all", "recent", "random"]) $(`view-${v}`).classList.toggle("sel", state.view === v);
   const items = state.folders.map((f) => {
-    const sel = state.folder === f.id;
-    return h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", title: f.path, onclick: () => selectView({ folder: f.id }),
+    const sel = state.view === "folder" && state.folder === f.id;
+    return h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", title: f.path, onclick: () => selectView("folder", f.id),
       "aria-current": sel ? "true" : null },
       icon("folder"),
       h("span.label", {}, baseName(f.path)),
@@ -128,20 +257,22 @@ function actKey(e) {
   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.currentTarget.click(); }
 }
 
-function selectView({ folder = null, random = false }) {
-  if (random && state.random) state.seed = 1 + Math.floor(Math.random() * 1e9); // Random again: a new shuffle
-  state.folder = folder;
-  state.random = random;
+function selectView(view, folder = null) {
+  if (view === "random" && state.view === "random") state.seed = 1 + Math.floor(Math.random() * 1e9); // Random again: a new shuffle
+  state.view = view;
+  state.folder = view === "folder" ? folder : null;
   renderSide();
   reload(true);
 }
 
+const sortFor = () => (state.view === "random" ? "random" : state.view === "recent" ? "viewed" : state.sort);
+
 function renderToolbar() {
   const f = state.folders.find((x) => x.id === state.folder);
-  $("view-title").textContent = state.random ? "Random" : f ? baseName(f.path) : "All";
+  $("view-title").textContent = { random: "Random", recent: "Recently viewed" }[state.view] || (f ? baseName(f.path) : "All");
   $("view-title").title = f ? f.path : "";
-  $("sort-wrap").hidden = state.random;
-  $("shuffle").hidden = !state.random;
+  $("sort-wrap").hidden = state.view === "random" || state.view === "recent";
+  $("shuffle").hidden = state.view !== "random";
   for (const b of $("kind").querySelectorAll("button")) {
     b.classList.toggle("on", b.dataset.kind === state.kind);
     b.setAttribute("aria-pressed", String(b.dataset.kind === state.kind));
@@ -210,11 +341,23 @@ function layout() {
   return { gap, cols, size, row, groups, height: y };
 }
 
+// where tile i sits: its group, row and column
+function place(i, L = layout()) {
+  let lo = 0, hi = L.groups.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (L.groups[mid].start <= i) lo = mid; else hi = mid - 1; }
+  const g = L.groups[lo], j = i - g.start;
+  const r = Math.floor(j / L.cols), c = j % L.cols;
+  return { g, gi: lo, r, c, top: g.top + g.head + r * L.row, left: c * (L.size + L.gap) };
+}
+
 function query(path, offset) {
   const q = new URLSearchParams(offset == null ? {} : { offset, limit: PAGE });
-  if (state.random) { q.set("sort", "random"); q.set("seed", state.seed); } else q.set("sort", state.sort);
+  q.set("sort", sortFor());
+  if (state.view === "random") q.set("seed", state.seed);
   if (state.folder) q.set("folder", state.folder);
   if (state.kind) q.set("kind", state.kind);
+  const text = queryString();
+  if (text) q.set("q", text);
   return `${path}?${q}`;
 }
 
@@ -237,16 +380,14 @@ async function loadPage(p) {
 
 async function loadDays() {
   const gen = state.gen;
-  if (state.random || !["newest", "oldest"].includes(state.sort)) { state.groups = []; return; }
+  if (!["newest", "oldest"].includes(sortFor())) { state.groups = []; return; }
   try {
     const { days } = await api(query("/days"));
     if (gen !== state.gen) return;
     let start = 0;
     state.groups = days.map((d) => { const g = { label: dayLabel(d.day), n: d.n, start }; start += d.n; return g; });
-    for (const el of heads.values()) el.remove();
+    for (const el of heads.values()) el.remove(); // headings are new; tiles just move (draw places them)
     heads.clear();
-    for (const el of tiles.values()) el.remove();
-    tiles.clear();
     draw();
   } catch {
     state.groups = [];
@@ -256,7 +397,8 @@ async function loadDays() {
 const itemAt = (i) => state.pages.get(Math.floor(i / PAGE))?.[i % PAGE];
 
 function tileFor(item) {
-  const el = h("button.tile", { type: "button", onclick: () => openViewer(item.__i), "aria-label": item.name });
+  const el = h("button.tile", { type: "button", onclick: () => openViewer(item.__i), onfocus: () => { state.focus = item.__i; },
+    "aria-label": item.name, role: "gridcell" });
   if (item.thumb === -1 || item.thumb === -2) {
     el.append(h("div.ph", {}, item.thumb === -2 ? `${item.name}\n\nVideo posters need ffmpeg` : item.name));
   } else {
@@ -267,13 +409,18 @@ function tileFor(item) {
     el.append(img);
   }
   if (item.kind === "video") el.append(h("span.badge", {}, icon("play"), fmtDur(item.duration)));
+  if (item.favorite) el.append(h("span.t-fav", { title: "Favourite" }, icon("heart")));
+  if (item.rating) el.append(h("span.t-rating", { title: `Rated ${item.rating}` }, "★".repeat(item.rating)));
   el.append(h("span.name", {}, item.name));
   el.title = `${item.name}\n${item.width && item.height ? `${item.width} × ${item.height} · ` : ""}${fmtSize(item.size)} · ${fmtDate(item.mtime)}`;
   return el;
 }
 
+const tileKey = (item) => `${item.id}:${item.thumb}:${item.rating}:${item.favorite}`;
+
 function draw() {
-  const { gap, cols, size, row, groups, height } = layout();
+  const L = layout();
+  const { gap, cols, size, row, groups, height } = L;
   sizer.style.height = `${height}px`;
   const top = scroller.scrollTop - sizer.offsetTop, view = scroller.clientHeight;
   const lo = top - row * 2, hi = top + view + row * 2;
@@ -300,18 +447,21 @@ function draw() {
         const item = itemAt(i);
         if (!item) { loadPage(Math.floor(i / PAGE)); continue; }
         let el = tiles.get(i);
-        if (el && el.dataset.id === String(item.id) && el.dataset.thumb === String(item.thumb)) {
-          if (el.dataset.size === String(size)) continue;
-        } else {
+        if (!el || el.dataset.key !== tileKey(item)) {
+          const hadFocus = el && document.activeElement === el;
           el?.remove();
           item.__i = i;
           el = tileFor(item);
-          el.dataset.id = item.id;
-          el.dataset.thumb = item.thumb;
+          el.dataset.key = tileKey(item);
           sizer.append(el);
           tiles.set(i, el);
+          if (hadFocus) el.focus({ preventScroll: true });
         }
-        el.dataset.size = size;
+        el.dataset.i = i;
+        el.tabIndex = i === Math.max(0, state.focus) ? 0 : -1; // one tab stop for the grid; arrows move within it
+        const pos = `${size},${c * (size + gap)},${g.top + g.head + r * row}`;
+        if (el.dataset.pos === pos) continue;
+        el.dataset.pos = pos;
         Object.assign(el.style, { width: `${size}px`, height: `${size}px`, left: `${c * (size + gap)}px`, top: `${g.top + g.head + r * row}px` });
       }
     }
@@ -321,17 +471,68 @@ function draw() {
   showEmpty();
 }
 
-function reload(toTop = false) {
-  state.gen++;
-  state.pages.clear();
-  state.loading.clear();
+function clearGrid() {
   for (const el of tiles.values()) el.remove();
   tiles.clear();
   for (const el of heads.values()) el.remove();
   heads.clear();
-  if (toTop) scroller.scrollTop = 0;
+}
+
+function reload(toTop = false) {
+  const hadFocus = !toTop && document.activeElement?.classList.contains("tile");
+  state.gen++;
+  state.pages.clear();
+  state.loading.clear();
+  clearGrid();
+  if (toTop) { scroller.scrollTop = 0; state.focus = -1; }
   renderToolbar();
-  Promise.all([loadPage(0), loadDays()]).then(draw);
+  Promise.all([loadPage(0), loadDays()]).then(() => {
+    draw();
+    if (hadFocus && state.focus >= 0) focusTile(Math.min(state.focus, state.total - 1)); // a refresh doesn't lose your place
+  });
+}
+
+// keyboard: arrows move between tiles (Up/Down by a row, within and across days), Enter opens
+function focusTile(i) {
+  if (i < 0 || i >= state.total) return;
+  state.focus = i;
+  const L = layout(), p = place(i, L);
+  const top = p.top + sizer.offsetTop, view = scroller.clientHeight;
+  if (top < scroller.scrollTop) scroller.scrollTop = top - (p.r === 0 && p.g.label ? HEAD : 8);
+  else if (top + L.size > scroller.scrollTop + view) scroller.scrollTop = top + L.size - view + 8;
+  draw();
+  const go = () => { const el = tiles.get(i); if (el) { el.focus({ preventScroll: true }); return true; } return false; };
+  if (!go()) loadPage(Math.floor(i / PAGE)).then(() => { draw(); go(); });
+}
+
+function gridKey(e) {
+  if (!e.target.classList?.contains("tile")) return false;
+  const i = Number(e.target.dataset.i);
+  if (!(i >= 0)) return false;
+  state.focus = i;
+  const L = layout(), p = place(i, L);
+  const g = p.g;
+  let to = null;
+  if (e.key === "ArrowRight") to = i + 1;
+  else if (e.key === "ArrowLeft") to = i - 1;
+  else if (e.key === "ArrowDown") {
+    // the same column on the next row, or the next day's first row
+    if ((p.r + 1) * L.cols < g.n) to = Math.min(g.start + g.n - 1, i + L.cols);
+    else { const next = L.groups[p.gi + 1]; if (next) to = next.start + Math.min(p.c, next.n - 1); }
+  } else if (e.key === "ArrowUp") {
+    if (p.r > 0) to = i - L.cols;
+    else { const prev = L.groups[p.gi - 1]; if (prev) { const lastRow = Math.floor((prev.n - 1) / L.cols); to = prev.start + Math.min(prev.n - 1, lastRow * L.cols + p.c); } }
+  } else if (e.key === "Home") to = 0;
+  else if (e.key === "End") to = state.total - 1;
+  else if (e.key === "PageDown" || e.key === "PageUp") {
+    const rows = Math.max(1, Math.floor(scroller.clientHeight / L.row) - 1);
+    to = Math.max(0, Math.min(state.total - 1, i + (e.key === "PageDown" ? 1 : -1) * rows * L.cols));
+  } else if (e.key === " ") { openViewer(i); return true; }
+  else if (/^[0-5]$/.test(e.key)) { rate(itemAt(i), Number(e.key)); return true; }
+  else if (e.key.toLowerCase() === "f") { favourite(itemAt(i)); return true; }
+  else return false;
+  focusTile(Math.max(0, Math.min(state.total - 1, to)));
+  return true;
 }
 
 function showCount() {
@@ -346,6 +547,11 @@ function showEmpty() {
     empty.replaceChildren(h("h2", {}, "Add a folder to start"),
       h("p", {}, "Pick a folder with your images and videos, such as ComfyUI's output folder. The Gallery reads it and never changes your files."),
       h("button.btn.primary", { type: "button", onclick: addFolder }, "Add a folder"));
+  } else if (queryString()) {
+    empty.replaceChildren(h("h2", {}, "No matches"), h("p", {}, "Nothing here matches this search."),
+      h("button.btn", { type: "button", onclick: clearSearch }, "Clear the search"));
+  } else if (state.view === "recent") {
+    empty.replaceChildren(h("h2", {}, "Nothing viewed yet"), h("p", {}, "Files you open appear here, the last one first."));
   } else if (lastStatus && (lastStatus.scanning || lastStatus.queued)) {
     empty.replaceChildren(h("h2", {}, "Indexing…"), h("p", {}, "Your files appear here as they're found."));
   } else {
@@ -353,13 +559,53 @@ function showEmpty() {
   }
 }
 
+function clearSearch() {
+  state.chips = [];
+  state.text = "";
+  $("q").value = "";
+  searchChanged();
+}
+
+// ---------------------------------------------------------------- marks: rating and favourite
+function updateItem(id, patch) {
+  for (const items of state.pages.values()) for (const it of items) if (it.id === id) Object.assign(it, patch);
+  draw();
+  if (viewing >= 0 && itemAt(viewing)?.id === id) renderMarks(itemAt(viewing));
+}
+
+async function rate(item, n) {
+  if (!item) return;
+  const rating = item.rating === n ? 0 : n; // the same number again clears it
+  try {
+    const r = await api(`/file/${item.id}/mark`, { method: "POST", body: { rating } });
+    updateItem(item.id, { rating: r.rating });
+  } catch (e) { toast(e.message, true); }
+}
+
+async function favourite(item) {
+  if (!item) return;
+  try {
+    const r = await api(`/file/${item.id}/mark`, { method: "POST", body: { favorite: !item.favorite } });
+    updateItem(item.id, { favorite: r.favorite });
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderMarks(item) {
+  $("v-stars").replaceChildren(...[1, 2, 3, 4, 5].map((n) => h("button.star" + (n <= item.rating ? ".on" : ""),
+    { type: "button", "aria-label": `${n} star${n > 1 ? "s" : ""}`, "aria-pressed": String(n <= item.rating), title: `${n} (press ${n})`,
+      onclick: () => rate(item, n) }, "★")));
+  $("v-fav").setAttribute("aria-pressed", String(!!item.favorite));
+  $("v-fav").classList.toggle("on", !!item.favorite);
+}
+
 // ---------------------------------------------------------------- the viewer
-let viewing = -1;
+let viewing = -1, viewedTimer = null, infoGen = 0;
 
 function openViewer(i) {
   const item = itemAt(i);
   if (!item) return;
   viewing = i;
+  state.focus = i;
   const v = $("viewer");
   const wasHidden = v.hidden;
   v.hidden = false;
@@ -374,40 +620,143 @@ function openViewer(i) {
   $("v-media").replaceChildren(item.kind === "video"
     ? h("video", { src, controls: true, autoplay: true, loop: true })
     : h("img", { src, alt: item.name }));
-  renderDetails(item);
+  renderMarks(item);
+  loadDetails(item);
+  clearTimeout(viewedTimer);
+  viewedTimer = setTimeout(() => api(`/file/${item.id}/viewed`, { method: "POST" }).catch(() => {}), 800);
   if (!itemAt(i + 1) && i + 1 < state.total) loadPage(Math.floor((i + 1) / PAGE));
-  if (wasHidden) $("v-close").focus();
+  if (wasHidden) $("v-close").focus({ focusVisible: false });
 }
 
 const folderOf = (item) => state.folders.find((f) => f.id === item.folder_id);
-const fullPath = (item) => { const f = folderOf(item); return f ? `${f.path.replace(/[\\/]+$/, "")}\\${item.rel.replaceAll("/", "\\")}` : item.rel; };
 
-function renderDetails(item) {
+async function loadDetails(item) {
+  const gen = ++infoGen;
+  $("v-panel").setAttribute("aria-busy", "true");
+  try {
+    const info = await api(`/file/${item.id}/info`);
+    if (gen !== infoGen) return;
+    renderDetails(info);
+  } catch (e) {
+    if (gen === infoGen) $("v-panel").replaceChildren(h("p.note", {}, e.message));
+  } finally {
+    if (gen === infoGen) $("v-panel").removeAttribute("aria-busy");
+  }
+}
+
+const KIND = { checkpoint: "CKPT", unet: "UNET", lora: "LORA", vae: "VAE" };
+
+function section(title, ...kids) {
+  return h("section", {}, h("h3", {}, title), ...kids);
+}
+
+function filterLink(key, value, label = value) {
+  return h("button.link", { type: "button", title: `Show everything with ${key}:${value}`, onclick: () => { closeViewer(); addChip(key, value); } }, label);
+}
+
+function promptBlock(text, cls = "") {
+  const long = text.length > 420;
+  const body = h("div.prompt" + cls + (long ? ".clamp" : ""), {}, text);
+  return h("div.prompt-wrap", {}, body,
+    h("div.row.tight", {},
+      h("button.btn.small", { type: "button", onclick: () => copyText(text, "Prompt copied") }, icon("copy"), "Copy"),
+      long ? h("button.btn.small", { type: "button", onclick: (e) => { body.classList.toggle("clamp"); e.currentTarget.textContent = body.classList.contains("clamp") ? "Show all" : "Show less"; } }, "Show all") : null));
+}
+
+function renderDetails(info) {
+  const g = info.generation;
+  const parts = [];
+  if (g && g.source) {
+    if (g.positive) parts.push(section("Prompt", promptBlock(g.positive)));
+    if (g.negative) parts.push(section("Negative", promptBlock(g.negative, ".neg")));
+    const settings = [["Seed", g.seed, "seed"], ["Steps", g.steps, "steps"], ["CFG", g.cfg], ["Sampler", g.sampler, "sampler"],
+      ["Scheduler", g.scheduler, "scheduler"], ["Size", g.width && g.height ? `${g.width} × ${g.height}` : null],
+      g.denoise != null && g.denoise !== 1 ? ["Denoise", g.denoise] : null, g.clip_skip ? ["Clip skip", g.clip_skip] : null].filter((s) => s && s[1] != null);
+    if (settings.length) {
+      parts.push(section("Settings", h("div.settings", {}, settings.map(([k, v, key]) => h("div.set", {}, h("span.k", {}, k),
+        key ? filterLink(key, String(v), typeof v === "number" ? fmtNum(v) : v) : h("span.v", {}, typeof v === "number" ? fmtNum(v) : v))))));
+    }
+    if (info.uses.length) {
+      parts.push(section("Models", h("div.models", {}, info.uses.map((u) => h("div.model", {},
+        h("span.kind." + u.kind, {}, KIND[u.kind] || u.kind.toUpperCase()),
+        filterLink(u.kind === "lora" ? "lora" : u.kind === "vae" ? "vae" : "model", u.name),
+        u.kind === "lora" && u.strength != null ? h("span.strength", { title: u.clip != null && u.clip !== u.strength ? `model ${fmtNum(u.strength)} · clip ${fmtNum(u.clip)}` : `strength ${fmtNum(u.strength)}` },
+          h("span.bar", {}, h("span", { style: { width: `${Math.max(4, Math.min(100, Math.abs(u.strength) * 100))}%` } })), fmtNum(u.strength)) : null)))));
+    }
+    if (g.has_workflow) {
+      parts.push(section("Workflow", h("p.note", {}, `${g.source === "comfyui" ? "ComfyUI" : g.source}${g.nodes ? ` · ${plural(g.nodes, "node")}` : ""}`),
+        h("div.row", {},
+          h("button.btn", { type: "button", onclick: () => copyWorkflow(info) }, icon("copy"), "Copy workflow"),
+          h("a.btn", { href: `/api/file/${info.id}/workflow?download=1&t=${encodeURIComponent(TOKEN)}`, download: "" }, icon("save"), "Save as .json"))));
+    } else if (g.source && g.source !== "comfyui") {
+      parts.push(section("Made with", h("p.note", {}, { a1111: "Automatic1111 / Forge", novelai: "NovelAI", invokeai: "InvokeAI" }[g.source] || g.source)));
+    }
+  } else {
+    parts.push(section("What made it", h("p.note", {}, "No generation data in this file. It may have been saved without it, or edited since.")));
+  }
+  const gi = g && g.info;
+  if (gi) {
+    const bits = [["Albums", gi.albums], ["Characters", gi.characters], ["Project", gi.project ? [gi.project] : []]].filter(([, v]) => v && v.length);
+    if (bits.length || gi.note) {
+      parts.push(section("From the workflow",
+        bits.length ? h("dl", {}, bits.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v.join(", "))])) : null,
+        gi.note ? h("p.note", {}, gi.note) : null));
+    }
+  }
+  parts.push(section("Tags", tagEditor(info)));
   const rows = [
-    ["Type", `${item.kind === "video" ? "Video" : "Image"} · ${item.name.split(".").pop().toUpperCase()}`],
-    ["Dimensions", item.width && item.height ? `${item.width} × ${item.height}` : "—"],
-    item.kind === "video" ? ["Length", fmtDur(item.duration) || "—"] : null,
-    ["Size", fmtSize(item.size)],
-    ["Modified", fmtDate(item.mtime)],
+    ["Type", `${info.kind === "video" ? "Video" : "Image"} · ${info.name.split(".").pop().toUpperCase()}`],
+    ["Dimensions", info.width && info.height ? `${info.width} × ${info.height}` : "—"],
+    info.kind === "video" ? ["Length", fmtDur(info.duration) || "—"] : null,
+    ["Size", fmtSize(info.size)],
+    ["Modified", fmtDate(info.mtime)],
   ].filter(Boolean);
-  const path = fullPath(item);
-  $("v-panel").replaceChildren(
-    h("section", {}, h("h3", {}, "File"), h("dl", {}, rows.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]))),
-    h("section", {}, h("h3", {}, "Location"),
-      h("div.path", {}, path),
-      h("div.row", {},
-        h("button.btn", { type: "button", onclick: () => reveal(item) }, icon("explorer"), "Show in Explorer"),
-        h("button.btn", { type: "button", onclick: () => copyPath(path) }, icon("copy"), "Copy path"))),
-    h("section", {}, h("h3", {}, "What made it"),
-      h("p.note", {}, "The prompt, settings, models and workflow saved in the file will show here.")));
+  parts.push(section("File", h("dl", {}, rows.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]))));
+  parts.push(section("Location", h("div.path", {}, info.path),
+    h("div.row", {},
+      h("button.btn", { type: "button", onclick: () => reveal(info) }, icon("explorer"), "Show in Explorer"),
+      h("button.btn", { type: "button", onclick: () => copyText(info.path, "Path copied") }, icon("copy"), "Copy path"))));
+  $("v-panel").replaceChildren(...parts);
 }
 
-async function reveal(item) {
-  await api(`/file/${item.id}/reveal`, { method: "POST" }).catch((e) => toast(e.message, true));
+async function copyWorkflow(info) {
+  try {
+    const wf = await api(`/file/${info.id}/workflow`);
+    await copyText(JSON.stringify(wf), "Workflow copied: paste it into ComfyUI (Ctrl+V)");
+  } catch (e) { toast(e.message, true); }
 }
 
-async function copyPath(path) {
-  try { await navigator.clipboard.writeText(path); toast("Path copied."); } catch { toast("Couldn't copy here: select the path and press Ctrl+C.", true); }
+function tagEditor(info) {
+  const wrap = h("div.tags");
+  const input = h("input.tag-input", { type: "text", placeholder: "Add a tag", "aria-label": "Add a tag", autocomplete: "off", spellcheck: false });
+  const list = h("datalist", { id: `tags-${info.id}` });
+  input.setAttribute("list", list.id);
+  const render = (tags) => {
+    wrap.replaceChildren(...tags.map((t) => h("span.chip.tag" + (t.source === "workflow" ? ".wf" : ""), { title: t.source === "workflow" ? "From the workflow's Gallery Info node" : "Your tag" },
+      filterLink("tag", t.name),
+      h("button.x", { type: "button", "aria-label": `Remove the tag ${t.name}`, onclick: () => change({ remove: [t.name] }) }, icon("remove")))), input, list);
+  };
+  const change = async (body) => {
+    try {
+      const { tags } = await api(`/file/${info.id}/tags`, { method: "POST", body });
+      render(tags);
+      input.focus();
+    } catch (e) { toast(e.message, true); }
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && input.value.trim()) { e.preventDefault(); change({ add: [input.value.trim()] }); input.value = ""; }
+    e.stopPropagation(); // typing here isn't a shortcut
+  });
+  input.addEventListener("input", async () => {
+    const { items } = await api(`/suggest?field=tag&q=${encodeURIComponent(input.value)}`).catch(() => ({ items: [] }));
+    list.replaceChildren(...items.map((t) => h("option", { value: t.name })));
+  });
+  render(info.tags);
+  return wrap;
+}
+
+async function reveal(info) {
+  await api(`/file/${info.id}/reveal`, { method: "POST" }).catch((e) => toast(e.message, true));
 }
 
 function setDetails(open) {
@@ -418,11 +767,13 @@ function setDetails(open) {
 }
 
 function closeViewer() {
+  if ($("viewer").hidden) return;
   $("viewer").hidden = true;
   $("v-media").replaceChildren();
-  const el = tiles.get(viewing);
+  const i = viewing;
   viewing = -1;
-  el?.focus();
+  if (state.view === "recent") reload(false); // what you just opened moved to the top
+  else if (i >= 0) focusTile(i);
 }
 
 function step(d) {
@@ -433,30 +784,33 @@ function step(d) {
 }
 
 // ---------------------------------------------------------------- status
-let lastStatus = null, pollTimer = null, lastFiles = -1;
+let lastStatus = null, pollTimer = null, lastFiles = -1, lastMeta = -1;
 
 async function poll() {
   clearTimeout(pollTimer);
   try {
     const st = await api("/status");
     lastStatus = st;
-    const busy = st.scanning || st.queued || st.thumbs_pending;
+    const busy = st.scanning || st.queued || st.thumbs_pending || st.meta_pending;
     $("status-dot").classList.toggle("busy", !!busy);
     $("status").textContent = st.scanning ? `Indexing ${baseName(st.scanning.path)}: ${plural(st.scanning.seen || 0, "file")} found`
       : st.queued ? "Indexing…"
       : st.thumbs_pending ? `Making thumbnails: ${st.thumbs_pending.toLocaleString()} to go`
+      : st.meta_pending ? `Reading prompts and settings: ${st.meta_pending.toLocaleString()} to go`
       : st.files ? `Up to date · ${plural(st.files, "file")}` : "Up to date";
     $("status-right").textContent = st.thumbs_failed ? `${plural(st.thumbs_failed, "file")} without a thumbnail` : "";
-    if (st.files !== lastFiles) {
+    const searching = !!queryString();
+    if (st.files !== lastFiles || (searching && st.meta_pending !== lastMeta)) {
       lastFiles = st.files;
       await loadFolders();
-      reload(false);
-    } else if (st.thumbs_pending) {
+      if ($("viewer").hidden) reload(false); // never pull the list from under an open file
+    } else if (st.thumbs_pending && $("viewer").hidden) {
       // thumbnails made meanwhile: tiles waiting for one pick it up when their page is fetched again
       for (const p of [...state.pages.keys()]) state.pages.delete(p);
       draw();
     }
-    pollTimer = setTimeout(poll, busy ? 1500 : 6000);
+    lastMeta = st.meta_pending;
+    pollTimer = setTimeout(poll, busy ? 1500 : 4000);
   } catch {
     pollTimer = setTimeout(poll, 4000);
   }
@@ -465,9 +819,10 @@ const pollSoon = () => { clearTimeout(pollTimer); pollTimer = setTimeout(poll, 3
 
 // ---------------------------------------------------------------- wiring
 $("add").onclick = addFolder;
-$("view-all").onclick = () => selectView({});
-$("view-random").onclick = () => selectView({ random: true });
-$("shuffle").onclick = () => selectView({ random: true });
+$("view-all").onclick = () => selectView("all");
+$("view-recent").onclick = () => selectView("recent");
+$("view-random").onclick = () => selectView("random");
+$("shuffle").onclick = () => selectView("random");
 $("side-hide").onclick = () => setSide(true);
 $("side-show").onclick = () => setSide(false);
 $("sort").value = state.sort;
@@ -477,26 +832,80 @@ for (const b of $("kind").querySelectorAll("button")) {
   b.onclick = () => { state.kind = b.dataset.kind; store.set("kind", state.kind); reload(true); };
 }
 $("tile").oninput = (e) => { state.tile = Number(e.target.value); store.set("tile", state.tile); draw(); };
+$("f-fav").onclick = () => {
+  if (state.chips.some((c) => c.key === "is" && c.value === "fav")) removeChips((c) => c.key === "is" && c.value === "fav");
+  else addChip("is", "fav");
+};
+$("f-rating").onchange = (e) => {
+  const v = e.target.value;
+  state.chips = state.chips.filter((c) => c.key !== "rating");
+  if (v !== "") state.chips.push({ key: "rating", value: v === "0" ? "0" : v === "5" ? "5" : `>=${v}` });
+  searchChanged();
+};
+$("q").addEventListener("input", onInput);
+$("q").addEventListener("focus", showSuggest);
+$("q").addEventListener("blur", () => setTimeout(() => { $("suggest").hidden = true; }, 120));
+$("q").addEventListener("keydown", (e) => {
+  const input = $("q");
+  if (e.key === "ArrowDown" && moveSuggest(1)) e.preventDefault();
+  else if (e.key === "ArrowUp" && moveSuggest(-1)) e.preventDefault();
+  else if (e.key === "Enter") {
+    e.preventDefault();
+    const items = $("suggest")._items || [];
+    if (!$("suggest").hidden && suggestIndex >= 0 && items[suggestIndex]) return items[suggestIndex].pick();
+    const { rest } = takeChips(input.value, true);
+    input.value = rest;
+    state.text = rest;
+    $("suggest").hidden = true;
+    searchChanged();
+  } else if (e.key === "Backspace" && !input.value && state.chips.length) {
+    state.chips.pop();
+    searchChanged();
+  } else if (e.key === "Escape") {
+    if (!$("suggest").hidden) $("suggest").hidden = true;
+    else if (input.value || state.chips.length) clearSearch();
+    else input.blur();
+  }
+  e.stopPropagation();
+});
+$("q-clear").onclick = () => { clearSearch(); $("q").focus(); };
+$("search").addEventListener("mousedown", (e) => { if (e.target === $("search") || e.target === $("chips")) { e.preventDefault(); $("q").focus(); } });
 scroller.addEventListener("scroll", () => requestAnimationFrame(draw), { passive: true });
 new ResizeObserver(() => draw()).observe(scroller);
 $("v-close").onclick = closeViewer;
 $("v-prev").onclick = () => step(-1);
 $("v-next").onclick = () => step(1);
+$("v-fav").onclick = () => favourite(itemAt(viewing));
 $("v-details").onclick = () => setDetails($("viewer").classList.contains("no-details"));
 document.addEventListener("keydown", (e) => {
+  const inField = e.target.closest?.("input, select, textarea");
   if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
     e.preventDefault();
     if ($("viewer").hidden) setSide(!$("app").classList.contains("side-hidden"));
     return;
   }
-  if ($("viewer").hidden || e.ctrlKey || e.altKey || e.metaKey) return;
-  if (e.target.closest?.("input, select, textarea")) return;
+  if ((e.ctrlKey && e.key.toLowerCase() === "f") || (e.key === "/" && !inField)) {
+    if (!$("viewer").hidden) return;
+    e.preventDefault();
+    $("q").focus();
+    $("q").select();
+    return;
+  }
+  if (inField || e.ctrlKey || e.altKey || e.metaKey) return;
+  if ($("viewer").hidden) {
+    if (gridKey(e)) e.preventDefault();
+    else if (e.key === "ArrowDown" || e.key === "ArrowRight") { if (state.total && !e.target.classList?.contains("tile")) { e.preventDefault(); focusTile(Math.max(0, state.focus)); } }
+    return;
+  }
   if (e.key === "Escape") closeViewer();
   else if (e.key === "ArrowRight") step(1);
   else if (e.key === "ArrowLeft") step(-1);
   else if (e.key.toLowerCase() === "i") setDetails($("viewer").classList.contains("no-details"));
+  else if (/^[0-5]$/.test(e.key)) rate(itemAt(viewing), Number(e.key));
+  else if (e.key.toLowerCase() === "f") favourite(itemAt(viewing));
 });
 
 setSide(store.get("sideHidden", false));
 setDetails(store.get("details", true));
+renderChips();
 loadFolders().then(() => { reload(true); poll(); });

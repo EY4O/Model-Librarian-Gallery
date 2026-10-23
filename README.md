@@ -10,9 +10,9 @@
   <a href="https://ko-fi.com/looneth"><img src="https://img.shields.io/badge/Ko--fi-Support-FF813F?logo=ko-fi&logoColor=white" alt="Support on Ko-fi"></a>
 </p>
 
-A Windows app for large libraries of AI generations. It indexes the folders you choose where they are (nothing is copied or changed), shows them in a fast grid grouped by day, and opens any image or video full size.
+A Windows app for large libraries of AI generations. It indexes the folders you choose where they are (nothing is copied or changed), reads the prompt, settings, models and workflow saved in each file, and lets you search, rate, tag and browse them in a fast grid grouped by day.
 
-> **🚧 Work in progress.** The library, the grid and the viewer work today. Reading prompts, settings and models from your files, statistics, characters and file organisation are next: see the [plan](docs/PLAN.md).
+> **🚧 Work in progress.** The library, the viewer, what made each file, search, ratings, favourites and tags work today. Statistics, characters and file organisation are next: see the [plan](docs/PLAN.md).
 
 ---
 
@@ -33,7 +33,8 @@ The first start sets up the app's own Python in `.venv`; later starts open strai
 1. Run **`run.bat`**.
 2. Click **+** (top of the sidebar) and pick a folder of images and videos, such as ComfyUI's `output` folder.
 3. Your files appear as they're indexed, newest first, grouped by day.
-4. Click any tile to open it; **←** and **→** step through, **I** shows or hides the details, **Esc** goes back.
+4. Click any tile to open it and see what made it; **←** and **→** step through, **1**–**5** rate, **F** favourites, **I** shows or hides the details, **Esc** goes back.
+5. Search from the box at the top: words find prompts, file names, models and tags; `model:`, `lora:`, `tag:`, `rating:4`, `is:fav` and more narrow it down (they're suggested as you type).
 
 ---
 

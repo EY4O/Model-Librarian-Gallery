@@ -5,10 +5,15 @@
 Images are soft abstract "generations" (gradients, hills, a sun) in the sizes image models make, with
 modified times spread over the last few weeks so the grid has days to group by. Videos (when ffmpeg is
 on PATH) are short clips made with ffmpeg's own test sources.
+
+Most carry made-up generation data the way the real tools save it: PNGs a ComfyUI `prompt` and `workflow`
+(some with a Gallery Info entry), JPEGs A1111 `parameters` in EXIF, videos Video Helper Suite's comment.
+The model and LoRA names are invented. Every fifth image (WebP) has none.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import random
@@ -24,12 +29,58 @@ PALETTES = [
 ]
 
 
+SUBJECTS = ["a lighthouse on a cliff at dusk", "a mountain lake at dawn", "desert dunes under a pale moon", "a foggy pine forest",
+            "city rooftops after rain", "a quiet harbour at night", "rolling hills in spring", "a glacier valley"]
+STYLES = ["paper cut style, layered", "soft watercolor", "cinematic lighting, film grain", "flat illustration, pastel"]
+CHECKPOINTS = ["sample_xl_base.safetensors", "dreamy_mix_v3.safetensors", "turbo_sample_int4.safetensors"]
+LORAS = [("paper_cut_style_v2.safetensors", "paper cut style"), ("aurelia_character_v3.safetensors", "aurelia"),
+         ("soft_light_v1.safetensors", "soft light")]
+SAMPLERS = [("euler", "simple"), ("dpmpp_2m", "karras"), ("euler_ancestral", "normal")]
+
+
+def generation(i: int, rnd: random.Random, size: tuple[int, int]) -> dict:
+    """Made-up settings for sample i: {graph, workflow, parameters, info}."""
+    subject, style = SUBJECTS[i % len(SUBJECTS)], STYLES[(i // 3) % len(STYLES)]
+    ckpt = CHECKPOINTS[i % len(CHECKPOINTS)]
+    loras = [LORAS[j] for j in range(len(LORAS)) if (i >> j) & 1][:2]
+    sampler, scheduler = SAMPLERS[i % len(SAMPLERS)]
+    seed, steps, cfg = rnd.randrange(1, 2 ** 32), [8, 20, 28][i % 3], [1.0, 5.5, 7.0][i % 3]
+    words = [w for _, w in loras]
+    positive = ", ".join([subject, style, *words])
+    negative = "blurry, lowres, watermark"
+    g = {"1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}}}
+    model, clip, nid = ["1", 0], ["1", 1], 2
+    for f, _ in loras:
+        w = round(rnd.uniform(0.5, 1.0), 2)
+        g[str(nid)] = {"class_type": "LoraLoader", "inputs": {"model": model, "clip": clip, "lora_name": f, "strength_model": w, "strength_clip": w}}
+        model, clip, nid = [str(nid), 0], [str(nid), 1], nid + 1
+    g.update({
+        "10": {"class_type": "CLIPTextEncode", "inputs": {"clip": clip, "text": positive}},
+        "11": {"class_type": "CLIPTextEncode", "inputs": {"clip": clip, "text": negative}},
+        "12": {"class_type": "EmptyLatentImage", "inputs": {"width": size[0], "height": size[1], "batch_size": 1}},
+        "13": {"class_type": "KSampler", "inputs": {"model": model, "positive": ["10", 0], "negative": ["11", 0], "latent_image": ["12", 0],
+                                                  "seed": seed, "steps": steps, "cfg": cfg, "sampler_name": sampler, "scheduler": scheduler, "denoise": 1.0}},
+        "14": {"class_type": "VAEDecode", "inputs": {"samples": ["13", 0], "vae": ["1", 2]}},
+        "15": {"class_type": "SaveImage", "inputs": {"images": ["14", 0], "filename_prefix": "sample"}},
+    })
+    workflow = {"last_node_id": 15, "nodes": [{"id": int(k), "type": v["class_type"]} for k, v in g.items()], "links": [], "version": 0.4}
+    lora_text = "".join(f" <lora:{f.rsplit('.', 1)[0]}:0.8>" for f, _ in loras)
+    parameters = (f"{positive}{lora_text}\nNegative prompt: {negative}\nSteps: {steps}, Sampler: {sampler.replace('_', ' ')}, "
+                  f"Schedule type: {scheduler.capitalize()}, CFG scale: {cfg}, Seed: {seed}, Size: {size[0]}x{size[1]}, "
+                  f"Model: {ckpt.rsplit('.', 1)[0]}")
+    info = None
+    if i % 4 == 0:  # some carry a Gallery Info entry
+        info = {"v": 1, "albums": ["Coastline"] if "harbour" in subject or "lighthouse" in subject else [], "tags": ["sample", style.split(",")[0]],
+                "characters": ["Aurelia"] if any("aurelia" in f for f, _ in loras) else [], "project": "Samples", "rating": 4 if i % 8 == 0 else None}
+    return {"graph": g, "workflow": workflow, "parameters": parameters, "info": info}
+
+
 def _rgb(h):
     h = h.lstrip("#")
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
-def make_image(path: str, size: tuple[int, int], seed: int) -> None:
+def make_image(path: str, size: tuple[int, int], seed: int, gen: dict | None = None) -> None:
     from PIL import Image, ImageDraw, ImageFilter
     rnd = random.Random(seed)
     w, h = size
@@ -55,22 +106,33 @@ def make_image(path: str, size: tuple[int, int], seed: int) -> None:
     im = im.resize((w, h), Image.BICUBIC).filter(ImageFilter.GaussianBlur(2.2))
     ext = os.path.splitext(path)[1].lower()
     if ext in (".jpg", ".jpeg"):
-        im.save(path, quality=88)
+        exif = Image.Exif()
+        if gen:  # A1111 / Forge: the parameters text in EXIF UserComment
+            exif.get_ifd(0x8769)[0x9286] = b"UNICODE\0" + gen["parameters"].encode("utf-16-be")
+        im.save(path, quality=88, exif=exif)
     elif ext == ".webp":
         im.save(path, quality=85)
     else:
-        im.save(path, optimize=False, compress_level=1)
+        from PIL.PngImagePlugin import PngInfo
+        info = PngInfo()
+        if gen:  # ComfyUI's Save Image: every extra_pnginfo key as a text chunk
+            info.add_text("prompt", json.dumps(gen["graph"]))
+            info.add_text("workflow", json.dumps(gen["workflow"]))
+            if gen.get("info"):
+                info.add_text("mlgallery", json.dumps(gen["info"]))
+        im.save(path, optimize=False, compress_level=1, pnginfo=info)
 
 
-def make_video(path: str, seed: int, seconds: float = 2.0) -> bool:
+def make_video(path: str, seed: int, seconds: float = 2.0, gen: dict | None = None) -> bool:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         return False
     src = ["testsrc2", "mandelbrot", "life=s=320x240:mold=10:r=24:ratio=0.1"][seed % 3]
     if "=" not in src:
         src += "=s=480x320:r=24"
+    meta = ["-metadata", "comment=" + json.dumps({"prompt": gen["graph"], "workflow": gen["workflow"]})] if gen else []  # Video Helper Suite
     r = subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", src, "-t", str(seconds), "-pix_fmt", "yuv420p",
-                        "-c:v", "libx264" if path.endswith(".mp4") else "libvpx-vp9", path], capture_output=True)
+                        "-c:v", "libx264" if path.endswith(".mp4") else "libvpx-vp9", *meta, path], capture_output=True)
     return r.returncode == 0
 
 
@@ -85,13 +147,14 @@ def make_library(out: str, images: int = 60, videos: int = 3, days: int = 21, se
         os.makedirs(folder, exist_ok=True)
         ext = [".png", ".png", ".png", ".jpg", ".webp"][i % 5]
         p = os.path.join(folder, f"sample_{i:05d}_{ext[1:]}{ext}")
-        make_image(p, rnd.choice(SIZES) if i % 7 else (1024, 1024), seed * 1000 + i)
+        size = rnd.choice(SIZES) if i % 7 else (1024, 1024)
+        make_image(p, size, seed * 1000 + i, None if ext == ".webp" else generation(i, rnd, size))
         t = now - (i / max(1, images)) * days * 86400 - rnd.uniform(0, 3600)
         os.utime(p, (t, t))
         made.append(p)
     for i in range(videos):
         p = os.path.join(out, f"clip_{i:03d}.mp4")
-        if make_video(p, i):
+        if make_video(p, i, gen=generation(100 + i, rnd, (480, 320))):
             t = now - i * 3 * 86400 - 1800
             os.utime(p, (t, t))
             made.append(p)

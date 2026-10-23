@@ -52,6 +52,12 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None) -> web
     r.add_get("/api/files", files)
     r.add_get("/api/days", days)
     r.add_post("/api/file/{id}/reveal", reveal)
+    r.add_get("/api/file/{id}/info", file_info)
+    r.add_get("/api/file/{id}/workflow", file_workflow)
+    r.add_post("/api/file/{id}/mark", file_mark)
+    r.add_post("/api/file/{id}/tags", file_tags)
+    r.add_post("/api/file/{id}/viewed", file_viewed)
+    r.add_get("/api/suggest", suggest)
     r.add_get("/api/thumb/{id}", thumb)
     r.add_get("/api/file/{id}", original)
     return app
@@ -134,7 +140,7 @@ async def scan_all(request):
 def _view(q) -> dict:
     """The view's filters from the query: the same for the files and their day headings."""
     return {"sort": q.get("sort", "newest"), "folder": int(q["folder"]) if q.get("folder", "").isdigit() else None,
-            "kind": q.get("kind") or None}
+            "kind": q.get("kind") or None, "q": q.get("q", "")[:2000]}
 
 
 async def files(request):
@@ -149,6 +155,71 @@ async def files(request):
 
 async def days(request):
     return web.json_response({"days": await asyncio.to_thread(_lib(request).days, **_view(request.query))})
+
+
+def _fid(request) -> int | None:
+    try:
+        return int(request.match_info["id"])
+    except ValueError:
+        return None
+
+
+async def file_info(request):
+    fid = _fid(request)
+    info = await asyncio.to_thread(_lib(request).info, fid) if fid is not None else None
+    return web.json_response(info) if info else _err("not found", 404)
+
+
+async def file_workflow(request):
+    """The workflow saved in the file (?part=workflow, the default, or prompt: the API graph), to copy or save."""
+    fid = _fid(request)
+    wf = await asyncio.to_thread(_lib(request).workflow, fid) if fid is not None else None
+    part = request.query.get("part", "workflow")
+    data = (wf or {}).get(part) if part in ("workflow", "prompt") else None
+    if not data:
+        return _err("This file has no saved workflow.", 404)
+    headers = {}
+    if request.query.get("download"):
+        info = await asyncio.to_thread(_lib(request).info, fid)
+        stem = os.path.splitext(info["name"])[0] if info else "workflow"
+        headers["Content-Disposition"] = f'attachment; filename="{stem}{"" if part == "workflow" else "_api"}.json"'
+    return web.json_response(data, headers=headers)
+
+
+async def file_mark(request):
+    fid, b = _fid(request), await _body(request)
+    kw = {k: b[k] for k in ("rating", "favorite") if k in b}
+    try:
+        if "rating" in kw:
+            kw["rating"] = int(kw["rating"] or 0)
+        return web.json_response(await asyncio.to_thread(_lib(request).mark, fid, **kw))
+    except (KeyError, TypeError):
+        return _err("not found", 404)
+    except ValueError:
+        return _err("bad rating")
+
+
+async def file_tags(request):
+    fid, b = _fid(request), await _body(request)
+    add, remove = b.get("add") or [], b.get("remove") or []
+    if not isinstance(add, list) or not isinstance(remove, list):
+        return _err("add and remove are lists of tag names")
+    try:
+        return web.json_response({"tags": await asyncio.to_thread(_lib(request).set_tags, fid, add, remove)})
+    except (KeyError, TypeError):
+        return _err("not found", 404)
+
+
+async def file_viewed(request):
+    fid = _fid(request)
+    if fid is not None:
+        await asyncio.to_thread(_lib(request).viewed, fid)
+    return web.json_response({"ok": True})
+
+
+async def suggest(request):
+    q = request.query
+    return web.json_response({"items": await asyncio.to_thread(_lib(request).suggest, q.get("field", ""), q.get("q", "")[:200])})
 
 
 async def reveal(request):

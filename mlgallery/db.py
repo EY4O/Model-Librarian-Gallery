@@ -44,6 +44,53 @@ MIGRATIONS = [
     CREATE INDEX files_fp ON files (fp);
     CREATE INDEX files_thumb_todo ON files (thumb, mtime DESC) WHERE thumb = 0;
     """,
+    # 2: what made each file, the models it used, your own marks and tags, what you viewed, and search
+    """
+    ALTER TABLE files ADD COLUMN meta INTEGER NOT NULL DEFAULT 0;  -- 0 not read yet, 1 has generation data, 2 none, -1 unreadable
+    CREATE INDEX files_meta_todo ON files (meta, mtime DESC) WHERE meta = 0;
+    CREATE TABLE generations (
+        file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+        source TEXT,                    -- comfyui, a1111, novelai, ...
+        positive TEXT, negative TEXT,
+        seed INTEGER, steps INTEGER, cfg REAL, sampler TEXT, scheduler TEXT,
+        width INTEGER, height INTEGER, denoise REAL, clip_skip INTEGER,
+        model TEXT,                     -- the checkpoint or diffusion model's name
+        nodes INTEGER,                  -- how many nodes the workflow has
+        workflow BLOB,                  -- {"prompt", "workflow"} as zlib-compressed JSON, read only when asked for
+        info TEXT                       -- the Gallery Info node's entry (JSON), when the workflow had one
+    );
+    CREATE INDEX generations_seed ON generations (seed);
+    CREATE TABLE uses (
+        file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,             -- checkpoint, unet, lora, vae
+        name TEXT NOT NULL, file TEXT, hash TEXT,
+        strength REAL, clip REAL
+    );
+    CREATE INDEX uses_name ON uses (kind, name COLLATE NOCASE);
+    CREATE INDEX uses_file ON uses (file_id);
+    CREATE TABLE marks (
+        file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+        rating INTEGER,                 -- 1..5, or NULL
+        favorite INTEGER NOT NULL DEFAULT 0,
+        source TEXT NOT NULL DEFAULT 'user',  -- 'workflow' while only the Gallery Info node has set them
+        updated REAL
+    );
+    CREATE INDEX marks_rating ON marks (rating);
+    CREATE INDEX marks_favorite ON marks (favorite) WHERE favorite = 1;
+    CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE);
+    CREATE TABLE file_tags (
+        file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+        source TEXT NOT NULL DEFAULT 'user',  -- or 'workflow'
+        removed INTEGER NOT NULL DEFAULT 0,   -- a workflow tag you took off: re-reading the file doesn't put it back
+        PRIMARY KEY (file_id, tag_id)
+    );
+    CREATE INDEX file_tags_tag ON file_tags (tag_id) WHERE removed = 0;
+    CREATE TABLE views (file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE, at REAL NOT NULL);
+    CREATE INDEX views_at ON views (at DESC);
+    CREATE VIRTUAL TABLE search USING fts5(name, prompt, negative, models, tags, tokenize = "unicode61 remove_diacritics 2");
+    CREATE TRIGGER files_search_gone AFTER DELETE ON files BEGIN DELETE FROM search WHERE rowid = old.id; END;
+    """,
 ]
 
 
@@ -66,11 +113,12 @@ class Database:
     def _migrate(self, c: sqlite3.Connection) -> None:
         have = c.execute("PRAGMA user_version").fetchone()[0]
         for n, sql in enumerate(MIGRATIONS[have:], start=have + 1):
-            c.execute("BEGIN")  # a migration applies whole or not at all
-            for stmt in [s for s in sql.split(";") if s.strip()]:
-                c.execute(stmt)
-            c.execute(f"PRAGMA user_version={n}")
-            c.execute("COMMIT")
+            try:  # a migration applies whole or not at all
+                c.executescript(f"BEGIN;\n{sql}\nPRAGMA user_version={n};\nCOMMIT;")
+            except BaseException:
+                if c.in_transaction:
+                    c.execute("ROLLBACK")
+                raise
 
     @contextmanager
     def write(self):

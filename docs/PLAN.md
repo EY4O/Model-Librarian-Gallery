@@ -136,8 +136,8 @@ Each one is usable on its own and tested before the next starts. Tests use gener
 
 | | Delivers | Tested by |
 |---|---|---|
-| **M0 — Skeleton** | Private repo, launcher and window, settings, the database, folder scan with fingerprints, thumbnail cache, the plain grid | Unit tests for the scanner and fingerprints; start-to-grid check in headless Edge on a sample library |
-| **M1 — Viewer** | Metadata reading (the shared readers, plus the Gallery Info entry), the detail view, videos, search and filters, ratings, favorites, tags, keyboard navigation, the folder watcher | Parser tests on Model Librarian's fixtures; search tests; a UI walk-through |
+| **M0 — Skeleton** ✅ | Private repo, launcher and window, settings, the database, folder scan with fingerprints, thumbnail cache, the plain grid | Unit tests for the scanner and fingerprints; start-to-grid check in headless Edge on a sample library |
+| **M1 — Viewer** ✅ | Metadata reading (the shared readers, plus the Gallery Info entry), the detail view, videos, search and filters, ratings, favorites, tags, keyboard navigation, the folder watcher | Parser tests on Model Librarian's fixtures; search tests; a UI walk-through |
 | **M2 — Statistics** | Model and LoRA usage over time, prompt tags, settings, storage; Model Librarian's library linked (never-used models) | Statistics computed on a known sample set |
 | **M3 — Characters** | Characters, rules, automatic matching, review list, character pages and statistics | Matching tests (LoRA, trigger word, tag, rejections) |
 | **M4 — Organize** | Albums, bulk actions, move and delete with preview and undo, duplicates, daily backups | Move and undo tests on throwaway folders, including an offline drive |
