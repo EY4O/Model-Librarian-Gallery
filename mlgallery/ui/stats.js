@@ -41,6 +41,8 @@ export async function renderStats(root, { open }) {
         empty: "No checkpoint recorded in these files." })),
       card("LoRAs", "Most used, with their average strength", bars(data.loras, { kind: "lora", label: (r) => r.name,
         extra: (r) => (r.strength != null ? `avg ${fmtNum(r.strength)}` : ""), onclick: (r) => go({ key: "lora", value: r.name }), empty: "No LoRAs used." })),
+      data.characters.length ? card("Characters", "In the most files", bars(data.characters, { kind: "char", label: (r) => r.name,
+        onclick: (r) => go({ key: "character", value: r.name }) })) : null,
       card("Prompt", "The parts of your prompts used most", bars(data.prompt_tags, { kind: "tag", label: (r) => r.name,
         onclick: (r) => go({ key: "text", value: `"${r.name.replaceAll('"', "")}"` }), empty: "No prompts in these files." })),
       settingsCard(data, go),

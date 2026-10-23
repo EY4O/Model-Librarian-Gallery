@@ -42,6 +42,10 @@ def overview(lib, days: int | None = 30, models=None) -> dict:
             f" GROUP BY u.name COLLATE NOCASE ORDER BY n DESC LIMIT ?", (*a, TOP))]
         out["models_used"] = c.execute(f"SELECT COUNT(DISTINCT lower(u.name)) {uses} AND u.kind IN ('checkpoint', 'unet')", a).fetchone()[0]
         out["loras_used"] = c.execute(f"SELECT COUNT(DISTINCT lower(u.name)) {uses} AND u.kind='lora'", a).fetchone()[0]
+        out["characters"] = [dict(r) for r in c.execute(
+            "SELECT ch.id, ch.name, COUNT(*) n FROM file_characters fc JOIN characters ch ON ch.id=fc.character_id JOIN files f ON f.id=fc.file_id"
+            " JOIN folders d ON d.id=f.folder_id WHERE fc.state IN ('auto','confirmed') AND f.missing=0 AND d.online=1 AND f.mtime >= ?"
+            " GROUP BY ch.id ORDER BY n DESC LIMIT ?", (*a, TOP))]
         out["prompt_tags"] = [dict(r) for r in c.execute(
             f"SELECT p.tag AS name, COUNT(DISTINCT p.file_id) n FROM prompt_tags p JOIN files f ON f.id=p.file_id JOIN folders d ON d.id=f.folder_id"
             f" WHERE f.missing=0 AND d.online=1 AND f.mtime >= ? GROUP BY p.tag ORDER BY n DESC LIMIT ?", (*a, 15))]

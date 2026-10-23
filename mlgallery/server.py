@@ -59,6 +59,15 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None) -> web
     r.add_post("/api/file/{id}/viewed", file_viewed)
     r.add_get("/api/suggest", suggest)
     r.add_get("/api/stats", stats_view)
+    r.add_get("/api/characters", characters_list)
+    r.add_post("/api/characters", character_create)
+    r.add_get("/api/characters/review", review_queue)
+    r.add_get("/api/characters/words", trigger_words)
+    r.add_get("/api/characters/{cid}", character_get)
+    r.add_post("/api/characters/{cid}", character_update)
+    r.add_delete("/api/characters/{cid}", character_delete)
+    r.add_post("/api/characters/{cid}/review", character_review)
+    r.add_post("/api/file/{id}/characters", file_character)
     r.add_get("/api/settings", settings_get)
     r.add_post("/api/settings", settings_set)
     r.add_get("/api/thumb/{id}", thumb)
@@ -223,6 +232,99 @@ async def file_viewed(request):
 async def suggest(request):
     q = request.query
     return web.json_response({"items": await asyncio.to_thread(_lib(request).suggest, q.get("field", ""), q.get("q", "")[:200])})
+
+
+def _cid(request) -> int | None:
+    try:
+        return int(request.match_info["cid"])
+    except ValueError:
+        return None
+
+
+async def characters_list(request):
+    return web.json_response(await asyncio.to_thread(_lib(request).characters))
+
+
+def _rules(b):
+    rules = b.get("rules")
+    if rules is not None and (not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules)):
+        raise ValueError("rules is a list of {kind, value, strength}")
+    aliases = b.get("aliases") or []
+    if not isinstance(aliases, list):
+        raise ValueError("aliases is a list of names")
+    return rules, aliases
+
+
+async def character_create(request):
+    b = await _body(request)
+    try:
+        rules, aliases = _rules(b)
+        cid = await asyncio.to_thread(_lib(request).character_save, None, b.get("name"), aliases, rules or [])
+    except ValueError as ex:
+        return _err(str(ex), 422)
+    return web.json_response(await asyncio.to_thread(_lib(request).character, cid))
+
+
+async def character_get(request):
+    cid = _cid(request)
+    ch = await asyncio.to_thread(_lib(request).character, cid) if cid else None
+    return web.json_response(ch) if ch else _err("not found", 404)
+
+
+async def character_update(request):
+    cid, b = _cid(request), await _body(request)
+    lib = _lib(request)
+    cur = await asyncio.to_thread(lib.character, cid) if cid else None
+    if not cur:
+        return _err("not found", 404)
+    try:
+        rules, aliases = _rules(b)
+        kw = {"cover": b["cover"]} if "cover" in b else {}
+        await asyncio.to_thread(lib.character_save, cid, b.get("name", cur["name"]), aliases if "aliases" in b else cur["aliases"], rules, **kw)
+    except ValueError as ex:
+        return _err(str(ex), 422)
+    return web.json_response(await asyncio.to_thread(lib.character, cid))
+
+
+async def character_delete(request):
+    cid = _cid(request)
+    ok = await asyncio.to_thread(_lib(request).character_delete, cid) if cid else False
+    return web.json_response({"ok": True}) if ok else _err("not found", 404)
+
+
+async def character_review(request):
+    cid, b = _cid(request), await _body(request)
+    ids = b.get("files") or []
+    if not isinstance(ids, list):
+        return _err("files is a list of file ids")
+    try:
+        await asyncio.to_thread(_lib(request).character_review, cid, ids, b.get("verdict"))
+    except KeyError:
+        return _err("not found", 404)
+    except (ValueError, TypeError) as ex:
+        return _err(str(ex))
+    return web.json_response({"ok": True})
+
+
+async def review_queue(request):
+    q = request.query
+    cid = int(q["character"]) if q.get("character", "").isdigit() else None
+    return web.json_response({"items": await asyncio.to_thread(_lib(request).review_queue, cid)})
+
+
+async def trigger_words(request):
+    return web.json_response({"words": await asyncio.to_thread(_lib(request).trigger_words, request.query.get("lora", "")[:200])})
+
+
+async def file_character(request):
+    fid, b = _fid(request), await _body(request)
+    verdict = b.get("verdict")
+    if verdict not in ("confirm", "reject", None) or not str(b.get("character", "")).isdigit():
+        return _err("character (an id) and verdict (confirm, reject or null)")
+    try:
+        return web.json_response({"characters": await asyncio.to_thread(_lib(request).set_file_character, fid, int(b["character"]), verdict)})
+    except (KeyError, TypeError):
+        return _err("not found", 404)
 
 
 async def stats_view(request):

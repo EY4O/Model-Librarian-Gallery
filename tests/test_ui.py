@@ -265,3 +265,48 @@ def test_statistics_screen(server):
             await e.wait("document.querySelector('.tile') && !document.querySelector('.toolbar').hidden")
             assert not await e.js("window.__errors.length")
     asyncio.run(go())
+
+
+def test_characters_screens(server):
+    url, api = server
+
+    async def go():
+        async with page(url) as e:
+            await e.wait("document.querySelector('.tile')")
+            await e.click("#view-characters")
+            await e.wait("document.querySelector('.c-empty') || document.querySelector('.c-grid')")
+            # a new character from the editor: its LoRA, with the trigger words it suggests
+            await e.js("[...document.querySelectorAll('.st-head .btn.primary, .c-empty .btn.primary')][0].click(); true")
+            await e.wait("document.querySelector('dialog.dialog[open]')")
+            await e.js("const d = document.querySelector('dialog'); d.querySelector('input[aria-label=Name]').value = 'Aurelia';"
+                       "const l = d.querySelector('input[aria-label=LoRA]'); l.value = 'aurelia_character_v3'; [...d.querySelectorAll('button')].find(b => b.textContent === 'Use').click(); true")
+            await e.wait("document.querySelector('dialog .rules .rk.lora')")
+            await e.wait("document.querySelector('.word-picks .btn')", timeout=10)  # the prompts give its trigger word away
+            await e.js("document.querySelector('.word-picks .btn').click(); true")
+            await e.js("const d = document.querySelector('dialog'); d.querySelector('.rule-add select').value = 'tag';"
+                       "const v = d.querySelector('.rule-add input'); v.value = 'soft light'; [...d.querySelectorAll('.rule-add button')].pop().click(); true")
+            await e.wait("document.querySelectorAll('dialog .rules li').length === 3")
+            await e.js("document.querySelector('dialog button[type=submit]').click(); true")
+            await e.wait("document.querySelector('.c-head h1')?.textContent === 'Aurelia' && document.querySelector('.histo')")
+            ch = api("/characters")["characters"][0]
+            assert ch["name"] == "Aurelia" and ch["n"] > 0
+            assert await e.js("document.getElementById('char-count').textContent") == "1"
+            # To review: Y confirms the focused one
+            if ch["review"]:
+                await e.click("#view-review")
+                await e.wait("document.querySelector('.r-card')")
+                before = await e.js("document.querySelectorAll('.r-card').length")
+                await e.js("const c = document.querySelector('.r-card'); c.focus(); c.dispatchEvent(new KeyboardEvent('keydown', {key: 'y', bubbles: true})); true")
+                await e.wait(f"document.querySelectorAll('.r-card').length === {before - 1} || document.querySelector('.c-empty')")
+                assert api(f"/characters/{ch['id']}")["counts"]["confirmed"] == 1
+            # the details panel shows the character, and "Not Aurelia" takes it off that file
+            await e.click("#view-all")
+            await e.js("const q = document.getElementById('q'); q.value = 'character:aurelia '; q.dispatchEvent(new Event('input')); true")
+            await e.wait(f"document.getElementById('count').textContent.startsWith('{api('/characters')['characters'][0]['n']} item')")
+            await e.click(".tile")
+            await e.wait("document.querySelector('.chip.char')")
+            await e.js("document.querySelector('.chip.char button.x[title^=Not]').click(); true")
+            await e.wait("!document.querySelector('.chip.char')")
+            await e.key("Escape")
+            assert not await e.js("window.__errors.length")
+    asyncio.run(go())

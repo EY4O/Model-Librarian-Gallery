@@ -40,7 +40,7 @@ def fake_model_library(root: str) -> str:
         for i, n in enumerate(names):
             os.makedirs(os.path.dirname(os.path.join(root, folder, n)), exist_ok=True)
             with open(os.path.join(root, folder, n + ".safetensors"), "wb") as f:
-                f.truncate((i + 2) * 211 * 1024 * 1024)  # sparse: takes no space
+                f.write(b"\0" * 1024 * (i + 1))  # tiny placeholders: never real sizes (Windows doesn't make sparse files)
     return data
 
 
@@ -85,6 +85,7 @@ def main():
     ap.add_argument("--media")
     a = ap.parse_args()
     proc = None
+    tmp = None
     url = a.url
     if not url:
         tmp = tempfile.mkdtemp(prefix="mlg-shots-")
@@ -102,6 +103,10 @@ def main():
     items = api("/files?limit=40")["items"]
     for it, (r, fav) in zip(items[1:12:2], [(5, True), (4, False), (3, False), (5, False), (4, True), (2, False)]):
         api(f"/file/{it['id']}/mark", {"rating": r, "favorite": fav})
+
+    # two characters: one its LoRA gives away, one only a weak tag suggests (so To review has something)
+    api("/characters", {"name": "Aurelia", "aliases": ["Aury"], "rules": [{"kind": "lora", "value": "aurelia_character"}, {"kind": "word", "value": "aurelia"}]})
+    glow = api("/characters", {"name": "Glow", "rules": [{"kind": "tag", "value": "soft light", "strength": "weak"}]})
 
     async def js(e, code):
         await e.js(code)
@@ -122,6 +127,14 @@ def main():
                    lambda e: js(e, "document.getElementById('view-stats').click(); true"),
                    lambda e: e.wait("document.querySelector('.kpis') && document.querySelector('.tl-col')")]),
         ("stats-more", [lambda e: js(e, "const s = document.getElementById('stats'); s.scrollTop = s.scrollHeight; true")]),
+        ("characters", [lambda e: js(e, "document.getElementById('view-characters').click(); true"),
+                        lambda e: e.wait("document.querySelectorAll('.c-card').length >= 2 && [...document.querySelectorAll('.c-card img')].every(i => i.complete)")]),
+        ("character", [lambda e: js(e, "document.querySelector('.c-card').click(); true"),
+                       lambda e: e.wait("document.querySelector('.rules') && document.querySelector('.histo')"),
+                       lambda e: asyncio.sleep(0.8)]),
+        ("review", [lambda e: js(e, "document.getElementById('view-review').click(); true"),
+                    lambda e: e.wait("document.querySelector('.r-card img')"),
+                    lambda e: asyncio.sleep(0.8)]),
     ]
     os.makedirs(a.out, exist_ok=True)
     try:
@@ -129,6 +142,10 @@ def main():
     finally:
         if proc:
             proc.terminate()
+            proc.wait(15)
+        if tmp:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)  # the sample library, its index and the fake models
 
 
 if __name__ == "__main__":

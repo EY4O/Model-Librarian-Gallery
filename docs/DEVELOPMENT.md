@@ -36,8 +36,9 @@ Python 3.12 with `requirements-dev.txt`. The UI tests need Microsoft Edge; the v
 | `test_thumbs` | Thumbnail size and shape, transparency, EXIF orientation, animations, video posters, the cache, broken files |
 | `test_meta` | The readers match Model Librarian's (set `MLG_ML_REPO` to its checkout), ComfyUI / A1111 / video metadata, Gallery Info entries, every search filter, marks and tags (yours win over the workflow's), Recently viewed, the folder watcher |
 | `test_stats` | Statistics on known data, prompt tags (and their backfill), the date / size / CFG filters, Model Librarian's library and the models never used (on a made-up library: the tests never read yours; `MLG_ML_DATA` points them away) |
+| `test_characters` | Rules (LoRA, trigger word, tag), strong and weak matches, To review, confirmations and rejections that stick, a rule you keep rejecting going quiet, names from Gallery Info nodes, new files matched as they arrive, the characters API |
 | `test_server` | The token and Host checks, the API the interface uses (files, details, marks, tags, workflows, suggestions), folder add and remove, Show in Explorer |
-| `test_ui` | Start to grid in headless Edge, day headings, the viewer and its details panel, search chips and suggestions, ratings, favourites, tags, Recently viewed, Statistics and its click-through, keyboard, sidebar, filters, Random, tile size, the empty states |
+| `test_ui` | Start to grid in headless Edge, day headings, the viewer and its details panel, search chips and suggestions, ratings, favourites, tags, Recently viewed, Statistics and its click-through, characters (the editor, To review with the keyboard, the details panel), keyboard, sidebar, filters, Random, tile size, the empty states |
 
 `MLG_SHOTS=<folder>` makes `test_ui` save screenshots there; `python tools/shots.py <folder>` takes the README's on a fresh sample library.
 

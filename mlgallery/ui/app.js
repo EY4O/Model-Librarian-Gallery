@@ -5,6 +5,7 @@
 
 import { $, TOKEN, api, baseName, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, media, plural, store, toast } from "./util.js";
 import { renderStats } from "./stats.js";
+import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
 
 const PAGE = 300;
 const HEAD = 40;      // a day heading's height
@@ -150,7 +151,8 @@ async function loadFolders() {
 function renderSide() {
   const total = state.folders.reduce((s, f) => s + (f.online ? f.file_count : 0), 0);
   $("all-count").textContent = total ? total.toLocaleString() : "";
-  for (const v of ["all", "recent", "random", "stats"]) $(`view-${v}`).classList.toggle("sel", state.view === v);
+  for (const v of ["all", "recent", "random", "stats", "review"]) $(`view-${v}`).classList.toggle("sel", state.view === v);
+  $("view-characters").classList.toggle("sel", state.view === "characters" || state.view === "character");
   const items = state.folders.map((f) => {
     const sel = state.view === "folder" && state.folder === f.id;
     return h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", title: f.path, onclick: () => selectView("folder", f.id),
@@ -174,19 +176,37 @@ function actKey(e) {
   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.currentTarget.click(); }
 }
 
-function selectView(view, folder = null) {
+const PAGES = new Set(["stats", "characters", "character", "review"]); // screens of their own, instead of the grid
+const isPage = () => PAGES.has(state.view);
+const pageCtx = { open: (chips) => openFromStats(chips), show: (view, id) => selectView(view, id), refresh: () => loadCharacters() };
+
+function selectView(view, arg = null) {
   if (view === "random" && state.view === "random") state.seed = 1 + Math.floor(Math.random() * 1e9); // Random again: a new shuffle
   state.view = view;
-  state.folder = view === "folder" ? folder : null;
-  const stats = view === "stats";
-  document.querySelector(".toolbar").hidden = stats;
-  scroller.hidden = stats;
-  $("stats").hidden = !stats;
+  state.folder = view === "folder" ? arg : null;
+  state.character = view === "character" ? arg : null;
+  const page = isPage();
+  document.querySelector(".toolbar").hidden = page;
+  scroller.hidden = page;
+  $("stats").hidden = !page;
   renderSide();
-  if (stats) {
-    $("empty").hidden = true;
-    renderStats($("stats"), { open: openFromStats });
-  } else reload(true);
+  if (!page) return reload(true);
+  $("empty").hidden = true;
+  $("stats").scrollTop = 0;
+  if (view === "stats") renderStats($("stats"), pageCtx);
+  else if (view === "characters") renderCharacters($("stats"), pageCtx);
+  else if (view === "character") renderCharacter($("stats"), arg, pageCtx);
+  else if (view === "review") renderReview($("stats"), pageCtx);
+}
+
+async function loadCharacters() {
+  try {
+    const d = await api("/characters");
+    state.characters = d.characters;
+    $("char-count").textContent = d.characters.length ? d.characters.length.toLocaleString() : "";
+    $("review-count").textContent = d.review ? d.review.toLocaleString() : "";
+    $("review-count").hidden = !d.review;
+  } catch {}
 }
 
 // a bar on the Statistics screen: the library, searched for the files behind it
@@ -476,7 +496,7 @@ function showCount() {
 
 function showEmpty() {
   const empty = $("empty");
-  if (state.total || state.view === "stats") { empty.hidden = true; return; }
+  if (state.total || isPage()) { empty.hidden = true; return; }
   empty.hidden = false;
   if (!state.folders.length) {
     empty.replaceChildren(h("h2", {}, "Add a folder to start"),
@@ -638,6 +658,7 @@ function renderDetails(info) {
         gi.note ? h("p.note", {}, gi.note) : null));
     }
   }
+  parts.push(section("Characters", characterEditor(info)));
   parts.push(section("Tags", tagEditor(info)));
   const rows = [
     ["Type", `${info.kind === "video" ? "Video" : "Image"} · ${info.name.split(".").pop().toUpperCase()}`],
@@ -659,6 +680,34 @@ async function copyWorkflow(info) {
     const wf = await api(`/file/${info.id}/workflow`);
     await copyText(JSON.stringify(wf), "Workflow copied: paste it into ComfyUI (Ctrl+V)");
   } catch (e) { toast(e.message, true); }
+}
+
+const STATE_TIP = { auto: "Recognised by its rules", confirmed: "Confirmed", review: "A weak rule matched: is it them?" };
+
+function characterEditor(info) {
+  const wrap = h("div.tags");
+  const render = (list) => {
+    const known = new Set(list.map((c) => c.id));
+    const others = (state.characters || []).filter((c) => !known.has(c.id));
+    const pick = h("select.tag-input", { "aria-label": "Add a character" }, h("option", { value: "" }, "+ Character"),
+      others.map((c) => h("option", { value: c.id }, c.name)));
+    pick.onchange = () => { if (pick.value) change(Number(pick.value), "confirm"); };
+    wrap.replaceChildren(...list.map((c) => h("span.chip.tag.char." + c.state, { title: `${STATE_TIP[c.state] || ""}${c.source === "workflow" ? " (by the workflow's Gallery Info node)" : ""}` },
+      filterLink("character", c.name),
+      c.state === "review" ? h("button.x", { type: "button", "aria-label": `Yes, ${c.name} is in it`, title: "Yes", onclick: () => change(c.id, "confirm") }, icon("check")) : null,
+      h("button.x", { type: "button", "aria-label": `${c.name} isn't in it`, title: `Not ${c.name}`, onclick: () => change(c.id, "reject") }, icon("remove")))),
+      others.length ? pick : null,
+      !list.length && !others.length ? h("button.link.dim", { type: "button", onclick: () => editCharacter(null, pageCtx) }, "New character…") : null);
+  };
+  const change = async (cid, verdict) => {
+    try {
+      const { characters } = await api(`/file/${info.id}/characters`, { method: "POST", body: { character: cid, verdict } });
+      render(characters);
+      loadCharacters();
+    } catch (e) { toast(e.message, true); }
+  };
+  render(info.characters || []);
+  return wrap;
 }
 
 function tagEditor(info) {
@@ -738,13 +787,14 @@ async function poll() {
     if (st.files !== lastFiles || (searching && st.meta_pending !== lastMeta)) {
       lastFiles = st.files;
       await loadFolders();
-      if ($("viewer").hidden && state.view !== "stats") reload(false); // never pull the list from under an open file
-    } else if (st.thumbs_pending && $("viewer").hidden && state.view !== "stats") {
+      if ($("viewer").hidden && !isPage()) reload(false); // never pull the list from under an open file
+    } else if (st.thumbs_pending && $("viewer").hidden && !isPage()) {
       // thumbnails made meanwhile: tiles waiting for one pick it up when their page is fetched again
       for (const p of [...state.pages.keys()]) state.pages.delete(p);
       draw();
     }
     lastMeta = st.meta_pending;
+    loadCharacters(); // matches change as files are read
     pollTimer = setTimeout(poll, busy ? 1500 : 4000);
   } catch {
     pollTimer = setTimeout(poll, 4000);
@@ -758,6 +808,8 @@ $("view-all").onclick = () => selectView("all");
 $("view-recent").onclick = () => selectView("recent");
 $("view-random").onclick = () => selectView("random");
 $("view-stats").onclick = () => selectView("stats");
+$("view-characters").onclick = () => selectView("characters");
+$("view-review").onclick = () => selectView("review");
 $("shuffle").onclick = () => selectView("random");
 $("side-hide").onclick = () => setSide(true);
 $("side-show").onclick = () => setSide(false);
@@ -844,4 +896,5 @@ document.addEventListener("keydown", (e) => {
 setSide(store.get("sideHidden", false));
 setDetails(store.get("details", true));
 renderChips();
+loadCharacters();
 loadFolders().then(() => { reload(true); poll(); });

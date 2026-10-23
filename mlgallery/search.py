@@ -4,6 +4,7 @@
     "paper cut"                a phrase
     model:krea  lora:aurelia   a checkpoint / LoRA whose name contains this (quote names with spaces: lora:"paper cut")
     tag:dusk                   a tag (exactly)
+    character:aurelia          a character (by name or alias; matched or confirmed)   review:aurelia  is:review
     rating:4  rating:>=3  rating:2-4  rating:0 (unrated)
     is:fav  is:video  is:image  has:prompt  has:workflow  no:prompt
     sampler:euler  scheduler:karras  (exactly; sampler:dpmpp* for every name starting so)
@@ -20,7 +21,7 @@ import time
 
 TOKEN = re.compile(r'(-?)(?:(\w+):)?(?:"([^"]*)"?|(\S+))')
 KEYS = {"model", "lora", "tag", "rating", "is", "has", "no", "sampler", "scheduler", "seed", "steps", "neg", "vae", "ext",
-        "cfg", "size", "after", "before", "on"}
+        "cfg", "size", "after", "before", "on", "character", "review"}
 
 
 def tokens(q: str) -> list[tuple[str | None, str]]:
@@ -78,6 +79,12 @@ def build(q: str) -> tuple[list[str], list]:
             kinds = {"model": ("checkpoint", "unet"), "lora": ("lora",), "vae": ("vae",)}[key]
             where.append(f"EXISTS (SELECT 1 FROM uses u WHERE u.file_id=f.id AND u.kind IN ({','.join('?' * len(kinds))}) AND u.name LIKE ? ESCAPE '\\')")
             args += [*kinds, f"%{_like(v)}%"]
+        elif key in ("character", "review"):
+            states = "('auto', 'confirmed')" if key == "character" else "('review')"
+            where.append("EXISTS (SELECT 1 FROM file_characters fc JOIN characters ch ON ch.id=fc.character_id"
+                         f" WHERE fc.file_id=f.id AND fc.state IN {states} AND (ch.name = ? COLLATE NOCASE"
+                         " OR EXISTS (SELECT 1 FROM json_each(ch.aliases) a WHERE a.value = ? COLLATE NOCASE)))")
+            args += [v, v]
         elif key == "tag":
             where.append("EXISTS (SELECT 1 FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.file_id=f.id AND ft.removed=0 AND t.name=? COLLATE NOCASE)")
             args.append(v)
@@ -102,6 +109,8 @@ def build(q: str) -> tuple[list[str], list]:
                 args.append(v)
             elif v == "rated":
                 where.append("m.rating > 0")
+            elif v == "review":
+                where.append("EXISTS (SELECT 1 FROM file_characters fc WHERE fc.file_id=f.id AND fc.state='review')")
         elif key in ("has", "no"):
             v = v.lower()
             cond = {"prompt": "EXISTS (SELECT 1 FROM generations g WHERE g.file_id=f.id AND COALESCE(g.positive, '') <> '')",

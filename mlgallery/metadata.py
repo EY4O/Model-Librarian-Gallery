@@ -220,6 +220,8 @@ def store(c, file_id: int, got: dict | None) -> int:
                           (file_id, info.get("rating"), int(bool(info.get("favourite"))), time.time()))
     c.execute("UPDATE files SET meta=? WHERE id=?", (state, file_id))
     refresh_search(c, file_id)
+    from . import characters
+    characters.match_file(c, file_id)
     return state
 
 

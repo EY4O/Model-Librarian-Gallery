@@ -11,6 +11,7 @@ import time
 
 import json
 
+from . import characters as chars
 from . import metadata
 from . import scan as scanner
 from . import search
@@ -34,6 +35,11 @@ ITEM = ("f.id, f.name, f.rel, f.kind, f.width, f.height, f.size, f.mtime, f.dura
         " COALESCE(m.rating, 0) AS rating, COALESCE(m.favorite, 0) AS favorite")
 RECENT = 500  # how many files Recently viewed keeps
 DAY = "date(f.mtime, 'unixepoch', 'localtime')"
+
+
+def stem_of(name: str) -> str:
+    from .mllink import stem
+    return stem(name)
 
 
 class Library:
@@ -201,6 +207,10 @@ class Library:
         if gen:
             gen["info"] = json.loads(gen["info"]) if gen["info"] else None
             gen["has_workflow"] = bool(gen["has_workflow"])
+        with self.db.read() as c:
+            out["characters"] = [dict(r) for r in c.execute(
+                "SELECT ch.id, ch.name, fc.state, fc.source FROM file_characters fc JOIN characters ch ON ch.id=fc.character_id"
+                " WHERE fc.file_id=? AND fc.state <> 'rejected' ORDER BY ch.name COLLATE NOCASE", (fid,))]
         out.update(generation=gen, uses=uses, tags=tags, marks_source=src["source"] if src else None)
         return out
 
@@ -241,6 +251,7 @@ class Library:
                 c.execute("DELETE FROM file_tags WHERE file_id=? AND tag_id=? AND source='user'", (fid, row["id"]))
             c.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM file_tags)")
             metadata.refresh_search(c, fid)
+            chars.match_file(c, fid)  # a tag rule may match now (or no longer)
         return self.info(fid)["tags"]
 
     def tags(self, q: str = "", limit: int = 20) -> list[dict]:
@@ -266,6 +277,166 @@ class Library:
                     f"SELECT {field} AS name, COUNT(*) AS n FROM generations WHERE {field} LIKE ? ESCAPE '\\'"
                     f" GROUP BY {field} ORDER BY n DESC LIMIT ?", (like, n))]
         return []
+
+    # ---------------------------------------------------------------- characters
+    def characters(self) -> dict:
+        with self.db.read() as c:
+            rows = c.execute(
+                "SELECT ch.id, ch.name, ch.aliases, ch.cover,"
+                " (SELECT COUNT(*) FROM file_characters fc JOIN files f ON f.id=fc.file_id WHERE fc.character_id=ch.id AND fc.state IN ('auto','confirmed') AND f.missing=0) n,"
+                " (SELECT COUNT(*) FROM file_characters fc JOIN files f ON f.id=fc.file_id WHERE fc.character_id=ch.id AND fc.state='review' AND f.missing=0) review,"
+                " (SELECT fc.file_id FROM file_characters fc JOIN files f ON f.id=fc.file_id WHERE fc.character_id=ch.id AND fc.state IN ('auto','confirmed') AND f.missing=0"
+                "  ORDER BY fc.state='confirmed' DESC, f.mtime DESC LIMIT 1) latest"
+                " FROM characters ch ORDER BY ch.name COLLATE NOCASE").fetchall()
+            sugg = chars.suggestions(c)
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["aliases"] = json.loads(d["aliases"] or "[]")
+            d["cover"] = d["cover"] or d.pop("latest")
+            d.pop("latest", None)
+            out.append(d)
+        return {"characters": out, "review": sum(d["review"] for d in out), "suggestions": sugg}
+
+    def character_save(self, cid: int | None, name: str, aliases=(), rules=None, cover=...) -> int:
+        """Create (cid None) or change a character; its files are matched again."""
+        name = str(name or "").strip()[:100]
+        if not name:
+            raise ValueError("A character needs a name.")
+        aliases = [a for a in metadata._split(list(aliases or [])) if a.lower() != name.lower()][:16]
+        with self.db.write() as c:
+            clash = c.execute("SELECT id FROM characters WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+            if clash and clash[0] != cid:
+                raise ValueError(f"There's already a character called {name}.")
+            if cid is None:
+                cid = c.execute("INSERT INTO characters (name, aliases, created) VALUES (?,?,?)", (name, json.dumps(aliases), time.time())).lastrowid
+            else:
+                if not c.execute("SELECT 1 FROM characters WHERE id=?", (cid,)).fetchone():
+                    raise KeyError(cid)
+                c.execute("UPDATE characters SET name=?, aliases=? WHERE id=?", (name, json.dumps(aliases), cid))
+            if cover is not ...:
+                c.execute("UPDATE characters SET cover=? WHERE id=?", (int(cover) if cover else None, cid))
+            if rules is not None:
+                old = {(r["kind"], r["value"].lower()): r for r in c.execute("SELECT * FROM character_rules WHERE character_id=?", (cid,))}
+                c.execute("DELETE FROM character_rules WHERE character_id=?", (cid,))
+                seen = set()
+                for r in rules[:64]:
+                    kind = r.get("kind")
+                    value = str(r.get("value") or "").strip()[:200]
+                    if kind not in ("lora", "word", "tag") or not value or (kind, value.lower()) in seen:
+                        continue
+                    seen.add((kind, value.lower()))
+                    strength = r.get("strength") or ("weak" if kind == "tag" else "strong")
+                    prev = old.get((kind, value.lower()))
+                    muted = int(bool(r.get("muted", prev["muted"] if prev else 0)))
+                    c.execute("INSERT INTO character_rules (character_id, kind, value, strength, muted) VALUES (?,?,?,?,?)",
+                              (cid, kind, value, "weak" if strength == "weak" else "strong", muted))
+            chars.rematch(c, cid)
+        return cid
+
+    def character_delete(self, cid: int) -> bool:
+        with self.db.write() as c:
+            return c.execute("DELETE FROM characters WHERE id=?", (int(cid),)).rowcount > 0
+
+    def character(self, cid: int, days: int | None = None) -> dict | None:
+        """A character's page: its rules (with how they do), the LoRAs and strengths, what it's made with, over time."""
+        cid = int(cid)
+        with self.db.read() as c:
+            ch = c.execute("SELECT id, name, aliases, cover FROM characters WHERE id=?", (cid,)).fetchone()
+            if not ch:
+                return None
+            out = dict(ch)
+            out["aliases"] = json.loads(out["aliases"] or "[]")
+            files = "FROM file_characters fc JOIN files f ON f.id=fc.file_id JOIN folders d ON d.id=f.folder_id WHERE fc.character_id=? AND f.missing=0 AND d.online=1"
+            counts = dict(c.execute(f"SELECT fc.state, COUNT(*) {files} GROUP BY fc.state", (cid,)).fetchall())
+            out["counts"] = {k: counts.get(k, 0) for k in ("auto", "confirmed", "review", "rejected")}
+            out["n"] = out["counts"]["auto"] + out["counts"]["confirmed"]
+            if not out["cover"]:
+                r = c.execute(f"SELECT f.id {files} AND fc.state IN ('auto','confirmed') ORDER BY fc.state='confirmed' DESC, f.mtime DESC LIMIT 1", (cid,)).fetchone()
+                out["cover"] = r[0] if r else None
+            first_last = c.execute(f"SELECT MIN(f.mtime), MAX(f.mtime) {files} AND fc.state IN ('auto','confirmed')", (cid,)).fetchone()
+            out["first"], out["last"] = first_last[0], first_last[1]
+            out["rules"] = chars.rule_stats(c, cid)
+            counted = f"{files} AND fc.state IN ('auto','confirmed')"
+            out["loras"] = [dict(r) for r in c.execute(
+                f"SELECT u.name, COUNT(DISTINCT u.file_id) n, AVG(u.strength) avg, MIN(u.strength) lo, MAX(u.strength) hi {counted.replace('FROM file_characters fc', 'FROM file_characters fc JOIN uses u ON u.file_id=fc.file_id', 1)}"
+                f" AND u.kind='lora' GROUP BY u.name COLLATE NOCASE ORDER BY n DESC LIMIT 8", (cid,))]
+            # the strengths of the character's own LoRA (the ones its rules name), for the histogram
+            own = [chars.norm(r["value"]) for r in out["rules"] if r["kind"] == "lora"]
+            out["strengths"] = [r[1] for r in c.execute(
+                f"SELECT u.name, u.strength {counted.replace('FROM file_characters fc', 'FROM file_characters fc JOIN uses u ON u.file_id=fc.file_id', 1)}"
+                f" AND u.kind='lora' AND u.strength IS NOT NULL", (cid,)) if any(v in chars.norm(r[0]) for v in own)]
+            out["models"] = [dict(r) for r in c.execute(
+                f"SELECT u.name, COUNT(DISTINCT u.file_id) n {counted.replace('FROM file_characters fc', 'FROM file_characters fc JOIN uses u ON u.file_id=fc.file_id', 1)}"
+                f" AND u.kind IN ('checkpoint','unet') GROUP BY u.name COLLATE NOCASE ORDER BY n DESC LIMIT 6", (cid,))]
+            out["timeline"] = [dict(r) for r in c.execute(
+                f"SELECT strftime('%Y-%m', f.mtime, 'unixepoch', 'localtime') AS month, COUNT(*) n {counted} GROUP BY month ORDER BY month", (cid,))]
+        return out
+
+    def character_review(self, cid: int, file_ids, verdict: str) -> None:
+        if verdict not in ("confirm", "reject"):
+            raise ValueError("verdict is confirm or reject")
+        with self.db.write() as c:
+            if not c.execute("SELECT 1 FROM characters WHERE id=?", (int(cid),)).fetchone():
+                raise KeyError(cid)
+            chars.decide(c, int(cid), [int(f) for f in file_ids][:5000], verdict)
+
+    def character_reset(self, cid: int, file_id: int) -> None:
+        with self.db.write() as c:
+            chars.undecide(c, int(cid), int(file_id))
+
+    def review_queue(self, cid: int | None = None, limit: int = 200) -> list[dict]:
+        """Files waiting for a yes or no, with the character and the rule kind that suggested it."""
+        with self.db.read() as c:
+            rows = c.execute(
+                "SELECT fc.file_id, fc.character_id, ch.name AS character, fc.source, f.name, f.kind, f.thumb, f.width, f.height, f.mtime"
+                " FROM file_characters fc JOIN characters ch ON ch.id=fc.character_id JOIN files f ON f.id=fc.file_id JOIN folders d ON d.id=f.folder_id"
+                " WHERE fc.state='review' AND f.missing=0 AND d.online=1" + (" AND fc.character_id=?" if cid else "") +
+                " ORDER BY ch.name COLLATE NOCASE, f.mtime DESC LIMIT ?", ((int(cid), limit) if cid else (limit,))).fetchall()
+        return [dict(r) for r in rows]
+
+    def trigger_words(self, lora: str) -> list[str]:
+        """Words to recognise a LoRA's character by: its trained words (from the sidecar files next to the LoRA,
+        when Model Librarian's library is there), else the prompt parts that come with it most."""
+        words = []
+        have = self.models.models()
+        if have["root"]:
+            from .mllink import stem
+            target = next((m for m in have["models"] if m["kind"] == "lora" and m["name"].lower() == stem(lora).lower()), None)
+            if target:
+                base = os.path.join(have["root"], "loras", *target["file"].split("/"))
+                base = base[: -len(os.path.splitext(base)[1])]
+                for side, keys in ((".metadata.json", ("civitai", "trainedWords")), (".civitai.info", ("trainedWords",)), (".cm-info.json", ("TrainedWords",))):
+                    try:
+                        with open(base + side, encoding="utf-8") as f:
+                            d = json.load(f)
+                        for k in keys:
+                            d = d.get(k) if isinstance(d, dict) else None
+                        for w in d or []:
+                            for part in str(w).split(","):
+                                if part.strip() and part.strip().lower() not in [x.lower() for x in words]:
+                                    words.append(part.strip())
+                    except (OSError, ValueError, AttributeError):
+                        continue
+        if not words:
+            with self.db.read() as c:
+                withl = [r[0] for r in c.execute("SELECT DISTINCT file_id FROM uses WHERE kind='lora' AND name=? COLLATE NOCASE", (stem_of(lora),))]
+                if withl:
+                    rows = c.execute(f"SELECT tag, COUNT(*) n FROM prompt_tags WHERE file_id IN ({','.join('?' * len(withl))}) GROUP BY tag ORDER BY n DESC LIMIT 40", withl).fetchall()
+                    for tag, n in rows:
+                        total = c.execute("SELECT COUNT(DISTINCT file_id) FROM prompt_tags WHERE tag=?", (tag,)).fetchone()[0]
+                        if n >= max(2, len(withl) // 2) and n / total >= 0.6:  # comes with this LoRA, rarely without it
+                            words.append(tag)
+        return words[:12]
+
+    def set_file_character(self, file_id: int, cid: int, verdict: str | None) -> list[dict]:
+        """From the details panel: confirm, reject, or forget (None) a character for one file."""
+        with self.db.write() as c:
+            if verdict:
+                chars.decide(c, int(cid), [int(file_id)], verdict)
+            else:
+                chars.undecide(c, int(cid), int(file_id))
+        return self.info(file_id)["characters"]
 
     def viewed(self, file_id: int) -> None:
         with self.db.write() as c:

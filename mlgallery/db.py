@@ -100,6 +100,33 @@ MIGRATIONS = [
     CREATE INDEX prompt_tags_tag ON prompt_tags (tag);
     CREATE INDEX prompt_tags_file ON prompt_tags (file_id);
     """,
+    # 4: characters, the rules that recognise them, and which files they're in
+    """
+    CREATE TABLE characters (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        aliases TEXT NOT NULL DEFAULT '[]',
+        cover INTEGER REFERENCES files(id) ON DELETE SET NULL,
+        created REAL
+    );
+    CREATE TABLE character_rules (
+        id INTEGER PRIMARY KEY,
+        character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,                       -- lora, word, tag
+        value TEXT NOT NULL,
+        strength TEXT NOT NULL DEFAULT 'strong',  -- strong counts at once; weak waits in To review
+        muted INTEGER NOT NULL DEFAULT 0          -- a weak rule you mostly said no to
+    );
+    CREATE TABLE file_characters (
+        file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        state TEXT NOT NULL,                      -- auto, review, confirmed, rejected
+        source TEXT,                              -- lora, word, tag, workflow, user
+        at REAL,
+        PRIMARY KEY (file_id, character_id)
+    );
+    CREATE INDEX file_characters_char ON file_characters (character_id, state);
+    """,
 ]
 
 
