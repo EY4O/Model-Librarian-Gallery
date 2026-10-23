@@ -34,6 +34,13 @@
         </button>
       </div>
       <div class="nav-sep"></div>
+      <div class="nav-group">
+        <button type="button" class="nav-item" id="view-stats">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+          <span class="label">Statistics</span>
+        </button>
+      </div>
+      <div class="nav-sep"></div>
       <div class="nav-label">Folders</div>
       <div class="nav-group" id="folders"></div>
       <p class="side-foot">The Gallery only reads these folders. Eagle libraries inside them are left out.<br><span class="ver">{{APP}} {{VERSION}}</span></p>
@@ -94,6 +101,7 @@
         <div class="grid-sizer" id="sizer" role="grid" aria-label="Files"></div>
       </div>
       <div class="empty" id="empty" hidden></div>
+      <section class="stats" id="stats" aria-label="Statistics" hidden></section>
       <footer class="statusbar">
         <span class="dot" id="status-dot"></span><span id="status">Up to date</span>
         <span class="spacer"></span><span id="status-right"></span>

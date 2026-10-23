@@ -147,7 +147,8 @@ def test_search_filters(lib, media):
     assert q(lib, "rating:4") == ["s0.png"] and q(lib, "rating:0") == sorted(set(q(lib, "")) - {"s0.png"})
     assert q(lib, "no:prompt") == ["s4.webp"] and "s4.webp" not in q(lib, "has:prompt")
     assert q(lib, "has:workflow") == sorted(set(q(lib, "has:prompt")) - {"s3.jpg"})  # A1111 saves no workflow
-    assert q(lib, "sampler:dpmpp") == ["s1.png", "s7.png"]
+    assert q(lib, "sampler:dpmpp*") == ["s1.png", "s7.png"] and q(lib, "sampler:dpmpp") == []  # exact, or a prefix with *
+    assert q(lib, "sampler:euler") == ["s0.png", "s3.jpg", "s6.png"]  # not euler_ancestral
     assert q(lib, "steps:8") == ["s0.png", "s3.jpg", "s6.png"] and q(lib, "steps:>=20") == sorted(set(q(lib, "has:prompt")) - {"s0.png", "s3.jpg", "s6.png"})
     assert q(lib, "neg:watermark") == q(lib, "has:prompt") and q(lib, "watermark") == []  # the negative only when asked
     assert q(lib, "s5") == ["s5.png"]  # the file name

@@ -6,16 +6,21 @@
     tag:dusk                   a tag (exactly)
     rating:4  rating:>=3  rating:2-4  rating:0 (unrated)
     is:fav  is:video  is:image  has:prompt  has:workflow  no:prompt
-    sampler:euler  scheduler:karras  seed:1234  steps:8  neg:blurry (words in the negative prompt)
+    sampler:euler  scheduler:karras  (exactly; sampler:dpmpp* for every name starting so)
+    seed:1234  steps:8  steps:20-30  cfg:7  size:1024x1024  neg:blurry (words in the negative prompt)
+    after:2026-10-01  before:2026-10-23  on:2026-10-23  (by when the file was made, your local time)
 
 Unknown keys are treated as text. Every value is passed as a parameter, never pasted into the SQL.
 """
 from __future__ import annotations
 
+import datetime
 import re
+import time
 
 TOKEN = re.compile(r'(-?)(?:(\w+):)?(?:"([^"]*)"?|(\S+))')
-KEYS = {"model", "lora", "tag", "rating", "is", "has", "no", "sampler", "scheduler", "seed", "steps", "neg", "vae", "ext"}
+KEYS = {"model", "lora", "tag", "rating", "is", "has", "no", "sampler", "scheduler", "seed", "steps", "neg", "vae", "ext",
+        "cfg", "size", "after", "before", "on"}
 
 
 def tokens(q: str) -> list[tuple[str | None, str]]:
@@ -107,8 +112,40 @@ def build(q: str) -> tuple[list[str], list]:
             if cond:
                 where.append(cond if key == "has" else f"NOT ({cond})")
         elif key in ("sampler", "scheduler"):
-            where.append(f"EXISTS (SELECT 1 FROM generations g WHERE g.file_id=f.id AND g.{key} LIKE ? ESCAPE '\\')")
-            args.append(f"%{_like(v)}%")
+            if v.endswith("*"):
+                where.append(f"EXISTS (SELECT 1 FROM generations g WHERE g.file_id=f.id AND g.{key} LIKE ? ESCAPE '\\')")
+                args.append(f"{_like(v[:-1])}%")
+            else:
+                where.append(f"EXISTS (SELECT 1 FROM generations g WHERE g.file_id=f.id AND g.{key} = ? COLLATE NOCASE)")
+                args.append(v)
+        elif key == "cfg":
+            try:
+                cfg = float(v)
+            except ValueError:
+                where.append("0")
+                continue
+            where.append("EXISTS (SELECT 1 FROM generations g WHERE g.file_id=f.id AND abs(g.cfg - ?) < 0.001)")
+            args.append(cfg)
+        elif key == "size":
+            m = re.fullmatch(r"(\d+)\s*[x×*]\s*(\d+)", v.strip().lower())
+            if m:
+                where.append("f.width = ? AND f.height = ?")
+                args += [int(m.group(1)), int(m.group(2))]
+            else:
+                where.append("0")
+        elif key in ("after", "before", "on"):
+            day = _day(v)
+            if day is None:
+                where.append("0")
+            elif key == "after":
+                where.append("f.mtime >= ?")
+                args.append(day)
+            elif key == "before":
+                where.append("f.mtime < ?")
+                args.append(day)
+            else:
+                where.append("f.mtime >= ? AND f.mtime < ?")
+                args += [day, _day(v, 1)]
         elif key in ("seed", "steps"):
             r = _range(v)
             if r:
@@ -130,6 +167,18 @@ def build(q: str) -> tuple[list[str], list]:
         elif any(not w.startswith("-") for w in words_):
             where.append("0")  # only punctuation: nothing matches, rather than everything
     return where, args
+
+
+def _day(v: str, plus: int = 0) -> float | None:
+    """'2026-10-23' -> the start of that day (plus some days) in local time, as a timestamp."""
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", v.strip())
+    if not m:
+        return None
+    try:
+        d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))) + datetime.timedelta(days=plus)
+        return time.mktime((d.year, d.month, d.day, 0, 0, 0, 0, 0, -1))
+    except (OverflowError, ValueError):  # 2026-13-45 is no day
+        return None
 
 
 def _like(v: str) -> str:

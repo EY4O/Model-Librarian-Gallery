@@ -17,6 +17,7 @@ DEFAULTS = {
     "thumb_workers": 3,         # thumbnails made at once in the background
     "skip_eagle": True,         # never index Eagle libraries (*.library folders) inside a chosen folder
     "ffmpeg": "",               # path to ffmpeg for video posters ("" = look on PATH)
+    "ml_data": "",              # Model Librarian's shared data folder ("" = find it)
 }
 
 

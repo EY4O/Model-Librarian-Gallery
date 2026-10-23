@@ -233,3 +233,35 @@ def test_search_marks_tags_and_details(server):
             await e.key("Escape")
             assert not await e.js("window.__errors.length")
     asyncio.run(go())
+
+
+def test_statistics_screen(server):
+    url, api = server
+    o = api("/stats?days=0")
+
+    async def go():
+        async with page(url) as e:
+            await e.wait("document.querySelector('.tile')")
+            await e.click("#view-stats")
+            await e.wait("document.querySelector('.kpis') && document.querySelector('.st-grid')")
+            assert await e.js("getComputedStyle(document.querySelector('.toolbar')).display") == "none"
+            await e.js("[...document.querySelectorAll('.st-head .seg button')].find(b => b.textContent === 'All time').click(); true")
+            await e.wait(f"document.querySelector('.kpi .v').textContent === '{o['totals']['n']:,}'")
+            assert await e.js("document.querySelectorAll('.tl-col').length") >= 1
+            assert "wasn't found" in await e.js("document.querySelector('.st-grid').textContent")  # no Model Librarian in the tests
+            assert "null" not in await e.js("document.getElementById('stats').textContent")
+            # a checkpoint's row opens the library filtered to it
+            top = o["checkpoints"][0]
+            await e.js("document.querySelector('.bars.ckpt .bar-row').click(); true")
+            await e.wait("!document.getElementById('scroll').hidden && document.querySelector('#chips .chip')")
+            assert await e.js("document.querySelector('#chips .chip .k').textContent") == "model"
+            await e.wait(f"document.getElementById('count').textContent === '{top['n']} item{'' if top['n'] == 1 else 's'}'")
+            # a setting tab
+            await e.click("#view-stats")
+            await e.wait("document.querySelector('.st-grid')")
+            await e.js("[...document.querySelectorAll('[role=tab]')].find(b => b.textContent === 'Steps').click(); true")
+            assert await e.js("document.querySelector('[role=tab][aria-selected=true]').textContent") == "Steps"
+            await e.click("#view-all")
+            await e.wait("document.querySelector('.tile') && !document.querySelector('.toolbar').hidden")
+            assert not await e.js("window.__errors.length")
+    asyncio.run(go())

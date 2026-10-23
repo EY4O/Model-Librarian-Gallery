@@ -3,95 +3,12 @@
 // scrolls the same at 200 files or 250,000. Day headings come from a per-day count (one small request),
 // so every tile's place is known without fetching the pages above it.
 
-const TOKEN = document.querySelector('meta[name="mlg-token"]').content;
+import { $, TOKEN, api, baseName, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, media, plural, store, toast } from "./util.js";
+import { renderStats } from "./stats.js";
+
 const PAGE = 300;
 const HEAD = 40;      // a day heading's height
 const GROUP_GAP = 14; // space under a day's last row
-const $ = (id) => document.getElementById(id);
-
-// ---------------------------------------------------------------- helpers
-// h("div.cls", {props}, ...children): text is always set as text, never as HTML
-function h(tag, props, ...kids) {
-  const [name, ...classes] = tag.split(".");
-  const el = document.createElement(name || "div");
-  if (classes.length) el.className = classes.join(" ");
-  for (const [k, v] of Object.entries(props || {})) {
-    if (v == null || v === false) continue;
-    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (k === "style") Object.assign(el.style, v);
-    else if (k in el) el[k] = v;
-    else el.setAttribute(k, v);
-  }
-  for (const k of kids.flat(Infinity)) if (k != null && k !== false) el.append(k instanceof Node ? k : document.createTextNode(String(k)));
-  return el;
-}
-
-const SVG = {
-  rescan: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>',
-  remove: '<path d="M6 6l12 12M18 6 6 18"/>',
-  folder: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5Z"/>',
-  play: '<path d="M7 4.5v15l13-7.5Z"/>',
-  explorer: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5Z"/><path d="M12 11v5M9.5 13.5 12 16l2.5-2.5"/>',
-  copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
-  save: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14"/>',
-  heart: '<path d="M12 20.5s-7.5-4.6-9.5-9.3C1.2 7.9 3.3 4.5 6.8 4.5c2 0 3.4 1.1 4.2 2.3h2c.8-1.2 2.2-2.3 4.2-2.3 3.5 0 5.6 3.4 4.3 6.7-2 4.7-9.5 9.3-9.5 9.3Z"/>',
-  filter: '<path d="M4 5h16l-6.5 7.5V19l-3-1.5v-5Z"/>',
-  graph: '<rect x="3" y="4" width="6" height="5" rx="1.2"/><rect x="15" y="4" width="6" height="5" rx="1.2"/><rect x="9" y="15" width="6" height="5" rx="1.2"/><path d="M6 9v2.5h12V9M12 11.5V15"/>',
-};
-function icon(name) {
-  const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  s.setAttribute("viewBox", "0 0 24 24");
-  s.setAttribute("aria-hidden", "true");
-  s.innerHTML = SVG[name]; // our own constant markup, never data
-  return s;
-}
-
-async function api(path, { method = "GET", body } = {}) {
-  const res = await fetch("/api" + path, {
-    method, headers: { "X-MLG-Token": TOKEN, ...(body ? { "Content-Type": "application/json" } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  let data = null;
-  try { data = await res.json(); } catch {}
-  if (!res.ok) throw Object.assign(new Error((data && data.error) || `HTTP ${res.status}`), { status: res.status });
-  return data;
-}
-const media = (kind, id) => `/api/${kind}/${id}?t=${encodeURIComponent(TOKEN)}`;
-
-let toastTimer = null;
-function toast(text, err = false) {
-  document.querySelector(".toast")?.remove();
-  const t = h("div.toast" + (err ? ".err" : ""), { role: err ? "alert" : "status" }, text);
-  document.body.append(t);
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.remove(), err ? 7000 : 3500);
-}
-
-const fmtSize = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
-const fmtDur = (s) => (s == null ? "" : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`);
-const fmtDate = (t) => new Date(t * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-const fmtNum = (v) => (v == null ? "—" : Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100));
-const plural = (n, one, many = one + "s") => `${n.toLocaleString()} ${n === 1 ? one : many}`;
-const baseName = (p) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
-const store = {
-  get(k, d) { try { const v = localStorage.getItem("mlg." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem("mlg." + k, JSON.stringify(v)); } catch {} },
-};
-async function copyText(text, what = "Copied") {
-  try { await navigator.clipboard.writeText(text); toast(`${what}.`); } catch { toast("Couldn't copy here: select the text and press Ctrl+C.", true); }
-}
-
-function dayLabel(day) {
-  // "2026-10-23" in local time -> Today, Yesterday, a weekday this past week, else the date
-  const [y, m, d] = day.split("-").map(Number);
-  const date = new Date(y, m - 1, d);
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const ago = Math.round((today - date) / 86400000);
-  if (ago === 0) return "Today";
-  if (ago === 1) return "Yesterday";
-  if (ago > 1 && ago < 7) return date.toLocaleDateString(undefined, { weekday: "long" });
-  return date.toLocaleDateString(undefined, { day: "numeric", month: "long", ...(y !== today.getFullYear() ? { year: "numeric" } : {}) });
-}
 
 // ---------------------------------------------------------------- state
 const state = {
@@ -233,7 +150,7 @@ async function loadFolders() {
 function renderSide() {
   const total = state.folders.reduce((s, f) => s + (f.online ? f.file_count : 0), 0);
   $("all-count").textContent = total ? total.toLocaleString() : "";
-  for (const v of ["all", "recent", "random"]) $(`view-${v}`).classList.toggle("sel", state.view === v);
+  for (const v of ["all", "recent", "random", "stats"]) $(`view-${v}`).classList.toggle("sel", state.view === v);
   const items = state.folders.map((f) => {
     const sel = state.view === "folder" && state.folder === f.id;
     return h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", title: f.path, onclick: () => selectView("folder", f.id),
@@ -261,8 +178,26 @@ function selectView(view, folder = null) {
   if (view === "random" && state.view === "random") state.seed = 1 + Math.floor(Math.random() * 1e9); // Random again: a new shuffle
   state.view = view;
   state.folder = view === "folder" ? folder : null;
+  const stats = view === "stats";
+  document.querySelector(".toolbar").hidden = stats;
+  scroller.hidden = stats;
+  $("stats").hidden = !stats;
   renderSide();
-  reload(true);
+  if (stats) {
+    $("empty").hidden = true;
+    renderStats($("stats"), { open: openFromStats });
+  } else reload(true);
+}
+
+// a bar on the Statistics screen: the library, searched for the files behind it
+function openFromStats(chips) {
+  const folder = chips.find((c) => c.key === "folder");
+  const text = chips.filter((c) => c.key === "text").map((c) => c.value).join(" ");
+  state.chips = chips.filter((c) => c.key !== "folder" && c.key !== "text");
+  state.text = text;
+  $("q").value = text;
+  renderChips();
+  selectView(folder ? "folder" : "all", folder ? Number(folder.value) : null);
 }
 
 const sortFor = () => (state.view === "random" ? "random" : state.view === "recent" ? "viewed" : state.sort);
@@ -541,7 +476,7 @@ function showCount() {
 
 function showEmpty() {
   const empty = $("empty");
-  if (state.total) { empty.hidden = true; return; }
+  if (state.total || state.view === "stats") { empty.hidden = true; return; }
   empty.hidden = false;
   if (!state.folders.length) {
     empty.replaceChildren(h("h2", {}, "Add a folder to start"),
@@ -803,8 +738,8 @@ async function poll() {
     if (st.files !== lastFiles || (searching && st.meta_pending !== lastMeta)) {
       lastFiles = st.files;
       await loadFolders();
-      if ($("viewer").hidden) reload(false); // never pull the list from under an open file
-    } else if (st.thumbs_pending && $("viewer").hidden) {
+      if ($("viewer").hidden && state.view !== "stats") reload(false); // never pull the list from under an open file
+    } else if (st.thumbs_pending && $("viewer").hidden && state.view !== "stats") {
       // thumbnails made meanwhile: tiles waiting for one pick it up when their page is fetched again
       for (const p of [...state.pages.keys()]) state.pages.delete(p);
       draw();
@@ -822,6 +757,7 @@ $("add").onclick = addFolder;
 $("view-all").onclick = () => selectView("all");
 $("view-recent").onclick = () => selectView("recent");
 $("view-random").onclick = () => selectView("random");
+$("view-stats").onclick = () => selectView("stats");
 $("shuffle").onclick = () => selectView("random");
 $("side-hide").onclick = () => setSide(true);
 $("side-show").onclick = () => setSide(false);

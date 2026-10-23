@@ -91,6 +91,15 @@ MIGRATIONS = [
     CREATE VIRTUAL TABLE search USING fts5(name, prompt, negative, models, tags, tokenize = "unicode61 remove_diacritics 2");
     CREATE TRIGGER files_search_gone AFTER DELETE ON files BEGIN DELETE FROM search WHERE rowid = old.id; END;
     """,
+    # 3: the prompt split into tags, for statistics
+    """
+    CREATE TABLE prompt_tags (
+        file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        tag TEXT NOT NULL
+    );
+    CREATE INDEX prompt_tags_tag ON prompt_tags (tag);
+    CREATE INDEX prompt_tags_file ON prompt_tags (file_id);
+    """,
 ]
 
 

@@ -17,6 +17,7 @@ from . import search
 from .config import Settings
 from .db import Database
 from .thumbs import Thumbnails
+from .mllink import ModelLibrary
 from .watch import Watcher
 
 SORTS = {
@@ -44,6 +45,7 @@ class Library:
         self.thumbs = Thumbnails(self.db, os.path.join(data_dir, "thumbs"), self.settings)
         self.meta = metadata.MetaReader(self.db)
         self.watcher = Watcher(self)
+        self.models = ModelLibrary(self.settings)
         self._scan_lock = threading.Lock()
         self._queue: list[int] = []
         self._queue_cv = threading.Condition()
@@ -53,6 +55,7 @@ class Library:
 
     # ---------------------------------------------------------------- lifecycle
     def start(self, rescan: bool = True) -> None:
+        threading.Thread(target=metadata.backfill_prompt_tags, args=(self.db,), name="prompt-tags", daemon=True).start()
         self.thumbs.start()
         self.meta.start()
         self.watcher.start()

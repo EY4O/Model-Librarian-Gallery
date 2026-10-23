@@ -58,6 +58,9 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None) -> web
     r.add_post("/api/file/{id}/tags", file_tags)
     r.add_post("/api/file/{id}/viewed", file_viewed)
     r.add_get("/api/suggest", suggest)
+    r.add_get("/api/stats", stats_view)
+    r.add_get("/api/settings", settings_get)
+    r.add_post("/api/settings", settings_set)
     r.add_get("/api/thumb/{id}", thumb)
     r.add_get("/api/file/{id}", original)
     return app
@@ -220,6 +223,28 @@ async def file_viewed(request):
 async def suggest(request):
     q = request.query
     return web.json_response({"items": await asyncio.to_thread(_lib(request).suggest, q.get("field", ""), q.get("q", "")[:200])})
+
+
+async def stats_view(request):
+    from . import stats
+    d = request.query.get("days", "30")
+    days = int(d) if d.isdigit() and int(d) > 0 else None
+    return web.json_response(await asyncio.to_thread(stats.overview, _lib(request), days, _lib(request).models))
+
+
+def _settings_out(lib) -> dict:
+    return {"settings": lib.settings.all(), "ml_data_found": lib.models.data_dir(), "data_dir": lib.data_dir}
+
+
+async def settings_get(request):
+    return web.json_response(await asyncio.to_thread(_settings_out, _lib(request)))
+
+
+async def settings_set(request):
+    b = await _body(request)
+    lib = _lib(request)
+    await asyncio.to_thread(lib.settings.update, {k: v for k, v in b.items() if k in lib.settings.all()})
+    return web.json_response(await asyncio.to_thread(_settings_out, lib))
 
 
 async def reveal(request):

@@ -40,3 +40,7 @@ def image(path, size=(64, 48), seed=1):
     os.makedirs(os.path.dirname(str(path)), exist_ok=True)
     make_image(str(path), size, seed)
     return str(path)
+
+
+# Model Librarian's real library is never looked at by the tests (a test that wants one makes its own)
+os.environ.setdefault("MLG_ML_DATA", os.path.join(HERE, "no-model-librarian-here"))

@@ -12,7 +12,7 @@
 
 A Windows app for large libraries of AI generations. It indexes the folders you choose where they are (nothing is copied or changed), reads the prompt, settings, models and workflow saved in each file, and lets you search, rate, tag and browse them in a fast grid grouped by day.
 
-> **🚧 Work in progress.** The library, the viewer, what made each file, search, ratings, favourites and tags work today. Statistics, characters and file organisation are next: see the [plan](docs/PLAN.md).
+> **🚧 Work in progress.** The library, the viewer, what made each file, search, ratings, favourites, tags and statistics work today. Characters and file organisation are next: see the [plan](docs/PLAN.md).
 
 ---
 

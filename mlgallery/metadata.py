@@ -144,6 +144,34 @@ def _str(v):
 
 
 # ---------------------------------------------------------------- the index
+_WEIGHT = re.compile(r"^\((.*?)(?::\s*-?[\d.]+)?\)$|^\[(.*)\]$|^(.*?):\s*-?[\d.]+$")
+_LORA_TAG = re.compile(r"<(?:lora|lyco|hypernet):[^>]*>", re.I)
+MAX_PROMPT_TAGS = 60
+
+
+def prompt_tags(text: str) -> list[str]:
+    """'a lighthouse, (paper cut:1.2), BREAK, <lora:x:1>' -> ['a lighthouse', 'paper cut']: the prompt's comma-separated
+    parts, weights and brackets removed, lower case, for statistics."""
+    out, seen = [], set()
+    for part in re.split(r"[,\n|]|\bBREAK\b", _LORA_TAG.sub(",", text or "")):
+        # an escaped bracket is part of the words ("artist \(style\)"): kept aside while weights come off
+        t = part.strip().replace("\\(", "\x01").replace("\\)", "\x02").replace("\\[", "\x03").replace("\\]", "\x04")
+        for _ in range(3):  # ((nested:1.1)) and the like
+            m = _WEIGHT.match(t)
+            if not m:
+                break
+            t = next(g for g in m.groups() if g is not None).strip()
+        t = re.sub(r"[()\[\]{}]", "", t)
+        t = t.replace("\x01", "(").replace("\x02", ")").replace("\x03", "[").replace("\x04", "]")
+        t = re.sub(r"\s+", " ", t.replace("_", " ")).strip(" .;:").lower()
+        if 1 < len(t) <= 60 and t not in seen:
+            seen.add(t)
+            out.append(t)
+        if len(out) >= MAX_PROMPT_TAGS:
+            break
+    return out
+
+
 def tag_id(c, name: str) -> int:
     c.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
     return c.execute("SELECT id FROM tags WHERE name=? COLLATE NOCASE", (name,)).fetchone()[0]
@@ -167,6 +195,7 @@ def store(c, file_id: int, got: dict | None) -> int:
     """Write what was read for one file (inside a write transaction). -> its meta state."""
     c.execute("DELETE FROM generations WHERE file_id=?", (file_id,))
     c.execute("DELETE FROM uses WHERE file_id=?", (file_id,))
+    c.execute("DELETE FROM prompt_tags WHERE file_id=?", (file_id,))
     # workflow tags are re-derived; ones you removed stay removed, yours are untouched
     c.execute("DELETE FROM file_tags WHERE file_id=? AND source='workflow' AND removed=0", (file_id,))
     state = 2
@@ -181,6 +210,7 @@ def store(c, file_id: int, got: dict | None) -> int:
                    got.get("model"), got.get("nodes"), blob, json.dumps(info) if info else None))
         c.executemany("INSERT INTO uses (file_id, kind, name, file, hash, strength, clip) VALUES (?,?,?,?,?,?,?)",
                       [(file_id, u["kind"], u["name"], u.get("file"), u.get("hash"), u.get("strength"), u.get("clip")) for u in got["uses"]])
+        c.executemany("INSERT INTO prompt_tags (file_id, tag) VALUES (?, ?)", [(file_id, t) for t in prompt_tags(got.get("positive"))])
         if info:
             for t in info.get("tags") or []:
                 c.execute("INSERT OR IGNORE INTO file_tags (file_id, tag_id, source) VALUES (?,?, 'workflow')", (file_id, tag_id(c, t)))
@@ -191,6 +221,18 @@ def store(c, file_id: int, got: dict | None) -> int:
     c.execute("UPDATE files SET meta=? WHERE id=?", (state, file_id))
     refresh_search(c, file_id)
     return state
+
+
+def backfill_prompt_tags(db) -> int:
+    """Prompt tags for files read before they existed (from the stored prompt: no file is read again)."""
+    with db.read() as c:
+        rows = c.execute("SELECT g.file_id, g.positive FROM generations g WHERE COALESCE(g.positive, '') <> ''"
+                         " AND NOT EXISTS (SELECT 1 FROM prompt_tags p WHERE p.file_id = g.file_id)").fetchall()
+    for i in range(0, len(rows), 500):
+        with db.write() as c:
+            c.executemany("INSERT INTO prompt_tags (file_id, tag) VALUES (?, ?)",
+                          [(r["file_id"], t) for r in rows[i:i + 500] for t in prompt_tags(r["positive"])])
+    return len(rows)
 
 
 def workflow(db, file_id: int) -> dict | None:

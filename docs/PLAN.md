@@ -42,7 +42,7 @@ A node in Model Librarian's pack that you add to a workflow, just before its sav
 **What it adds on its own**, read from the run as it happens:
 
 - the checkpoint and LoRAs that actually ran, with strengths and hashes (from Model Librarian's hash cache), so statistics survive renamed files;
-- the workflow's name, and its recipe if it was opened from one;
+- the open workflow's name (filled in when you queue; an unsaved workflow has none);
 - the node and Model Librarian version.
 
 **How it gets into the file.** ComfyUI gives every save node a shared metadata dictionary, and each one writes all of it into the file:
@@ -59,7 +59,7 @@ The node is a pass-through: image in, the same image out. When it runs, it adds 
   "project": "Coastline", "rating": 4, "favourite": false, "note": "",
   "models": { "checkpoint": [{ "name": "krea2_turbo_int4.safetensors", "sha256": "…" }],
               "loras": [{ "name": "aurelia_v3.safetensors", "model": 0.65, "clip": 0.65, "sha256": "…" }] },
-  "source": { "ml": "1.22.0", "workflow": "lighthouse.json", "recipe": null } }
+  "source": { "ml": "1.22.0", "workflow": "lighthouse.json" } }
 ```
 
 **Pre-sorting into folders.** The node also outputs a `filename_prefix` built from a pattern, e.g. `{project}/{character}/{date}/`. Wired into the save node's prefix, it saves each file straight into its folder, so nothing needs moving afterwards. Folder names are cleaned (no `..`, no drive letters, no characters Windows refuses).
@@ -79,7 +79,7 @@ Wired-in values are only in the `mlgallery` entry.
 
 **Limits:** text fields are capped (note 2 KB, 64 tags, 16 albums and characters), so a stray wired string can't bloat every file.
 
-**Where and when:** in Model Librarian (installed in every ComfyUI you use) as a minor release, alongside Gallery M1, where the Gallery starts reading metadata. The format is written down in both repos, and a test keeps the writer and the reader in step.
+**Where and when:** shipped in Model Librarian 1.22.0 (installed in every ComfyUI you use), alongside Gallery M1. The format is written down in both repos, and a test keeps the writer and the reader in step.
 
 **Tested by:** unit tests for the entry, the pattern and the caps; a run on the 8199 test instance with Save Image, Save Video and Video Combine, reading the entry back from the saved files; the Gallery's import rules on generated sample files.
 
@@ -138,7 +138,7 @@ Each one is usable on its own and tested before the next starts. Tests use gener
 |---|---|---|
 | **M0 — Skeleton** ✅ | Private repo, launcher and window, settings, the database, folder scan with fingerprints, thumbnail cache, the plain grid | Unit tests for the scanner and fingerprints; start-to-grid check in headless Edge on a sample library |
 | **M1 — Viewer** ✅ | Metadata reading (the shared readers, plus the Gallery Info entry), the detail view, videos, search and filters, ratings, favorites, tags, keyboard navigation, the folder watcher | Parser tests on Model Librarian's fixtures; search tests; a UI walk-through |
-| **M2 — Statistics** | Model and LoRA usage over time, prompt tags, settings, storage; Model Librarian's library linked (never-used models) | Statistics computed on a known sample set |
+| **M2 — Statistics** ✅ | Model and LoRA usage over time, prompt tags, settings, storage; Model Librarian's library linked (never-used models) | Statistics computed on a known sample set |
 | **M3 — Characters** | Characters, rules, automatic matching, review list, character pages and statistics | Matching tests (LoRA, trigger word, tag, rejections) |
 | **M4 — Organize** | Albums, bulk actions, move and delete with preview and undo, duplicates, daily backups | Move and undo tests on throwaway folders, including an offline drive |
 | **M5 — Polish** | Portable package with its own Python and ffmpeg, Start menu shortcut, first-run setup, Open in ComfyUI, Save as recipe, performance at 250k | A 250k-file synthetic library for timing |
