@@ -520,3 +520,10 @@ select.pick:focus { border-style: solid; border-color: var(--accent); }
 .set-folders { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .set-folders li { display: grid; grid-template-columns: 160px minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 8px 10px; border-radius: 8px; background: #171920; }
 .sf-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setup { list-style: none; margin: 18px 0 0; padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; text-align: left;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--dim); max-width: 520px; }
+.setup:empty { display: none; }
+.setup li { display: flex; gap: 10px; align-items: baseline; line-height: 1.5; }
+.setup li.ok { color: var(--text-2); }
+.setup .mark { width: 14px; flex: none; color: #5d6372; font-weight: 700; }
+.setup li.ok .mark { color: #4fd1c5; }

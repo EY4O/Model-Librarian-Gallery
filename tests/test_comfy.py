@@ -102,3 +102,14 @@ def test_save_recipe_needs_data_and_model_librarian(tmp_path):
         comfy.save_recipe(str(ml), p, "image", "plain.png")
     with pytest.raises(comfy.ComfyError, match="wasn't found"):
         comfy.save_recipe("", p, "image", "plain.png")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows shortcuts")
+def test_start_menu_shortcut(tmp_path, monkeypatch):
+    from mlgallery import shortcut
+    monkeypatch.setenv("MLG_SHORTCUT_DIR", str(tmp_path))  # never the real Start menu
+    assert not shortcut.exists()
+    lnk = shortcut.make()
+    assert lnk == str(tmp_path / "Model Librarian Gallery.lnk") and os.path.getsize(lnk) > 100 and shortcut.exists()
+    prog, args, wd = shortcut.target()
+    assert prog.lower().endswith(("pythonw.exe", "python.exe")) and args == "-m mlgallery" and os.path.isdir(os.path.join(wd, "mlgallery"))

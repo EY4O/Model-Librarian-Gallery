@@ -52,6 +52,10 @@ export async function renderSettings(root, ctx) {
       field("Backups", h("div.row", {}, h("span", {}, s.last_backup ? `Last: ${s.last_backup.replace(/^library-|\.db$/g, "")}` : "None yet"),
         h("button.btn.small", { type: "button", onclick: async () => { await api("/backup", { method: "POST" }); toast("Backed up."); renderSettings(root, ctx); } }, "Back up now")),
         "A copy of the index each day; the last 7 are kept."),
-      ctx.shortcut ? field("Start menu", h("button.btn.small", { type: "button", onclick: ctx.shortcut }, "Add the Gallery to the Start menu"), null) : null),
+      s.shortcut === null ? null : field("Start menu", h("div.row", {},
+        s.shortcut ? h("span", {}, "The Gallery is in the Start menu.") : null,
+        h("button.btn.small", { type: "button", onclick: async () => {
+          try { await api("/shortcut", { method: "POST" }); toast("Added to the Start menu."); renderSettings(root, ctx); } catch (e) { toast(e.message, true); }
+        } }, s.shortcut ? "Make it again" : "Add the Gallery to the Start menu")), "Starts it in its own window, with its icon.")),
   );
 }

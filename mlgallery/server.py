@@ -86,6 +86,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None) -> web
     r.add_post("/api/file/{id}/recipe", save_recipe)
     r.add_post("/api/backup", backup_now)
     r.add_post("/api/open-data", open_data)
+    r.add_post("/api/shortcut", make_shortcut)
     r.add_get("/api/settings", settings_get)
     r.add_post("/api/settings", settings_set)
     r.add_get("/api/thumb/{id}", thumb)
@@ -511,6 +512,15 @@ async def open_data(request):
     return web.json_response({"ok": True})
 
 
+async def make_shortcut(request):
+    import subprocess
+    from . import shortcut
+    try:
+        return web.json_response({"path": await asyncio.to_thread(shortcut.make)})
+    except (OSError, subprocess.SubprocessError) as ex:
+        return _err(f"The shortcut wasn't made: {ex}", 500)
+
+
 async def stats_view(request):
     from . import stats
     d = request.query.get("days", "30")
@@ -522,8 +532,10 @@ def _settings_out(lib) -> dict:
     from .thumbs import find_ffmpeg
     backups = os.path.join(lib.data_dir, "backups")
     last = sorted(f for f in os.listdir(backups) if f.endswith(".db")) if os.path.isdir(backups) else []
+    from . import shortcut
     return {"settings": lib.settings.all(), "ml_data_found": lib.models.data_dir(), "data_dir": lib.data_dir,
-            "ffmpeg_found": find_ffmpeg(lib.settings.get("ffmpeg")), "last_backup": last[-1] if last else None, "version": VERSION}
+            "ffmpeg_found": find_ffmpeg(lib.settings.get("ffmpeg")), "last_backup": last[-1] if last else None, "version": VERSION,
+            "shortcut": shortcut.exists() if os.name == "nt" else None}
 
 
 async def settings_get(request):

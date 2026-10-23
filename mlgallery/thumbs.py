@@ -84,8 +84,10 @@ def image_thumb(path: str, size: int) -> bytes:
 
 
 def find_ffmpeg(configured: str = "") -> str | None:
-    if configured and os.path.isfile(configured):
-        return configured
+    """The ffmpeg set in Settings, else the portable package's own (MLG_FFMPEG), else the one on PATH."""
+    for p in (configured, os.environ.get("MLG_FFMPEG", "")):
+        if p and os.path.isfile(p):
+            return p
     return shutil.which("ffmpeg")
 
 

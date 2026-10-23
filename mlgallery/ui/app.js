@@ -666,8 +666,10 @@ function showEmpty() {
   empty.hidden = false;
   if (!state.folders.length) {
     empty.replaceChildren(h("h2", {}, "Add a folder to start"),
-      h("p", {}, "Pick a folder with your images and videos, such as ComfyUI's output folder. The Gallery reads it and never changes your files."),
-      h("button.btn.primary", { type: "button", onclick: addFolder }, "Add a folder"));
+      h("p", {}, "Pick a folder with your images and videos, such as ComfyUI's output folder. The Gallery reads it and moves or deletes files only when you ask."),
+      h("button.btn.primary", { type: "button", onclick: addFolder }, "Add a folder"),
+      h("ul.setup", { id: "setup" }));
+    welcome();
   } else if (queryString()) {
     empty.replaceChildren(h("h2", {}, "No matches"), h("p", {}, "Nothing here matches this search."),
       h("button.btn", { type: "button", onclick: clearSearch }, "Clear the search"));
@@ -682,6 +684,21 @@ function showEmpty() {
   } else {
     empty.replaceChildren(h("h2", {}, "Nothing here"), h("p", {}, state.kind ? "No files of that kind in this view." : "No images or videos were found in this folder."));
   }
+}
+
+// the first start: what the Gallery found by itself, and the Start menu
+async function welcome() {
+  const s = await api("/settings").catch(() => null);
+  const box = $("setup");
+  if (!s || !box) return;
+  const item = (ok, yes, no) => h("li" + (ok ? ".ok" : ""), {}, h("span.mark", { "aria-hidden": "true" }, ok ? "✓" : "·"), ok ? yes : no);
+  box.replaceChildren(
+    item(!!s.ml_data_found, "Model Librarian found: your models are linked to your files", "Model Librarian not found (optional): set its folder in Settings to link your models"),
+    item(!!s.ffmpeg_found, "ffmpeg found: videos get posters and lengths", "ffmpeg not found (optional): videos show without a poster"),
+    s.shortcut === null ? null : s.shortcut ? item(true, "In the Start menu", "")
+      : h("li", {}, h("span.mark", { "aria-hidden": "true" }, "·"), h("button.link", { type: "button", onclick: async (e) => {
+        try { await api("/shortcut", { method: "POST" }); e.currentTarget.closest("li").replaceWith(item(true, "In the Start menu", "")); } catch (ex) { toast(ex.message, true); }
+      } }, "Add the Gallery to the Start menu")));
 }
 
 function clearSearch() {

@@ -139,6 +139,8 @@ def main():
                        lambda e: asyncio.sleep(0.4)]),
         ("duplicates", [lambda e: js(e, "document.querySelector('#selbar .icon-btn').click(); document.getElementById('view-duplicates').click(); true"),
                         lambda e: e.wait("document.querySelector('.d-file img')"), lambda e: asyncio.sleep(0.8)]),
+        ("settings", [lambda e: js(e, "document.getElementById('view-settings').click(); true"),
+                      lambda e: e.wait("document.querySelector('.set-row')"), lambda e: asyncio.sleep(0.4)]),
         ("characters", [lambda e: js(e, "document.getElementById('view-characters').click(); true"),
                         lambda e: e.wait("document.querySelectorAll('.c-card').length >= 2 && [...document.querySelectorAll('.c-card img')].every(i => i.complete)")]),
         ("character", [lambda e: js(e, "document.querySelector('.c-card').click(); true"),
