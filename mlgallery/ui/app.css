@@ -354,3 +354,12 @@ a.btn { text-decoration: none; }
 .tl-x { position: relative; height: 16px; margin-left: 36px; color: #6b7181; font-size: 11px; }
 .tl-x span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.tl-legend { flex-wrap: wrap; row-gap: 6px; }
+.lg-n { color: var(--dim); font-variant-numeric: tabular-nums; }
+.tl-tip { width: 180px; }
+.tl-tip > span { display: grid !important; grid-template-columns: 10px 1fr auto; gap: 6px; align-items: center; }
+.tl-tip .tt-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-tip .tt-total { display: block !important; color: var(--dim); border-top: 1px solid var(--line-2); padding-top: 4px; }
+.tl-stack > span { border-radius: 0; }
+.tl-stack > span:first-child { border-radius: 4px 4px 0 0; }
+.fam { display: inline-block; margin-right: 8px; padding: 0 5px; border: 1px solid; border-radius: 4px; font-size: 10px; font-weight: 700; letter-spacing: .3px; vertical-align: 1px; }

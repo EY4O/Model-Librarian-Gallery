@@ -120,3 +120,31 @@ def test_find_only_looks_where_it_is_told(tmp_path, monkeypatch):
     monkeypatch.setenv("MLG_ML_DATA", str(data))
     assert mllink.find() == os.path.normpath(str(data))
     assert mllink.stem("loras/Sub/x.v2.safetensors") == "x.v2" and mllink.stem("a.gguf") == "a" and mllink.stem("plain") == "plain"
+
+
+def test_families_and_made_with(lib, media, tmp_path, monkeypatch):
+    from mlgallery import families
+    assert families.from_text("waiIllustriousSDXL_v15") == "Illustrious" and families.from_text("qwen_image_fp8") == "Qwen"
+    assert families.from_text("flux2_dev") == "Flux.2" and families.from_text("mystery") is None
+    known = families.known_folders({"SD1.5": "SD15-models"})
+    assert families.from_folder("IL", known) == "Illustrious" and families.from_folder("SD15-models", known) == "SD1.5"
+    assert families.from_folder("Moss", known) == "Moss"  # a folder of your own is a family too
+    assert families.from_folder("checkpoints", known) is None
+    assert families.color("Qwen") == "#818cf8" and families.color("Moss") == families.OTHER
+    library_over_days(lib, media, n=12, days=4)
+    # without Model Librarian: only names to go by (sample_xl_base reads as SDXL)
+    o = stats.overview(lib, days=None)
+    names = [s["name"] for s in o["made_with"]["series"]]
+    assert names[0] == "SDXL" or "SDXL" in names
+    assert "No model recorded" in names and sum(s["n"] for s in o["made_with"]["series"]) == 12
+    assert sum(sum(v for k, v in p.items() if k != "at") for p in o["made_with"]["points"]) == 12
+    # with it: the organizer's folders decide, including a folder of your own
+    data = fake_ml(tmp_path, ["checkpoints/Illustrious/dreamy_mix_v3.safetensors", "checkpoints/Moss/turbo_sample_int4.safetensors",
+                              "checkpoints/sample_xl_base.safetensors"])
+    monkeypatch.setenv("MLG_ML_DATA", str(data))
+    lib.models._cache = None
+    o = stats.overview(lib, days=None, models=lib.models)
+    by = {s["name"]: s for s in o["made_with"]["series"]}
+    assert {"Illustrious", "Moss", "SDXL"} <= set(by) and by["Illustrious"]["color"] == "#c084fc" and by["Moss"]["color"] == families.OTHER
+    ck = {c["name"]: c["family"] for c in o["checkpoints"]}
+    assert ck == {"dreamy_mix_v3": "Illustrious", "turbo_sample_int4": "Moss", "sample_xl_base": "SDXL"}

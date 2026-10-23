@@ -34,9 +34,10 @@ export async function renderStats(root, { open }) {
         { type: "button", "aria-pressed": String(v === range), onclick: () => { range = v; store.set("statsRange", v); renderStats(root, { open }); } }, label)))),
     data.totals.n ? null : h("p.st-empty", {}, range === "all" ? "Nothing indexed yet: add a folder to see statistics." : "Nothing made in this time range."),
     kpis(data),
-    data.totals.n ? timeline(data, go) : null,
+    data.totals.n && data.made_with.series.length ? timeline(data, go) : null,
     data.totals.n ? h("div.st-grid", {},
-      card("Checkpoints", "Most used", bars(data.checkpoints, { kind: "ckpt", label: (r) => r.name, onclick: (r) => go({ key: "model", value: r.name }),
+      card("Checkpoints", "Most used", bars(data.checkpoints, { kind: "ckpt", label: (r) => [r.family ? h("span.fam", { style: { color: r.color, borderColor: r.color + "88" } }, r.family.toUpperCase()) : null, r.name],
+        fill: (r) => r.color, onclick: (r) => go({ key: "model", value: r.name }),
         empty: "No checkpoint recorded in these files." })),
       card("LoRAs", "Most used, with their average strength", bars(data.loras, { kind: "lora", label: (r) => r.name,
         extra: (r) => (r.strength != null ? `avg ${fmtNum(r.strength)}` : ""), onclick: (r) => go({ key: "lora", value: r.name }), empty: "No LoRAs used." })),
@@ -66,7 +67,7 @@ function kpis(d) {
 }
 
 // a row per item: its name, a bar for its share, and its count; the row opens those files
-function bars(rows, { kind, label, extra, onclick, empty, value = (r) => r.n, fmt = (r) => r.n.toLocaleString() }) {
+function bars(rows, { kind, label, extra, onclick, empty, fill: fillColor, value = (r) => r.n, fmt = (r) => r.n.toLocaleString() }) {
   if (!rows || !rows.length) return h("p.st-none", {}, empty || "Nothing yet.");
   const max = Math.max(...rows.map(value), 1);
   return h("ol.bars." + kind, {}, rows.map((r) => h("li", {},
@@ -74,7 +75,7 @@ function bars(rows, { kind, label, extra, onclick, empty, value = (r) => r.n, fm
       h("span.bar-label", {}, label(r)),
       extra && extra(r) ? h("span.bar-extra", {}, extra(r)) : null,
       h("span.bar-n", {}, fmt(r)),
-      h("span.bar-track", { "aria-hidden": "true" }, h("span.bar-fill", { style: { width: `${Math.max(1.5, (value(r) / max) * 100)}%` } }))))));
+      h("span.bar-track", { "aria-hidden": "true" }, h("span.bar-fill", { style: { width: `${Math.max(1.5, (value(r) / max) * 100)}%`, ...(fillColor && fillColor(r) ? { background: fillColor(r) } : {}) } }))))));
 }
 
 function settingsCard(d, go) {
@@ -117,45 +118,50 @@ function libraryCard(d, go) {
     total > lib.unused.length ? h("p.st-none", {}, `and ${(total - lib.unused.length).toLocaleString()} more (largest first)`) : null);
 }
 
-// the timeline: one column per day (or week), images and videos stacked; hover for the numbers, click for the files
+// the timeline: one column per day (or week), stacked by the model family each file was made with (Model
+// Librarian's colours); hover for the numbers, click for the files
 function timeline(d, go) {
-  const pts = fill(d.timeline);
-  const max = Math.max(...pts.map((p) => p.images + p.videos), 1);
-  const nice = niceMax(max);
+  const mw = d.made_with;
+  const series = mw.series;
+  const pts = fill(mw);
+  const val = (p, s) => p[s.name] || 0;
+  const sum = (p) => series.reduce((t, s) => t + val(p, s), 0);
+  const nice = niceMax(Math.max(...pts.map(sum), 1));
   const tip = h("div.tl-tip", { role: "status", hidden: true });
+  const swatch = (s) => h("i.sw", { style: { background: s.color } });
   const cols = pts.map((p) => {
-    const total = p.images + p.videos;
-    const label = d.timeline.by === "week" ? `Week of ${dayLabel(p.at)}` : dayLabel(p.at);
-    const col = h("button.tl-col", { type: "button", "aria-label": `${label}: ${plural(p.images, "image")}, ${plural(p.videos, "video")}`, disabled: !total,
+    const total = sum(p);
+    const label = mw.by === "week" ? `Week of ${dayLabel(p.at)}` : dayLabel(p.at);
+    const parts = series.filter((s) => val(p, s));
+    return h("button.tl-col", { type: "button", "aria-label": `${label}: ${parts.map((s) => `${s.name} ${val(p, s)}`).join(", ") || "nothing"}`, disabled: !total,
       onclick: () => {
         const end = new Date(p.at + "T00:00:00");
-        end.setDate(end.getDate() + (d.timeline.by === "week" ? 7 : 1));
-        const endDay = isoDay(end.getTime() / 1000);
-        go({ key: "after", value: p.at }, { key: "before", value: endDay });
+        end.setDate(end.getDate() + (mw.by === "week" ? 7 : 1));
+        go({ key: "after", value: p.at }, { key: "before", value: isoDay(end.getTime() / 1000) });
       },
-      onmouseenter: (e) => showTip(e.currentTarget, label, p), onfocus: (e) => showTip(e.currentTarget, label, p),
+      onmouseenter: (e) => showTip(e.currentTarget, label, p, parts), onfocus: (e) => showTip(e.currentTarget, label, p, parts),
       onmouseleave: () => { tip.hidden = true; }, onblur: () => { tip.hidden = true; } },
+      // the biggest family at the bottom, so its band stays level from day to day
       h("span.tl-stack", { style: { height: `${(total / nice) * 100}%` } },
-        p.videos ? h("span.tl-v", { style: { flexGrow: p.videos } }) : null,
-        p.images ? h("span.tl-i", { style: { flexGrow: p.images } }) : null));
-    return col;
+        [...parts].reverse().map((s) => h("span", { style: { flexGrow: val(p, s), background: s.color } }))));
   });
-  function showTip(el, label, p) {
-    tip.replaceChildren(h("strong", {}, label), h("span", {}, h("i.sw.i"), `Images ${p.images.toLocaleString()}`), h("span", {}, h("i.sw.v"), `Videos ${p.videos.toLocaleString()}`));
+  function showTip(el, label, p, parts) {
+    tip.replaceChildren(h("strong", {}, label), ...parts.map((s) => h("span", {}, swatch(s), h("span.tt-name", {}, s.name), h("b", {}, val(p, s).toLocaleString()))),
+      parts.length > 1 ? h("span.tt-total", {}, `${sum(p).toLocaleString()} in all`) : null);
     tip.hidden = false;
     const box = el.parentElement.getBoundingClientRect(), r = el.getBoundingClientRect();
-    tip.style.left = `${Math.min(box.width - 150, Math.max(0, r.left - box.left + r.width / 2 - 70))}px`;
+    tip.style.left = `${Math.min(box.width - 190, Math.max(0, r.left - box.left + r.width / 2 - 90))}px`;
   }
   const ticks = [0, Math.floor(pts.length / 2), pts.length - 1].filter((v, i, a) => a.indexOf(v) === i);
-  const table = h("table.sr-only", {}, h("caption", {}, "Files made over time"),
-    h("tr", {}, h("th", {}, d.timeline.by === "week" ? "Week of" : "Day"), h("th", {}, "Images"), h("th", {}, "Videos")),
-    pts.filter((p) => p.images + p.videos).map((p) => h("tr", {}, h("td", {}, p.at), h("td", {}, p.images), h("td", {}, p.videos))));
-  return card("Made over time", d.timeline.by === "week" ? "Per week" : "Per day",
-    h("div.tl-legend", {}, h("span", {}, h("i.sw.i"), "Images"), h("span", {}, h("i.sw.v"), "Videos")),
+  const table = h("table.sr-only", {}, h("caption", {}, "Files made over time, by model family"),
+    h("tr", {}, h("th", {}, mw.by === "week" ? "Week of" : "Day"), series.map((s) => h("th", {}, s.name))),
+    pts.filter(sum).map((p) => h("tr", {}, h("td", {}, p.at), series.map((s) => h("td", {}, val(p, s))))));
+  return card("Made with, over time", `${mw.by === "week" ? "Per week" : "Per day"}, by the model family each file was made with`,
+    h("div.tl-legend", {}, series.map((s) => h("span", {}, swatch(s), s.name, h("span.lg-n", {}, s.n.toLocaleString())))),
     h("div.tl", {},
       h("div.tl-axis", { "aria-hidden": "true" }, h("span", {}, nice.toLocaleString()), h("span", {}, Math.round(nice / 2).toLocaleString()), h("span", {}, "0")),
       h("div.tl-plot", {}, h("div.tl-grid", { "aria-hidden": "true" }, h("i"), h("i"), h("i")), h("div.tl-cols", {}, cols), tip)),
-    h("div.tl-x", { "aria-hidden": "true" }, ticks.map((i) => h("span", { style: { left: `${((i + 0.5) / pts.length) * 100}%` } }, short(pts[i].at, d.timeline.by)))),
+    h("div.tl-x", { "aria-hidden": "true" }, ticks.map((i) => h("span", { style: { left: `${((i + 0.5) / pts.length) * 100}%` } }, short(pts[i].at, mw.by)))),
     table);
 }
 
@@ -186,7 +192,7 @@ function fill(tl) {
   }
   for (const d = new Date(first); d <= last && out.length < 800; d.setDate(d.getDate() + (tl.by === "week" ? 7 : 1))) {
     const at = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    out.push(have.get(at) || { at, images: 0, videos: 0 });
+    out.push(have.get(at) || { at });
   }
   return out;
 }

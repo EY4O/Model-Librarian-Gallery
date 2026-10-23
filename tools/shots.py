@@ -32,12 +32,13 @@ def fake_model_library(root: str) -> str:
         json.dump({"version": 1, "entries": {}}, f)
     with open(os.path.join(data, "usage.json"), "w") as f:
         json.dump({"last_used": {"loras:old_ink_style_v1": time.time() - 40 * 86400}}, f)
-    files = {"checkpoints": ["sample_xl_base", "dreamy_mix_v3", "turbo_sample_int4", "retro_anime_v5", "photoreal_mix_v2"],
+    # in family folders, as Model Librarian's organizer files them (that's how the Gallery knows a model's family)
+    files = {"checkpoints": ["SDXL/sample_xl_base", "Illustrious/dreamy_mix_v3", "Qwen/turbo_sample_int4", "Moss/retro_anime_v5", "Flux/photoreal_mix_v2"],
              "diffusion_models": ["video_sample_14b_fp8"],
              "loras": ["paper_cut_style_v2", "aurelia_character_v3", "soft_light_v1", "old_ink_style_v1", "neon_city_v2", "detail_slider"]}
     for folder, names in files.items():
-        os.makedirs(os.path.join(root, folder), exist_ok=True)
         for i, n in enumerate(names):
+            os.makedirs(os.path.dirname(os.path.join(root, folder, n)), exist_ok=True)
             with open(os.path.join(root, folder, n + ".safetensors"), "wb") as f:
                 f.truncate((i + 2) * 211 * 1024 * 1024)  # sparse: takes no space
     return data

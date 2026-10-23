@@ -8,9 +8,11 @@ from __future__ import annotations
 import os
 import time
 
+from . import families
 from .library import DAY
 
 TOP = 12
+SERIES = 7  # families shown in the timeline; the rest are "Other families"
 
 
 def overview(lib, days: int | None = 30, models=None) -> dict:
@@ -27,6 +29,10 @@ def overview(lib, days: int | None = 30, models=None) -> dict:
         bucket = f"date(f.mtime, 'unixepoch', 'localtime', 'weekday 0', '-6 days')" if week else DAY
         out["timeline"] = {"by": "week" if week else "day", "points": [dict(r) for r in c.execute(
             f"SELECT {bucket} AS at, SUM(f.kind='image') images, SUM(f.kind='video') videos {base} GROUP BY at ORDER BY at", a)]}
+        # what it was made with: each file under its (first) checkpoint's family
+        made_with = c.execute(
+            f"SELECT {bucket} AS at, (SELECT u.name || char(1) || COALESCE(u.file, '') FROM uses u WHERE u.file_id=f.id AND u.kind IN ('checkpoint', 'unet')"
+            f" ORDER BY u.rowid LIMIT 1) AS model, COUNT(*) n {base} GROUP BY at, model ORDER BY at", a).fetchall()
         uses = f"FROM uses u JOIN files f ON f.id=u.file_id JOIN folders d ON d.id=f.folder_id WHERE f.missing=0 AND d.online=1 AND f.mtime >= ?"
         out["checkpoints"] = [dict(r) for r in c.execute(
             f"SELECT u.name, COUNT(DISTINCT u.file_id) n, MAX(f.mtime) last {uses} AND u.kind IN ('checkpoint', 'unet')"
@@ -58,6 +64,32 @@ def overview(lib, days: int | None = 30, models=None) -> dict:
             x["size"] += r["size"]
         out["drives"] = sorted(drives.values(), key=lambda x: -x["size"])
         used = {r[0].lower() for r in c.execute("SELECT DISTINCT name FROM uses")}
+    resolve = families.Resolver(models)
+    fam_of = {}
+    totals: dict[str, int] = {}
+    rows = []
+    for r in made_with:
+        name, _, file = (r["model"] or "").partition(chr(1))
+        fam = (resolve.family(name, file or None) or "Unknown family") if name else "No model recorded"
+        fam_of[name] = fam
+        totals[fam] = totals.get(fam, 0) + r["n"]
+        rows.append((r["at"], fam, r["n"]))
+    order = [f for f, _ in sorted(totals.items(), key=lambda x: -x[1]) if f not in ("No model recorded", "Unknown family")]
+    shown = order[:SERIES]
+    folded = "Other families"
+    series = shown + ([folded] if len(order) > SERIES or "Unknown family" in totals else []) + (["No model recorded"] if "No model recorded" in totals else [])
+    points: dict[str, dict] = {}
+    for at, fam, n in rows:
+        key = fam if fam in shown or fam == "No model recorded" else folded
+        pt = points.setdefault(at, {"at": at})
+        pt[key] = pt.get(key, 0) + n
+    out["made_with"] = {"by": out["timeline"]["by"], "series": [{"name": f, "color": families.color(f) if f in shown else ("#5d6372" if f == folded else "#3a3f4b"),
+                                                                   "n": totals.get(f, 0) if f != folded else sum(v for k, v in totals.items() if k not in shown and k != "No model recorded")}
+                                                                  for f in series],
+                        "points": [points[k] for k in sorted(points)]}
+    for row in out["checkpoints"]:
+        row["family"] = resolve.family(row["name"])
+        row["color"] = families.color(row["family"]) if row["family"] else None
     # models you have that no image in the library was made with (from Model Librarian's library)
     if models is not None:
         have = models.models()
