@@ -1,0 +1,200 @@
+"""The Gallery's local web server: the interface and its API, on 127.0.0.1 only.
+
+Every API request must carry this session's token (made fresh at each start), and the Host must be
+127.0.0.1 or localhost: a web page you visit can't reach the Gallery, even though it's a local server
+(and it will move and delete files once you ask it to).
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import mimetypes
+import os
+import secrets
+
+from aiohttp import web
+
+from . import APP_NAME, VERSION
+from .library import Library
+
+UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+mimetypes.init()  # first: a later init() would drop the types added below (and Windows' registry can map .webp oddly)
+mimetypes.add_type("image/webp", ".webp")
+mimetypes.add_type("video/webm", ".webm")
+mimetypes.add_type("video/mp4", ".mp4")
+mimetypes.add_type("text/javascript", ".js")
+
+
+LIB = web.AppKey("lib", Library)
+TOKEN = web.AppKey("token", str)
+PICK = web.AppKey("pick_folder", object)
+
+
+def _err(msg: str, status: int = 400) -> web.Response:
+    return web.json_response({"error": msg}, status=status)
+
+
+def make_app(lib: Library, token: str | None = None, *, pick_folder=None) -> web.Application:
+    """The aiohttp application. `pick_folder()`: the window's folder dialog, when there is one."""
+    token = token or secrets.token_urlsafe(24)
+    app = web.Application(middlewares=[_guard], client_max_size=4 * 1024 * 1024)
+    app[LIB], app[TOKEN], app[PICK] = lib, token, pick_folder
+    r = app.router
+    r.add_get("/", index)
+    r.add_static("/ui/", UI_DIR, show_index=False)
+    r.add_get("/api/status", status)
+    r.add_get("/api/folders", folders)
+    r.add_post("/api/folders", add_folder)
+    r.add_post("/api/folders/pick", pick)
+    r.add_delete("/api/folders/{fid}", remove_folder)
+    r.add_post("/api/folders/{fid}/scan", scan_folder)
+    r.add_post("/api/scan", scan_all)
+    r.add_get("/api/files", files)
+    r.add_get("/api/days", days)
+    r.add_post("/api/file/{id}/reveal", reveal)
+    r.add_get("/api/thumb/{id}", thumb)
+    r.add_get("/api/file/{id}", original)
+    return app
+
+
+@web.middleware
+async def _guard(request: web.Request, handler):
+    host = (request.host or "").rsplit(":", 1)[0].strip("[]").lower()
+    if host not in ("127.0.0.1", "localhost"):
+        return _err("Only this PC can use the Gallery.", 403)
+    if request.path.startswith("/api/"):
+        given = request.headers.get("X-MLG-Token") or request.query.get("t") or ""
+        if not secrets.compare_digest(given, request.app[TOKEN]):
+            return _err("Open the Gallery from its own window.", 403)
+    return await handler(request)
+
+
+async def index(request: web.Request):
+    if not secrets.compare_digest(request.query.get("t", ""), request.app[TOKEN]):
+        return web.Response(text=f"<!doctype html><title>{APP_NAME}</title><p>Open the Gallery from its own window.", content_type="text/html", status=403)
+    with open(os.path.join(UI_DIR, "index.html"), encoding="utf-8") as f:
+        html = f.read()
+    html = html.replace("{{TOKEN}}", request.app[TOKEN]).replace("{{VERSION}}", VERSION).replace("{{APP}}", APP_NAME)
+    return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+async def _body(request: web.Request) -> dict:
+    try:
+        b = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    return b if isinstance(b, dict) else {}
+
+
+def _lib(request) -> Library:
+    return request.app[LIB]
+
+
+async def status(request):
+    return web.json_response(await asyncio.to_thread(_lib(request).status))
+
+
+async def folders(request):
+    return web.json_response({"folders": await asyncio.to_thread(_lib(request).folders)})
+
+
+async def add_folder(request):
+    b = await _body(request)
+    try:
+        f = await asyncio.to_thread(_lib(request).add_folder, b.get("path"))
+    except ValueError as ex:
+        return _err(str(ex), 422)
+    return web.json_response({"folder": f})
+
+
+async def pick(request):
+    """The window's own folder dialog (in the browser there's none: the path is typed instead)."""
+    fn = request.app[PICK]
+    if not fn:
+        return _err("No folder dialog here: type the folder's path.", 501)
+    path = await asyncio.to_thread(fn)
+    return web.json_response({"path": path or ""})
+
+
+async def remove_folder(request):
+    ok = await asyncio.to_thread(_lib(request).remove_folder, int(request.match_info["fid"]))
+    return web.json_response({"ok": ok}) if ok else _err("not found", 404)
+
+
+async def scan_folder(request):
+    _lib(request).scan(int(request.match_info["fid"]))
+    return web.json_response({"ok": True})
+
+
+async def scan_all(request):
+    _lib(request).scan_all()
+    return web.json_response({"ok": True})
+
+
+def _view(q) -> dict:
+    """The view's filters from the query: the same for the files and their day headings."""
+    return {"sort": q.get("sort", "newest"), "folder": int(q["folder"]) if q.get("folder", "").isdigit() else None,
+            "kind": q.get("kind") or None}
+
+
+async def files(request):
+    q = request.query
+    try:
+        res = await asyncio.to_thread(_lib(request).files, int(q.get("offset", 0)), int(q.get("limit", 200)),
+                                      seed=int(q.get("seed", 0)), **_view(q))
+    except ValueError:
+        return _err("bad paging")
+    return web.json_response(res)
+
+
+async def days(request):
+    return web.json_response({"days": await asyncio.to_thread(_lib(request).days, **_view(request.query))})
+
+
+async def reveal(request):
+    """Show the file in Explorer, selected (only on this PC, and only a file that's in the index)."""
+    try:
+        fid = int(request.match_info["id"])
+    except ValueError:
+        return _err("bad id")
+    path = await asyncio.to_thread(_lib(request).file_path, fid)
+    if not path or not os.path.isfile(path):
+        return _err("That file isn't there any more.", 404)
+    if os.name != "nt":
+        return _err("Only on Windows.", 501)
+    import subprocess
+    subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+    return web.json_response({"ok": True})
+
+
+async def thumb(request):
+    try:
+        fid = int(request.match_info["id"])
+    except ValueError:
+        return _err("bad id")
+    path = await asyncio.to_thread(_lib(request).thumbs.get, fid)
+    if not path:
+        return web.Response(status=404)
+    return web.FileResponse(path, headers={"Cache-Control": "max-age=86400", "Content-Type": "image/webp"})
+
+
+async def original(request):
+    try:
+        fid = int(request.match_info["id"])
+    except ValueError:
+        return _err("bad id")
+    path = await asyncio.to_thread(_lib(request).file_path, fid)
+    if not path or not os.path.isfile(path):
+        return _err("That file isn't there any more.", 404)
+    return web.FileResponse(path, headers={"Cache-Control": "no-cache"})  # ranges supported: videos seek
+
+
+async def serve(lib: Library, port: int = 0, token: str | None = None, pick_folder=None):
+    """Start serving on 127.0.0.1 -> (runner, port, token)."""
+    app = make_app(lib, token, pick_folder=pick_folder)
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", port)
+    await site.start()
+    real = site._server.sockets[0].getsockname()[1]
+    return runner, real, app[TOKEN]

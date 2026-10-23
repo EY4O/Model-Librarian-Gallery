@@ -1,0 +1,4 @@
+# What the Gallery needs to run (pinned: updates are taken on purpose, after the tests pass)
+aiohttp==3.14.5
+pillow==13.0.0
+pywebview==6.2.1

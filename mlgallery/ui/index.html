@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="mlg-token" content="{{TOKEN}}">
+  <title>{{APP}}</title>
+  <link rel="icon" href="/ui/icon.png">
+  <link rel="stylesheet" href="/ui/app.css?v={{VERSION}}">
+</head>
+<body>
+  <div class="app" id="app">
+    <nav class="side" id="side" aria-label="Library">
+      <div class="side-head">
+        <button type="button" class="icon-btn" id="side-hide" aria-label="Hide the sidebar" title="Hide the sidebar (Ctrl+B)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></svg>
+        </button>
+        <button type="button" class="icon-btn" id="add" aria-label="Add a folder" title="Add a folder">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <div class="nav-group">
+        <button type="button" class="nav-item" id="view-all">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          <span class="label">All</span><span class="n" id="all-count"></span>
+        </button>
+        <button type="button" class="nav-item" id="view-random" title="Everything in a shuffled order (click again to shuffle again)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h3.5c2.5 0 4 1.5 5.5 4.5S15 16 17.5 16H21M3 16h3.5c1.3 0 2.3-.4 3.2-1.2M14.3 8.2C15.2 7.4 16.2 7 17.5 7H21M18.5 4.5 21 7l-2.5 2.5M18.5 13.5 21 16l-2.5 2.5"/></svg>
+          <span class="label">Random</span>
+        </button>
+      </div>
+      <div class="nav-sep"></div>
+      <div class="nav-label">Folders</div>
+      <div class="nav-group" id="folders"></div>
+      <p class="side-foot">The Gallery only reads these folders. Eagle libraries inside them are left out.<br><span class="ver">{{APP}} {{VERSION}}</span></p>
+    </nav>
+
+    <main class="main">
+      <header class="toolbar">
+        <button type="button" class="icon-btn" id="side-show" aria-label="Show the sidebar" title="Show the sidebar (Ctrl+B)" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></svg>
+        </button>
+        <div class="title"><h1 id="view-title">All</h1><span class="count" id="count"></span></div>
+        <button type="button" class="btn" id="shuffle" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h3.5c2.5 0 4 1.5 5.5 4.5S15 16 17.5 16H21M3 16h3.5c1.3 0 2.3-.4 3.2-1.2M14.3 8.2C15.2 7.4 16.2 7 17.5 7H21M18.5 4.5 21 7l-2.5 2.5M18.5 13.5 21 16l-2.5 2.5"/></svg>Shuffle again
+        </button>
+        <div class="spacer"></div>
+        <div class="seg" role="group" aria-label="Show" id="kind">
+          <button type="button" data-kind="">All</button>
+          <button type="button" data-kind="image">Images</button>
+          <button type="button" data-kind="video">Videos</button>
+        </div>
+        <label class="select" id="sort-wrap">Sort
+          <select id="sort">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="name">Name</option>
+            <option value="largest">Largest</option>
+          </select>
+        </label>
+        <label class="slider" title="Tile size">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/></svg>
+          <input id="tile" type="range" min="120" max="300" step="4" value="176" aria-label="Tile size">
+        </label>
+      </header>
+      <div class="grid-scroll" id="scroll" tabindex="-1">
+        <div class="grid-sizer" id="sizer"></div>
+      </div>
+      <div class="empty" id="empty" hidden></div>
+      <footer class="statusbar">
+        <span class="dot" id="status-dot"></span><span id="status">Up to date</span>
+        <span class="spacer"></span><span id="status-right"></span>
+      </footer>
+    </main>
+  </div>
+
+  <div class="viewer" id="viewer" hidden>
+    <header class="v-bar">
+      <button type="button" class="btn" id="v-close" title="Back to the library (Esc)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18 9 12l6-6"/></svg><span id="v-back">Library</span>
+      </button>
+      <div class="v-title"><span class="v-name" id="v-name"></span><span class="v-meta" id="v-meta"></span></div>
+      <div class="spacer"></div>
+      <span class="v-pos" id="v-pos"></span>
+      <button type="button" class="btn" id="v-details" aria-pressed="true" title="Hide details (I)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M15 4v16"/></svg>Details
+      </button>
+    </header>
+    <div class="v-body">
+      <div class="v-stage">
+        <button type="button" class="v-nav prev" id="v-prev" aria-label="Previous" title="Previous (←)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18 9 12l6-6"/></svg></button>
+        <div class="v-media" id="v-media"></div>
+        <button type="button" class="v-nav next" id="v-next" aria-label="Next" title="Next (→)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+      </div>
+      <aside class="v-panel" id="v-panel" aria-label="Details"></aside>
+    </div>
+  </div>
+  <script type="module" src="/ui/app.js?v={{VERSION}}"></script>
+</body>
+</html>

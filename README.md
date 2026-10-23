@@ -1,120 +1,49 @@
-<!-- Template README: replace the UPPERCASE placeholders, delete sections that don't apply, and add docs/images/icon.png + screenshots. -->
+<p align="center"><img src="docs/images/icon.png" width="112" alt="Model Librarian Gallery"></p>
 
-<p align="center"><img src="docs/images/icon.png" width="112" alt="PROJECT_NAME"></p>
+<h1 align="center">Model Librarian Gallery</h1>
 
-<h1 align="center">PROJECT_NAME</h1>
-
-<p align="center"><b>ONE-SENTENCE BENEFIT TAGLINE.</b></p>
+<p align="center"><b>Browse every image and video you've generated, and see what made each one.</b></p>
 
 <p align="center">
-  <a href="https://github.com/OWNER/REPO/blob/main/LICENSE"><img src="https://img.shields.io/github/license/OWNER/REPO?color=blue" alt="License"></a>
-  <a href="https://github.com/OWNER/REPO/commits/main"><img src="https://img.shields.io/github/last-commit/OWNER/REPO?color=green&logo=github" alt="Last commit"></a>
-  <!-- package/registry badge, only once published -->
+  <a href="https://github.com/EY4O/Model-Librarian-Gallery/blob/main/LICENSE"><img src="https://img.shields.io/github/license/EY4O/Model-Librarian-Gallery?color=blue" alt="License"></a>
+  <a href="https://github.com/EY4O/Model-Librarian-Gallery/commits/main"><img src="https://img.shields.io/github/last-commit/EY4O/Model-Librarian-Gallery?color=green&logo=github" alt="Last commit"></a>
   <a href="https://ko-fi.com/looneth"><img src="https://img.shields.io/badge/Ko--fi-Support-FF813F?logo=ko-fi&logoColor=white" alt="Support on Ko-fi"></a>
 </p>
 
-ONE PARAGRAPH: what it is, who it's for, what it works with, and where to open or run it.
+A Windows app for large libraries of AI generations. It indexes the folders you choose where they are (nothing is copied or changed), shows them in a fast grid grouped by day, and opens any image or video full size.
 
-![PRIMARY VIEW](docs/images/hero.png)
-
-> **⚠ PREREQUISITE THAT BLOCKS FIRST USE** (API key, companion tool, hardware) — and where to set it up. Delete if none.
-
----
-
-## ✨ Key Features
-
-- 🔍 **FEATURE NAME** — one sentence on what it does for the user.
-- 🗂️ **FEATURE NAME** — one sentence.
-- 🔗 **FEATURE NAME** — one sentence.
-- 💾 **FEATURE NAME** — one sentence.
-- 🛡️ **FEATURE NAME** — one sentence.
-- 🤝 **FEATURE NAME** — one sentence.
-
-## 📸 Screenshots
-
-| | |
-|---|---|
-| ![VIEW A](docs/images/view-a.png) **VIEW A** — what it shows | ![VIEW B](docs/images/view-b.png) **VIEW B** — what it shows |
-| ![VIEW C](docs/images/view-c.png) **VIEW C** — what it shows | ![VIEW D](docs/images/view-d.png) **VIEW D** — what it shows |
-
-<sub>Screenshots use sample data.</sub>
+> **🚧 Work in progress.** The library, the grid and the viewer work today. Reading prompts, settings and models from your files, statistics, characters and file organisation are next: see the [plan](docs/PLAN.md).
 
 ---
 
 ## 📦 Installation
 
-### Option 1: **RECOMMENDED METHOD** (Recommended)
-
-1. STEP.
-2. STEP.
-3. STEP.
-
-### Option 2: **ALTERNATIVE METHOD**
+Needs Windows 10 or 11 and [uv](https://docs.astral.sh/uv/getting-started/installation/) (which fetches the right Python by itself).
 
 ```bash
-COMMAND
+git clone https://github.com/EY4O/Model-Librarian-Gallery.git
+cd Model-Librarian-Gallery
+run.bat
 ```
 
-### Option 3: **Manual Installation**
-
-```bash
-git clone https://github.com/OWNER/REPO.git
-```
-
-NOTE ON DEPENDENCIES / COMPANION TOOLS.
-
-<details>
-<summary><b>PLATFORM-SPECIFIC SETUP</b></summary>
-
-DETAILS.
-</details>
+The first start sets up the app's own Python in `.venv`; later starts open straight away.
 
 ## 🚀 Getting Started
 
-1. FIRST SETUP STEP (name the real button / command).
-2. STEP.
-3. STEP.
-4. FIRST USEFUL RESULT.
-
----
-
-## 📖 How It Works
-
-<details>
-<summary><b>🔗 TOPIC (e.g. integrations)</b></summary>
-
-DETAILS — as thorough as needed; it's collapsed.
-</details>
-
-<details>
-<summary><b>⚙️ TOPIC (e.g. how X is detected)</b></summary>
-
-DETAILS.
-</details>
-
-<details>
-<summary><b>🛡️ Safety</b></summary>
-
-- WHAT IT NEVER DOES / HOW DATA IS PROTECTED.
-</details>
+1. Run **`run.bat`**.
+2. Click **+** (top of the sidebar) and pick a folder of images and videos, such as ComfyUI's `output` folder.
+3. Your files appear as they're indexed, newest first, grouped by day.
+4. Click any tile to open it; **←** and **→** step through, **I** shows or hides the details, **Esc** goes back.
 
 ---
 
 ## 🧪 Development
 
-Tests, local installs and releasing are described in **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)**.
-
-## 🤝 Contributing
-
-Issues and pull requests are welcome — please run the test suite before opening a PR.
-
-## 🙏 Credits
-
-- [PROJECT](https://LINK) — what it provides
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## ☕ Support
 
-If PROJECT_NAME HELPS YOU IN A PROJECT-SPECIFIC WAY, you can support its development:
+If the Gallery helps you keep track of your generations, you can support its development:
 
 [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/looneth)
 
