@@ -119,7 +119,8 @@ A LoRA alone is a strong match. A tag alone is weaker and waits in the review li
 ## Safety
 
 - Indexing only reads.
-- A move or delete shows a preview with the count, size and destination. Moves across drives copy, check the size, then remove the original. Every operation is logged with **Undo**, and deletes go to the Recycle Bin.
+- A move shows a preview with the count, size and destination, and only moves into your library folders (so a file keeps its ratings, tags and characters). Moves across drives copy, check the size and fingerprint, then remove the original. Every operation is logged with **Undo** (Ctrl+Z, or History).
+- Delete moves files to the Gallery's Trash, a hidden `.mlg-trash` folder in the file's own library folder, so it's instant and **Put back** restores it. Emptying the Trash sends the files to the Windows Recycle Bin.
 - The database is backed up daily (the last 7 kept).
 - It never asks for, stores or sends any keys.
 
@@ -140,7 +141,7 @@ Each one is usable on its own and tested before the next starts. Tests use gener
 | **M1 — Viewer** ✅ | Metadata reading (the shared readers, plus the Gallery Info entry), the detail view, videos, search and filters, ratings, favorites, tags, keyboard navigation, the folder watcher | Parser tests on Model Librarian's fixtures; search tests; a UI walk-through |
 | **M2 — Statistics** ✅ | Model and LoRA usage over time, prompt tags, settings, storage; Model Librarian's library linked (never-used models) | Statistics computed on a known sample set |
 | **M3 — Characters** ✅ | Characters, rules, automatic matching, review list, character pages and statistics | Matching tests (LoRA, trigger word, tag, rejections) |
-| **M4 — Organize** | Albums, bulk actions, move and delete with preview and undo, duplicates, daily backups | Move and undo tests on throwaway folders, including an offline drive |
+| **M4 — Organize** ✅ | Albums, bulk actions, move and delete with preview and undo, duplicates, daily backups | Move and undo tests on throwaway folders, including an offline drive |
 | **M5 — Polish** | Portable package with its own Python and ffmpeg, Start menu shortcut, first-run setup, Open in ComfyUI, Save as recipe, performance at 250k | A 250k-file synthetic library for timing |
 
 ## Decisions

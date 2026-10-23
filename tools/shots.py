@@ -91,7 +91,13 @@ def main():
         tmp = tempfile.mkdtemp(prefix="mlg-shots-")
         media = a.media or os.path.join(tmp, "Samples")
         if not a.media:
-            make_library(media, images=140, videos=3, days=6)
+            made = make_library(media, images=140, videos=3, days=6)
+            # a copy and a picture saved again, so Duplicates has something to show
+            import shutil
+            from PIL import Image
+            pngs = [m for m in made if m.endswith(".png")]
+            shutil.copy2(pngs[3], os.path.join(media, "batch_b", "copy of " + os.path.basename(pngs[3])))
+            Image.open(pngs[5]).convert("RGB").save(os.path.join(media, os.path.splitext(os.path.basename(pngs[5]))[0] + "_again.jpg"), quality=90)
         env = dict(os.environ, MLG_ML_DATA=fake_model_library(os.path.join(tmp, "models")))
         proc = subprocess.Popen([sys.executable, "-m", "mlgallery", "--server", "--data", os.path.join(tmp, "data")], cwd=ROOT,
                                 stdout=subprocess.PIPE, text=True, env=env)
@@ -127,6 +133,12 @@ def main():
                    lambda e: js(e, "document.getElementById('view-stats').click(); true"),
                    lambda e: e.wait("document.querySelector('.kpis') && document.querySelector('.tl-col')")]),
         ("stats-more", [lambda e: js(e, "const s = document.getElementById('stats'); s.scrollTop = s.scrollHeight; true")]),
+        ("selection", [lambda e: js(e, "document.getElementById('view-all').click(); true"),
+                       lambda e: e.wait("document.querySelectorAll('.tile img.on').length > 8"),
+                       lambda e: js(e, "const t = document.querySelectorAll('.tile'); for (const i of [1, 2, 4, 7]) t[i].dispatchEvent(new MouseEvent('click', {bubbles: true, ctrlKey: true})); true"),
+                       lambda e: asyncio.sleep(0.4)]),
+        ("duplicates", [lambda e: js(e, "document.querySelector('#selbar .icon-btn').click(); document.getElementById('view-duplicates').click(); true"),
+                        lambda e: e.wait("document.querySelector('.d-file img')"), lambda e: asyncio.sleep(0.8)]),
         ("characters", [lambda e: js(e, "document.getElementById('view-characters').click(); true"),
                         lambda e: e.wait("document.querySelectorAll('.c-card').length >= 2 && [...document.querySelectorAll('.c-card img')].every(i => i.complete)")]),
         ("character", [lambda e: js(e, "document.querySelector('.c-card').click(); true"),

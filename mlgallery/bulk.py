@@ -1,0 +1,135 @@
+"""Changes to many files at once - rating, favourite, tags, albums - each recorded so it can be undone."""
+from __future__ import annotations
+
+import time
+
+from . import characters as chars
+from . import fileops, metadata
+
+MAX = fileops.MAX_ITEMS
+
+
+def album_id(c, name: str, create: bool = True) -> int | None:
+    name = str(name or "").strip()[:100]
+    if not name:
+        return None
+    r = c.execute("SELECT id FROM albums WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+    if r:
+        return r[0]
+    return c.execute("INSERT INTO albums (name, created) VALUES (?,?)", (name, time.time())).lastrowid if create else None
+
+
+def apply(db, ids, action: str, value=None) -> dict:
+    ids = [int(i) for i in list(ids)[:MAX]]
+    if not ids:
+        raise fileops.OpError("Nothing selected.")
+    n = len(ids)
+    files = f"{n} file{'s' if n != 1 else ''}"
+    with db.write() as c:
+        ids = [r[0] for r in c.execute(f"SELECT id FROM files WHERE id IN ({','.join('?' * len(ids))})", ids)]
+        if action in ("rate", "favorite"):
+            prev = {r["file_id"]: dict(r) for r in c.execute(
+                f"SELECT file_id, rating, favorite, source FROM marks WHERE file_id IN ({','.join('?' * len(ids))})", ids)}
+            data = [prev.get(i, {"file_id": i, "rating": None, "favorite": 0, "source": None}) for i in ids]
+            for i in ids:
+                cur = prev.get(i, {"rating": None, "favorite": 0})
+                rating = cur["rating"]
+                fav = cur["favorite"]
+                if action == "rate":
+                    v = int(value or 0)
+                    rating = v if 1 <= v <= 5 else None
+                else:
+                    fav = int(bool(value))
+                c.execute("INSERT OR REPLACE INTO marks (file_id, rating, favorite, source, updated) VALUES (?,?,?, 'user', ?)", (i, rating, fav, time.time()))
+            what = f"Rated {files} {int(value or 0)}" if action == "rate" and value else f"Cleared the rating of {files}" if action == "rate" \
+                else f"{'Marked' if value else 'Unmarked'} {files} as favourite{'s' if n != 1 else ''}"
+            op = fileops.record(c, "marks", what, data)
+        elif action in ("tag", "untag"):
+            names = metadata._split(value if isinstance(value, list) else [value])
+            if not names:
+                raise fileops.OpError("Which tag?")
+            data = []
+            for name in names:
+                tid = metadata.tag_id(c, name)
+                for i in ids:
+                    cur = c.execute("SELECT source, removed FROM file_tags WHERE file_id=? AND tag_id=?", (i, tid)).fetchone()
+                    if action == "tag":
+                        if cur and not cur["removed"]:
+                            continue
+                        c.execute("INSERT INTO file_tags (file_id, tag_id, source) VALUES (?, ?, 'user') ON CONFLICT (file_id, tag_id) DO UPDATE SET removed=0", (i, tid))
+                        data.append({"file_id": i, "tag": name, "was": dict(cur) if cur else None})
+                    elif cur and not cur["removed"]:
+                        if cur["source"] == "workflow":
+                            c.execute("UPDATE file_tags SET removed=1 WHERE file_id=? AND tag_id=?", (i, tid))
+                        else:
+                            c.execute("DELETE FROM file_tags WHERE file_id=? AND tag_id=?", (i, tid))
+                        data.append({"file_id": i, "tag": name, "was": dict(cur)})
+            for i in {d["file_id"] for d in data}:
+                metadata.refresh_search(c, i)
+                chars.match_file(c, i)
+            c.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM file_tags)")
+            op = fileops.record(c, "tags", f"{'Tagged' if action == 'tag' else 'Untagged'} {files} {', '.join(names)}", {"action": action, "items": data})
+        elif action in ("album", "unalbum"):
+            aid = album_id(c, value, create=action == "album")
+            if not aid:
+                raise fileops.OpError("Which album?")
+            data = []
+            for i in ids:
+                cur = c.execute("SELECT source, removed FROM album_files WHERE album_id=? AND file_id=?", (aid, i)).fetchone()
+                if action == "album":
+                    if cur and not cur["removed"]:
+                        continue
+                    c.execute("INSERT INTO album_files (album_id, file_id, source, added) VALUES (?, ?, 'user', ?)"
+                              " ON CONFLICT (album_id, file_id) DO UPDATE SET removed=0", (aid, i, time.time()))
+                    data.append({"file_id": i, "was": dict(cur) if cur else None})
+                elif cur and not cur["removed"]:
+                    if cur["source"] == "workflow":
+                        c.execute("UPDATE album_files SET removed=1 WHERE album_id=? AND file_id=?", (aid, i))
+                    else:
+                        c.execute("DELETE FROM album_files WHERE album_id=? AND file_id=?", (aid, i))
+                    data.append({"file_id": i, "was": dict(cur)})
+            name = c.execute("SELECT name FROM albums WHERE id=?", (aid,)).fetchone()[0]
+            op = fileops.record(c, "albums", f"{'Added' if action == 'album' else 'Took'} {files} {'to' if action == 'album' else 'out of'} {name}",
+                                {"action": action, "album": aid, "items": data})
+        else:
+            raise fileops.OpError(f"Unknown action {action}")
+    return {"op": op, "count": len(ids)}
+
+
+def undo(db, kind: str, data) -> dict:
+    with db.write() as c:
+        if kind == "marks":
+            for m in data:
+                if m.get("source") is None and m.get("rating") is None and not m.get("favorite"):
+                    c.execute("DELETE FROM marks WHERE file_id=?", (m["file_id"],))
+                else:
+                    c.execute("INSERT OR REPLACE INTO marks (file_id, rating, favorite, source, updated) VALUES (?,?,?,?,?)",
+                              (m["file_id"], m.get("rating"), m.get("favorite") or 0, m.get("source") or "user", time.time()))
+            return {"undone": len(data)}
+        if kind == "tags":
+            for it in data["items"]:
+                tid = metadata.tag_id(c, it["tag"])
+                was = it["was"]
+                if was is None:
+                    c.execute("DELETE FROM file_tags WHERE file_id=? AND tag_id=?", (it["file_id"], tid))
+                else:
+                    c.execute("INSERT OR REPLACE INTO file_tags (file_id, tag_id, source, removed) VALUES (?,?,?,?)",
+                              (it["file_id"], tid, was["source"], was["removed"]))
+            for i in {it["file_id"] for it in data["items"]}:
+                metadata.refresh_search(c, i)
+                chars.match_file(c, i)
+            c.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM file_tags)")
+            return {"undone": len(data["items"])}
+        if kind == "albums":
+            aid = data["album"]
+            if not c.execute("SELECT 1 FROM albums WHERE id=?", (aid,)).fetchone():
+                return {"undone": 0}
+            for it in data["items"]:
+                was = it["was"]
+                if was is None:
+                    c.execute("DELETE FROM album_files WHERE album_id=? AND file_id=?", (aid, it["file_id"]))
+                else:
+                    c.execute("INSERT OR REPLACE INTO album_files (album_id, file_id, source, removed, added) VALUES (?,?,?,?,?)",
+                              (aid, it["file_id"], was["source"], was["removed"], time.time()))
+            return {"undone": len(data["items"])}
+    return {"undone": 0}

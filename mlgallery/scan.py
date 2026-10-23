@@ -166,13 +166,14 @@ def _flush(db, now, touched: list, pending: list) -> None:
         return
     with db.write() as c:
         if touched:
-            c.executemany("UPDATE files SET last_seen=?, missing=0 WHERE id=?", [(now, i) for i in touched])
+            # back where it was: no longer missing (a file in the Trash brought back by hand leaves the Trash too)
+            c.executemany("UPDATE files SET last_seen=?, missing=0, trashed=NULL, trash_rel=NULL WHERE id=?", [(now, i) for i in touched])
         for op, args in pending:
             if op == "insert":
                 c.execute("INSERT INTO files (folder_id, rel, name, ext, kind, size, mtime, fp, width, height, first_seen, last_seen)"
                           " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", args)
             elif op == "change":
-                c.execute("UPDATE files SET size=?, mtime=?, fp=?, width=?, height=?, last_seen=?, missing=0, thumb=0, meta=0 WHERE id=?", args)
+                c.execute("UPDATE files SET size=?, mtime=?, fp=?, width=?, height=?, last_seen=?, missing=0, thumb=0, meta=0, phash=NULL, trashed=NULL, trash_rel=NULL WHERE id=?", args)
             elif op == "move":
                 c.execute("UPDATE files SET folder_id=?, rel=?, name=?, ext=?, size=?, mtime=?, last_seen=?, missing=0, meta=0 WHERE id=?", args)
     touched.clear()
@@ -227,7 +228,7 @@ def _moved_from(db, fp: str, size: int, pending: list) -> int | None:
         rows = c.execute("SELECT f.id, f.rel, f.missing, d.path FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.fp=? AND f.size=?",
                          (fp, size)).fetchall()
     for r in rows:
-        if r["id"] in claimed:
+        if r["id"] in claimed or r["missing"] == 2:  # a file in the Trash is still there, not moved
             continue
         if r["missing"] or not os.path.exists(os.path.join(r["path"], r["rel"])):
             return r["id"]

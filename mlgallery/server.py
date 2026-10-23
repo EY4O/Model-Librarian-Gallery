@@ -68,6 +68,20 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None) -> web
     r.add_delete("/api/characters/{cid}", character_delete)
     r.add_post("/api/characters/{cid}/review", character_review)
     r.add_post("/api/file/{id}/characters", file_character)
+    r.add_post("/api/select", select)
+    r.add_post("/api/ops/move/plan", move_plan)
+    r.add_post("/api/ops/move", move)
+    r.add_post("/api/ops/trash", trash)
+    r.add_post("/api/ops/restore", restore)
+    r.add_post("/api/ops/empty", empty)
+    r.add_post("/api/ops/bulk", bulk_op)
+    r.add_get("/api/ops", history)
+    r.add_post("/api/ops/{oid}/undo", undo)
+    r.add_get("/api/albums", albums)
+    r.add_post("/api/albums", album_create)
+    r.add_post("/api/albums/{aid}", album_update)
+    r.add_delete("/api/albums/{aid}", album_delete)
+    r.add_get("/api/duplicates", duplicates)
     r.add_get("/api/settings", settings_get)
     r.add_post("/api/settings", settings_set)
     r.add_get("/api/thumb/{id}", thumb)
@@ -325,6 +339,126 @@ async def file_character(request):
         return web.json_response({"characters": await asyncio.to_thread(_lib(request).set_file_character, fid, int(b["character"]), verdict)})
     except (KeyError, TypeError):
         return _err("not found", 404)
+
+
+async def _ids(request, b):
+    from .fileops import OpError
+    try:
+        return await asyncio.to_thread(_lib(request).resolve, b.get("selection"))
+    except (OpError, ValueError, TypeError):
+        raise web.HTTPBadRequest(text='{"error": "selection: a list of ids, or {view: ...}"}', content_type="application/json")
+
+
+def _op(fn):
+    """Run a file operation; its refusals come back as a message."""
+    async def handler(request):
+        from .fileops import OpError
+        try:
+            return web.json_response(await fn(request, await _body(request)))
+        except OpError as ex:
+            return _err(str(ex), 422)
+        except KeyError:
+            return _err("not found", 404)
+    return handler
+
+
+async def select(request):
+    b = await _body(request)
+    return web.json_response({"ids": await _ids(request, b)})
+
+
+@_op
+async def move_plan(request, b):
+    from . import fileops
+    plan = await asyncio.to_thread(fileops.plan_move, _lib(request).db, await _ids(request, b), int(b.get("folder") or 0), b.get("sub") or "")
+    plan.pop("items")
+    return plan
+
+
+@_op
+async def move(request, b):
+    from . import fileops
+    return await asyncio.to_thread(fileops.move, _lib(request).db, await _ids(request, b), int(b.get("folder") or 0), b.get("sub") or "")
+
+
+@_op
+async def trash(request, b):
+    from . import fileops
+    return await asyncio.to_thread(fileops.trash, _lib(request).db, await _ids(request, b))
+
+
+@_op
+async def restore(request, b):
+    from . import fileops
+    return await asyncio.to_thread(fileops.restore, _lib(request).db, await _ids(request, b))
+
+
+@_op
+async def empty(request, b):
+    from . import fileops
+    ids = await _ids(request, b) if b.get("selection") is not None else None
+    return await asyncio.to_thread(fileops.empty, _lib(request).db, ids)
+
+
+@_op
+async def bulk_op(request, b):
+    from . import bulk
+    return await asyncio.to_thread(bulk.apply, _lib(request).db, await _ids(request, b), str(b.get("action")), b.get("value"))
+
+
+async def history(request):
+    from . import fileops
+    return web.json_response({"ops": await asyncio.to_thread(fileops.history, _lib(request).db)})
+
+
+async def undo(request):
+    from . import fileops
+    try:
+        return web.json_response(await asyncio.to_thread(fileops.undo, _lib(request).db, int(request.match_info["oid"])))
+    except fileops.OpError as ex:
+        return _err(str(ex), 422)
+    except ValueError:
+        return _err("bad id")
+
+
+async def albums(request):
+    return web.json_response({"albums": await asyncio.to_thread(_lib(request).albums)})
+
+
+async def album_create(request):
+    b = await _body(request)
+    try:
+        return web.json_response(await asyncio.to_thread(_lib(request).album_save, None, b.get("name")))
+    except ValueError as ex:
+        return _err(str(ex), 422)
+
+
+async def album_update(request):
+    b = await _body(request)
+    lib = _lib(request)
+    try:
+        aid = int(request.match_info["aid"])
+        cur = next((a for a in await asyncio.to_thread(lib.albums) if a["id"] == aid), None)
+        if not cur:
+            return _err("not found", 404)
+        kw = {"cover": b["cover"]} if "cover" in b else {}
+        return web.json_response(await asyncio.to_thread(lib.album_save, aid, b.get("name", cur["name"]), **kw))
+    except KeyError:
+        return _err("not found", 404)
+    except ValueError as ex:
+        return _err(str(ex), 422)
+
+
+async def album_delete(request):
+    try:
+        ok = await asyncio.to_thread(_lib(request).album_delete, int(request.match_info["aid"]))
+    except ValueError:
+        return _err("bad id")
+    return web.json_response({"ok": True}) if ok else _err("not found", 404)
+
+
+async def duplicates(request):
+    return web.json_response(await asyncio.to_thread(_lib(request).duplicates))
 
 
 async def stats_view(request):

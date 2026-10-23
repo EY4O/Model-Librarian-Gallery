@@ -198,6 +198,7 @@ def store(c, file_id: int, got: dict | None) -> int:
     c.execute("DELETE FROM prompt_tags WHERE file_id=?", (file_id,))
     # workflow tags are re-derived; ones you removed stay removed, yours are untouched
     c.execute("DELETE FROM file_tags WHERE file_id=? AND source='workflow' AND removed=0", (file_id,))
+    c.execute("DELETE FROM album_files WHERE file_id=? AND source='workflow' AND removed=0", (file_id,))
     state = 2
     if got:
         state = 1 if got.get("source") else 2
@@ -214,6 +215,10 @@ def store(c, file_id: int, got: dict | None) -> int:
         if info:
             for t in info.get("tags") or []:
                 c.execute("INSERT OR IGNORE INTO file_tags (file_id, tag_id, source) VALUES (?,?, 'workflow')", (file_id, tag_id(c, t)))
+            for a in info.get("albums") or []:
+                from .bulk import album_id
+                c.execute("INSERT OR IGNORE INTO album_files (album_id, file_id, source, added) VALUES (?, ?, 'workflow', ?)",
+                          (album_id(c, a), file_id, time.time()))
             m = c.execute("SELECT source FROM marks WHERE file_id=?", (file_id,)).fetchone()
             if (not m or m["source"] == "workflow") and (info.get("rating") or info.get("favourite")):  # yours win
                 c.execute("INSERT OR REPLACE INTO marks (file_id, rating, favorite, source, updated) VALUES (?,?,?, 'workflow', ?)",

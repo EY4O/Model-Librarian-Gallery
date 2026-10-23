@@ -7,6 +7,7 @@ Made in the background, newest first (what you see first), and on demand for a t
 from __future__ import annotations
 
 import io
+import math
 import os
 import shutil
 import subprocess
@@ -15,6 +16,26 @@ import time
 
 BG = (27, 28, 33)  # transparent parts are shown on the grid's own colour
 MAX_RATIO = 4      # a very long image is cropped to 4:1 around its middle, not shrunk to a sliver
+
+
+_N, _K = 32, 8
+_COS = [[math.cos((2 * x + 1) * u * math.pi / (2 * _N)) for x in range(_N)] for u in range(_K)]
+
+
+def phash(im) -> str:
+    """A 64-bit fingerprint of what a picture looks like (perceptual hash: the lowest 8x8 frequencies of a 32x32
+    grey copy, each above or below their median). The same picture saved again - another format, size or quality -
+    lands within a few bits; different pictures are far apart. The DCT is done in two passes (rows, then columns)."""
+    from PIL import Image
+    g = im.convert("L").resize((_N, _N), Image.LANCZOS)
+    px = g.tobytes()  # one byte per pixel
+    rows = [[sum(_COS[u][x] * px[y * _N + x] for x in range(_N)) for u in range(_K)] for y in range(_N)]
+    coef = [sum(_COS[v][y] * rows[y][u] for y in range(_N)) for v in range(_K) for u in range(_K)]
+    med = sorted(coef[1:])[(len(coef) - 1) // 2]  # the first (the average brightness) left out of the median
+    bits = 0
+    for c in coef:
+        bits = (bits << 1) | (c > med)
+    return f"{bits:016x}"
 
 
 def cache_path(thumb_dir: str, fp: str, size: int) -> str:
@@ -170,6 +191,8 @@ class Thumbnails:
         size = int(self.settings.get("thumb_size"))
         dest = cache_path(self.dir, row["fp"], size)
         if os.path.isfile(dest):
+            if row["thumb"] != 1:  # another file (a copy) made it: this one has it too now
+                self._record([(1, row["id"])])
             return dest
         state = self.make(row)
         self._record([(state, row["id"])])
@@ -185,6 +208,7 @@ class Thumbnails:
             return
         with self.db.write() as c:
             c.executemany("UPDATE files SET thumb=? WHERE id=?", results)
+        self._fingerprint([fid for state, fid in results if state == 1])
         for state, _ in results:
             if state == 1:
                 self.made += 1
@@ -239,6 +263,41 @@ class Thumbnails:
             with self._lock:
                 self._claimed.difference_update(r["id"] for r in rows)
             time.sleep(0)
+
+    def _fingerprint(self, ids: list[int]) -> None:
+        """The picture fingerprint of files whose thumbnail exists (read from the small thumbnail: quick)."""
+        if not ids:
+            return
+        from PIL import Image
+        size = int(self.settings.get("thumb_size"))
+        with self.db.read() as c:
+            rows = c.execute(f"SELECT id, fp FROM files WHERE id IN ({','.join('?' * len(ids))}) AND phash IS NULL", ids).fetchall()
+        out = []
+        for r in rows:
+            try:
+                with Image.open(cache_path(self.dir, r["fp"], size)) as im:
+                    out.append((phash(im), r["id"]))
+            except (OSError, ValueError):
+                continue
+        if out:
+            with self.db.write() as c:
+                c.executemany("UPDATE files SET phash=? WHERE id=?", out)
+
+    def backfill_fingerprints(self) -> None:
+        """Fingerprints for files that had thumbnails before fingerprints existed."""
+        while not self._stop.is_set():
+            with self.db.read() as c:
+                ids = [r[0] for r in c.execute("SELECT id FROM files WHERE thumb=1 AND phash IS NULL AND missing=0 LIMIT 200")]
+            if not ids:
+                return
+            before = len(ids)
+            self._fingerprint(ids)
+            with self.db.read() as c:
+                left = c.execute(f"SELECT COUNT(*) FROM files WHERE id IN ({','.join('?' * len(ids))}) AND phash IS NULL", ids).fetchone()[0]
+            if left == before:  # thumbnails gone from the cache: they'll get one when the thumbnail is made again
+                with self.db.write() as c:
+                    c.executemany("UPDATE files SET thumb=0 WHERE id=?", [(i,) for i in ids])
+                return
 
     def pending(self) -> int:
         with self.db.read() as c:

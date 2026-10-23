@@ -201,7 +201,7 @@ def test_search_marks_tags_and_details(server):
             await e.wait("document.getElementById('v-fav').getAttribute('aria-pressed') === 'true'")
             assert api(f"/file/{first['id']}/info")["rating"] == 4
             # a tag, added in the panel
-            await e.js("const t = document.querySelector('.tag-input'); t.value = 'ui-test'; t.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true})); true")
+            await e.js("const t = document.querySelector('input.tag-input'); t.value = 'ui-test'; t.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true})); true")
             await e.wait("[...document.querySelectorAll('.tags .chip')].some(c => c.textContent.includes('ui-test'))")
             assert "ui-test" in {t["name"] for t in api(f"/file/{first['id']}/info")["tags"]}
             # clicking a model filters by it
@@ -294,7 +294,7 @@ def test_characters_screens(server):
             # To review: Y confirms the focused one
             if ch["review"]:
                 await e.click("#view-review")
-                await e.wait("document.querySelector('.r-card')")
+                await e.wait("document.querySelector('.stats h1')?.textContent === 'To review' && document.querySelector('.r-card')")
                 before = await e.js("document.querySelectorAll('.r-card').length")
                 await e.js("const c = document.querySelector('.r-card'); c.focus(); c.dispatchEvent(new KeyboardEvent('keydown', {key: 'y', bubbles: true})); true")
                 await e.wait(f"document.querySelectorAll('.r-card').length === {before - 1} || document.querySelector('.c-empty')")
@@ -308,5 +308,54 @@ def test_characters_screens(server):
             await e.js("document.querySelector('.chip.char button.x[title^=Not]').click(); true")
             await e.wait("!document.querySelector('.chip.char')")
             await e.key("Escape")
+            assert not await e.js("window.__errors.length")
+    asyncio.run(go())
+
+
+def test_organising(server):
+    url, api = server
+    total = api("/files")["total"]
+
+    async def go():
+        async with page(url) as e:
+            await e.wait("document.querySelectorAll('.tile').length > 4")
+            # Ctrl+click picks two; the bar rates them
+            await e.js("const t = document.querySelectorAll('.tile'); for (const i of [0, 1]) t[i].dispatchEvent(new MouseEvent('click', {bubbles: true, ctrlKey: true})); true")
+            await e.wait("!document.getElementById('selbar').hidden && document.querySelector('.sel-n').textContent.startsWith('2 selected')")
+            ids = await e.js("[...document.querySelectorAll('.tile.picked')].map(t => t.getAttribute('aria-label'))")
+            assert len(ids) == 2
+            await e.js("document.querySelector('#selbar .star[aria-label=\"Rate 3\"]').click(); true")
+            await e.wait("document.querySelector('.toast')?.textContent.includes('Rated 2 files 3')")
+            assert api("/files?q=rating:3")["total"] >= 2
+            # into an album, from the dialog
+            await e.js("[...document.querySelectorAll('#selbar .btn')].find(b => b.textContent.startsWith('Album')).click(); true")
+            await e.wait("document.querySelector('dialog[open] input[aria-label=Album]')")
+            await e.js("const d = document.querySelector('dialog[open]'); d.querySelector('input[aria-label=Album]').value = 'UI picks'; d.querySelector('button[type=submit]').click(); true")
+            await e.wait("[...document.querySelectorAll('#albums .nav-item')].some(a => a.textContent.includes('UI picks'))")
+            assert api("/files?q=album:%22UI%20picks%22")["total"] == 2
+            await e.key("Escape")
+            await e.wait("document.getElementById('selbar').hidden")
+            # Delete one, then Ctrl+Z puts it back
+            await e.js("document.querySelector('.tile').focus(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key: 'Delete', bubbles: true})); true")
+            await e.wait(f"document.getElementById('count').textContent === '{total - 1} items'")
+            assert api("/status")["trash"] == 1
+            await e.key("z", ctrlKey=True)
+            await e.wait(f"document.getElementById('count').textContent === '{total} items'")
+            assert api("/status")["trash"] == 0
+            # and from the Trash view: Put back
+            await e.js("document.querySelector('.tile').focus(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key: 'Delete', bubbles: true})); true")
+            await e.wait("document.getElementById('trash-count').textContent === '1'", timeout=15)
+            await e.click("#view-trash")
+            await e.wait("document.getElementById('view-title').textContent === 'Trash' && document.querySelector('.tile')")
+            assert not await e.js("document.getElementById('empty-trash').hidden")
+            await e.js("document.querySelector('.tile').dispatchEvent(new MouseEvent('click', {bubbles: true, ctrlKey: true})); true")
+            await e.js("[...document.querySelectorAll('#selbar .btn')].find(b => b.textContent.includes('Put back')).click(); true")
+            await e.wait("document.querySelector('#empty h2')?.textContent === 'The Trash is empty'")
+            assert api("/files")["total"] == total
+            # History lists all of it; Duplicates opens
+            await e.click("#view-history")
+            await e.wait("document.querySelectorAll('.history li').length >= 4")
+            await e.click("#view-duplicates")
+            await e.wait("document.querySelector('.stats h1')?.textContent === 'Duplicates'")
             assert not await e.js("window.__errors.length")
     asyncio.run(go())

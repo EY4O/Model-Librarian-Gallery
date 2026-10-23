@@ -32,6 +32,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h3.5c2.5 0 4 1.5 5.5 4.5S15 16 17.5 16H21M3 16h3.5c1.3 0 2.3-.4 3.2-1.2M14.3 8.2C15.2 7.4 16.2 7 17.5 7H21M18.5 4.5 21 7l-2.5 2.5M18.5 13.5 21 16l-2.5 2.5"/></svg>
           <span class="label">Random</span>
         </button>
+        <button type="button" class="nav-item" id="view-trash" title="What you deleted here: put it back any time, or empty it to the Recycle Bin">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+          <span class="label">Trash</span><span class="n" id="trash-count"></span>
+        </button>
       </div>
       <div class="nav-sep"></div>
       <div class="nav-group">
@@ -47,10 +51,25 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
           <span class="label">To review</span><span class="badge-n" id="review-count" hidden></span>
         </button>
+        <button type="button" class="nav-item" id="view-duplicates" title="Copies of one file, and the same picture saved twice">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+          <span class="label">Duplicates</span>
+        </button>
+        <button type="button" class="nav-item" id="view-history" title="What you changed, with Undo">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2"/></svg>
+          <span class="label">History</span>
+        </button>
       </div>
       <div class="nav-sep"></div>
       <div class="nav-label">Folders</div>
       <div class="nav-group" id="folders"></div>
+      <div class="nav-sep"></div>
+      <div class="nav-label with-act">Albums
+        <button type="button" class="icon-btn small" id="album-new" aria-label="New album" title="New album">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <div class="nav-group" id="albums"></div>
       <p class="side-foot">The Gallery only reads these folders. Eagle libraries inside them are left out.<br><span class="ver">{{APP}} {{VERSION}}</span></p>
     </nav>
 
@@ -73,6 +92,7 @@
           </button>
           <div class="suggest" id="suggest" role="listbox" hidden></div>
         </div>
+        <button type="button" class="btn" id="empty-trash" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Empty the Trash</button>
         <button type="button" class="icon-btn toggle" id="f-fav" aria-pressed="false" aria-label="Favourites only" title="Favourites only">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5s-7.5-4.6-9.5-9.3C1.2 7.9 3.3 4.5 6.8 4.5c2 0 3.4 1.1 4.2 2.3h2c.8-1.2 2.2-2.3 4.2-2.3 3.5 0 5.6 3.4 4.3 6.7-2 4.7-9.5 9.3-9.5 9.3Z"/></svg>
         </button>
@@ -114,6 +134,7 @@
         <span class="dot" id="status-dot"></span><span id="status">Up to date</span>
         <span class="spacer"></span><span id="status-right"></span>
       </footer>
+      <div class="selbar" id="selbar" role="toolbar" aria-label="Selected files" hidden></div>
     </main>
   </div>
 

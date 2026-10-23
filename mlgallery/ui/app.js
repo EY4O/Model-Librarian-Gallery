@@ -6,6 +6,7 @@
 import { $, TOKEN, api, baseName, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, media, plural, store, toast } from "./util.js";
 import { renderStats } from "./stats.js";
 import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
+import * as org from "./organize.js";
 
 const PAGE = 300;
 const HEAD = 40;      // a day heading's height
@@ -13,6 +14,8 @@ const GROUP_GAP = 14; // space under a day's last row
 
 // ---------------------------------------------------------------- state
 const state = {
+  sel: new Set(), selAll: false, anchor: -1,  // the selection: ids, or the whole view
+  albums: [], album: null,
   folders: [], view: "all", folder: null, seed: 1 + Math.floor(Math.random() * 1e9),
   sort: store.get("sort", "newest"), kind: store.get("kind", ""), tile: store.get("tile", 176),
   chips: [], text: "",                     // the search: filter chips, and the words typed
@@ -151,7 +154,7 @@ async function loadFolders() {
 function renderSide() {
   const total = state.folders.reduce((s, f) => s + (f.online ? f.file_count : 0), 0);
   $("all-count").textContent = total ? total.toLocaleString() : "";
-  for (const v of ["all", "recent", "random", "stats", "review"]) $(`view-${v}`).classList.toggle("sel", state.view === v);
+  for (const v of ["all", "recent", "random", "stats", "review", "trash", "duplicates", "history"]) $(`view-${v}`).classList.toggle("sel", state.view === v);
   $("view-characters").classList.toggle("sel", state.view === "characters" || state.view === "character");
   const items = state.folders.map((f) => {
     const sel = state.view === "folder" && state.folder === f.id;
@@ -169,14 +172,59 @@ function renderSide() {
   });
   $("folders").replaceChildren(...(items.length ? items
     : [h("p.nav-empty", {}, "No folders yet. ", h("button", { type: "button", onclick: addFolder }, "Add one"))]));
+  $("albums").replaceChildren(...(state.albums.length ? state.albums.map((a) => {
+    const sel = state.view === "album" && state.album === a.name;
+    return h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", onclick: () => selectView("album", a.name), "aria-current": sel ? "true" : null },
+      icon("album"), h("span.label", {}, a.name), h("span.n", {}, a.n.toLocaleString()),
+      h("span.acts", {},
+        h("span.act", { role: "button", tabIndex: 0, title: "Rename", "aria-label": `Rename ${a.name}`, onkeydown: actKey,
+          onclick: async (e) => { e.stopPropagation(); renameAlbum(a); } }, icon("tag")),
+        h("span.act", { role: "button", tabIndex: 0, title: "Delete the album (its files stay where they are)", "aria-label": `Delete ${a.name}`, onkeydown: actKey,
+          onclick: async (e) => { e.stopPropagation(); deleteAlbum(a); } }, icon("remove"))));
+  }) : [h("p.nav-empty", {}, "Albums gather files from any folder.")]));
   renderToolbar();
+}
+
+async function loadAlbums() {
+  try {
+    state.albums = (await api("/albums")).albums;
+    if (state.view === "album" && !state.albums.some((a) => a.name === state.album)) selectView("all");
+    renderSide();
+  } catch {}
+}
+
+async function newAlbum() {
+  const name = (prompt("A name for the new album:") || "").trim();
+  if (!name) return;
+  try {
+    await api("/albums", { method: "POST", body: { name } });
+    await loadAlbums();
+    if (selCount()) org.albumDialog(selection(), selCount());
+  } catch (e) { toast(e.message, true); }
+}
+
+async function renameAlbum(a) {
+  const name = (prompt(`Rename the album ${a.name} to:`, a.name) || "").trim();
+  if (!name || name === a.name) return;
+  try {
+    await api(`/albums/${a.id}`, { method: "POST", body: { name } });
+    if (state.album === a.name) state.album = name;
+    await loadAlbums();
+    if (state.view === "album") reload(false);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteAlbum(a) {
+  if (!confirm(`Delete the album ${a.name}?\n\nOnly the album goes: its ${a.n.toLocaleString()} files stay exactly where they are.`)) return;
+  await api(`/albums/${a.id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
+  loadAlbums();
 }
 
 function actKey(e) {
   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.currentTarget.click(); }
 }
 
-const PAGES = new Set(["stats", "characters", "character", "review"]); // screens of their own, instead of the grid
+const PAGES = new Set(["stats", "characters", "character", "review", "duplicates", "history"]); // screens of their own, instead of the grid
 const isPage = () => PAGES.has(state.view);
 const pageCtx = { open: (chips) => openFromStats(chips), show: (view, id) => selectView(view, id), refresh: () => loadCharacters() };
 
@@ -185,6 +233,8 @@ function selectView(view, arg = null) {
   state.view = view;
   state.folder = view === "folder" ? arg : null;
   state.character = view === "character" ? arg : null;
+  state.album = view === "album" ? arg : null;
+  clearSel();
   const page = isPage();
   document.querySelector(".toolbar").hidden = page;
   scroller.hidden = page;
@@ -197,6 +247,8 @@ function selectView(view, arg = null) {
   else if (view === "characters") renderCharacters($("stats"), pageCtx);
   else if (view === "character") renderCharacter($("stats"), arg, pageCtx);
   else if (view === "review") renderReview($("stats"), pageCtx);
+  else if (view === "duplicates") org.renderDuplicates($("stats"));
+  else if (view === "history") org.renderHistory($("stats"));
 }
 
 async function loadCharacters() {
@@ -220,13 +272,14 @@ function openFromStats(chips) {
   selectView(folder ? "folder" : "all", folder ? Number(folder.value) : null);
 }
 
-const sortFor = () => (state.view === "random" ? "random" : state.view === "recent" ? "viewed" : state.sort);
+const sortFor = () => (state.view === "random" ? "random" : state.view === "recent" ? "viewed" : state.view === "trash" ? "trashed" : state.sort);
 
 function renderToolbar() {
   const f = state.folders.find((x) => x.id === state.folder);
-  $("view-title").textContent = { random: "Random", recent: "Recently viewed" }[state.view] || (f ? baseName(f.path) : "All");
+  $("view-title").textContent = { random: "Random", recent: "Recently viewed", trash: "Trash" }[state.view] || (state.view === "album" ? state.album : f ? baseName(f.path) : "All");
   $("view-title").title = f ? f.path : "";
-  $("sort-wrap").hidden = state.view === "random" || state.view === "recent";
+  $("sort-wrap").hidden = ["random", "recent", "trash"].includes(state.view);
+  $("empty-trash").hidden = state.view !== "trash" || !state.total;
   $("shuffle").hidden = state.view !== "random";
   for (const b of $("kind").querySelectorAll("button")) {
     b.classList.toggle("on", b.dataset.kind === state.kind);
@@ -311,10 +364,13 @@ function query(path, offset) {
   if (state.view === "random") q.set("seed", state.seed);
   if (state.folder) q.set("folder", state.folder);
   if (state.kind) q.set("kind", state.kind);
-  const text = queryString();
+  const text = viewQuery();
   if (text) q.set("q", text);
   return `${path}?${q}`;
 }
+
+// the search, plus what the view itself filters by (an album)
+const viewQuery = () => [state.view === "album" ? `album:${quote(state.album)}` : "", queryString()].filter(Boolean).join(" ");
 
 async function loadPage(p) {
   if (state.pages.has(p) || state.loading.has(p)) return;
@@ -352,8 +408,10 @@ async function loadDays() {
 const itemAt = (i) => state.pages.get(Math.floor(i / PAGE))?.[i % PAGE];
 
 function tileFor(item) {
-  const el = h("button.tile", { type: "button", onclick: () => openViewer(item.__i), onfocus: () => { state.focus = item.__i; },
-    "aria-label": item.name, role: "gridcell" });
+  const el = h("button.tile" + (isSelected(item) ? ".picked" : ""), { type: "button", onclick: (e) => tileClick(e, item.__i), onfocus: () => { state.focus = item.__i; },
+    "aria-label": item.name, role: "gridcell", "aria-selected": String(isSelected(item)) });
+  el.append(h("span.t-pick", { role: "checkbox", "aria-checked": String(isSelected(item)), "aria-label": `Select ${item.name}`, title: "Select (Ctrl+click)",
+    onclick: (e) => { e.stopPropagation(); toggleSel(item.__i); } }, icon("check")));
   if (item.thumb === -1 || item.thumb === -2) {
     el.append(h("div.ph", {}, item.thumb === -2 ? `${item.name}\n\nVideo posters need ffmpeg` : item.name));
   } else {
@@ -371,7 +429,107 @@ function tileFor(item) {
   return el;
 }
 
-const tileKey = (item) => `${item.id}:${item.thumb}:${item.rating}:${item.favorite}`;
+const tileKey = (item) => `${item.id}:${item.thumb}:${item.rating}:${item.favorite}:${isSelected(item) ? 1 : 0}`;
+
+// ---------------------------------------------------------------- the selection
+const isSelected = (item) => state.selAll || state.sel.has(item.id);
+const selCount = () => (state.selAll ? state.total : state.sel.size);
+const selection = () => (state.selAll ? { view: { sort: sortFor(), folder: state.folder, kind: state.kind, q: viewQuery(), seed: state.seed } } : [...state.sel]);
+
+function tileClick(e, i) {
+  if (e.shiftKey && state.anchor >= 0) return rangeSel(state.anchor, i);
+  if (e.ctrlKey || e.metaKey || selCount()) return toggleSel(i); // while some are selected, a click picks
+  openViewer(i);
+}
+
+function toggleSel(i) {
+  const item = itemAt(i);
+  if (!item) return;
+  if (state.selAll) { // from "everything" to everything but this one: only what's loaded can be listed
+    state.selAll = false;
+    for (const items of state.pages.values()) for (const it of items) state.sel.add(it.id);
+  }
+  if (state.sel.has(item.id)) state.sel.delete(item.id);
+  else state.sel.add(item.id);
+  state.anchor = i;
+  selChanged();
+}
+
+async function rangeSel(a, b) {
+  const [lo, hi] = a < b ? [a, b] : [b, a];
+  for (let p = Math.floor(lo / PAGE); p <= Math.floor(hi / PAGE); p++) await loadPage(p);
+  for (let i = lo; i <= hi; i++) { const it = itemAt(i); if (it) state.sel.add(it.id); }
+  selChanged();
+}
+
+function selectAll() {
+  state.selAll = true;
+  state.sel.clear();
+  selChanged();
+}
+
+function clearSel() {
+  if (!state.sel.size && !state.selAll) return;
+  state.sel.clear();
+  state.selAll = false;
+  state.anchor = -1;
+  selChanged();
+}
+
+function selChanged() {
+  draw();
+  const n = selCount();
+  const bar = $("selbar");
+  bar.hidden = !n;
+  document.querySelector(".statusbar").hidden = !!n;
+  $("app").classList.toggle("picking", !!n);
+  if (!n) return;
+  const sel = selection();
+  const trash = state.view === "trash";
+  const stars = h("div.stars.small", { role: "group", "aria-label": "Rate them" }, [1, 2, 3, 4, 5].map((r) => h("button.star", { type: "button", title: `Rate ${r}`, "aria-label": `Rate ${r}`,
+    onclick: () => bulk("rate", r) }, "★")), h("button.btn.small", { type: "button", title: "Clear the rating", onclick: () => bulk("rate", 0) }, "0"));
+  bar.replaceChildren(
+    h("span.sel-n", {}, state.selAll ? `All ${n.toLocaleString()} selected` : `${n.toLocaleString()} selected`),
+    !state.selAll && n < state.total ? h("button.link", { type: "button", onclick: selectAll }, `Select all ${state.total.toLocaleString()}`) : null,
+    h("span.spacer"),
+    ...(trash ? [
+      h("button.btn", { type: "button", onclick: async () => { await org.restoreFiles(sel); clearSel(); } }, icon("restore"), "Put back"),
+      h("button.btn.danger", { type: "button", onclick: async () => { await org.emptyTrash(sel, n); clearSel(); } }, icon("trash"), "Empty these"),
+    ] : [
+      stars,
+      h("button.btn", { type: "button", onclick: () => bulk("favorite", true), title: "Favourite (Ctrl+click the heart: unfavourite)" }, icon("heart"), "Favourite"),
+      h("button.btn", { type: "button", onclick: () => org.tagDialog(sel, n) }, icon("tag"), "Tag…"),
+      state.view === "album" ? h("button.btn", { type: "button", onclick: () => bulkAlbumOut() }, icon("album"), "Take out")
+        : h("button.btn", { type: "button", onclick: () => org.albumDialog(sel, n) }, icon("album"), "Album…"),
+      h("button.btn", { type: "button", onclick: () => org.moveDialog(sel, n, state.folders) }, icon("move"), "Move…"),
+      h("button.btn", { type: "button", onclick: async () => { if (await org.trashFiles(sel, n)) clearSel(); } }, icon("trash"), "Delete"),
+    ]),
+    h("button.icon-btn", { type: "button", "aria-label": "Clear the selection", title: "Clear the selection (Esc)", onclick: clearSel }, icon("remove")));
+}
+
+async function bulk(action, value) {
+  try {
+    const r = await api("/ops/bulk", { method: "POST", body: { selection: selection(), action, value } });
+    org.done(r, action === "rate" ? (value ? `Rated ${plural(r.count, "file")} ${value}.` : `Cleared ${plural(r.count, "rating")}.`) : `${plural(r.count, "file")} marked as favourite${r.count === 1 ? "" : "s"}.`);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function bulkAlbumOut() {
+  try {
+    const r = await api("/ops/bulk", { method: "POST", body: { selection: selection(), action: "unalbum", value: state.album } });
+    org.done(r, `Took ${plural(r.count, "file")} out of ${state.album}.`);
+    clearSel();
+  } catch (e) { toast(e.message, true); }
+}
+
+// after anything that changed files: the counts, the lists and the grid
+org.onChange(async () => {
+  await Promise.all([loadFolders(), loadAlbums(), loadCharacters()]);
+  if (!isPage()) reload(false);
+  else if (state.view === "history") org.renderHistory($("stats"));
+  pollSoon();
+  if (!$("viewer").hidden) refreshViewer();
+});
 
 function draw() {
   const L = layout();
@@ -505,6 +663,10 @@ function showEmpty() {
   } else if (queryString()) {
     empty.replaceChildren(h("h2", {}, "No matches"), h("p", {}, "Nothing here matches this search."),
       h("button.btn", { type: "button", onclick: clearSearch }, "Clear the search"));
+  } else if (state.view === "trash") {
+    empty.replaceChildren(h("h2", {}, "The Trash is empty"), h("p", {}, "Files you delete in the Gallery wait here, so you can put them back. Emptying it sends them to the Windows Recycle Bin."));
+  } else if (state.view === "album") {
+    empty.replaceChildren(h("h2", {}, "Nothing in this album yet"), h("p", {}, "Select files (Ctrl+click) and choose Album…, or name the album in a workflow's Gallery Info node."));
   } else if (state.view === "recent") {
     empty.replaceChildren(h("h2", {}, "Nothing viewed yet"), h("p", {}, "Files you open appear here, the last one first."));
   } else if (lastStatus && (lastStatus.scanning || lastStatus.queued)) {
@@ -659,6 +821,7 @@ function renderDetails(info) {
     }
   }
   parts.push(section("Characters", characterEditor(info)));
+  parts.push(section("Albums", albumEditor(info)));
   parts.push(section("Tags", tagEditor(info)));
   const rows = [
     ["Type", `${info.kind === "video" ? "Video" : "Image"} · ${info.name.split(".").pop().toUpperCase()}`],
@@ -671,7 +834,10 @@ function renderDetails(info) {
   parts.push(section("Location", h("div.path", {}, info.path),
     h("div.row", {},
       h("button.btn", { type: "button", onclick: () => reveal(info) }, icon("explorer"), "Show in Explorer"),
-      h("button.btn", { type: "button", onclick: () => copyText(info.path, "Path copied") }, icon("copy"), "Copy path"))));
+      h("button.btn", { type: "button", onclick: () => copyText(info.path, "Path copied") }, icon("copy"), "Copy path"),
+      state.view === "trash" ? h("button.btn", { type: "button", onclick: () => org.restoreFiles([info.id]) }, icon("restore"), "Put back")
+        : h("button.btn", { type: "button", onclick: () => org.moveDialog([info.id], 1, state.folders) }, icon("move"), "Move…"),
+      state.view === "trash" ? null : h("button.btn", { type: "button", title: "Move to the Trash (Delete)", onclick: () => deleteViewing() }, icon("trash"), "Delete"))));
   $("v-panel").replaceChildren(...parts);
 }
 
@@ -689,7 +855,7 @@ function characterEditor(info) {
   const render = (list) => {
     const known = new Set(list.map((c) => c.id));
     const others = (state.characters || []).filter((c) => !known.has(c.id));
-    const pick = h("select.tag-input", { "aria-label": "Add a character" }, h("option", { value: "" }, "+ Character"),
+    const pick = h("select.pick", { "aria-label": "Add a character" }, h("option", { value: "" }, "+ Character"),
       others.map((c) => h("option", { value: c.id }, c.name)));
     pick.onchange = () => { if (pick.value) change(Number(pick.value), "confirm"); };
     wrap.replaceChildren(...list.map((c) => h("span.chip.tag.char." + c.state, { title: `${STATE_TIP[c.state] || ""}${c.source === "workflow" ? " (by the workflow's Gallery Info node)" : ""}` },
@@ -708,6 +874,54 @@ function characterEditor(info) {
   };
   render(info.characters || []);
   return wrap;
+}
+
+function albumEditor(info) {
+  const wrap = h("div.tags");
+  const render = (list) => {
+    const known = new Set(list.map((a) => a.id));
+    const others = state.albums.filter((a) => !known.has(a.id));
+    const pick = h("select.pick", { "aria-label": "Add to an album" }, h("option", { value: "" }, "+ Album"),
+      others.map((a) => h("option", { value: a.name }, a.name)), h("option", { value: "\u0000new" }, "New album…"));
+    pick.onchange = async () => {
+      let name = pick.value;
+      if (name === "\u0000new") name = (prompt("A name for the new album:") || "").trim();
+      if (name) change("album", name);
+      else pick.value = "";
+    };
+    wrap.replaceChildren(...list.map((a) => h("span.chip.tag" + (a.source === "workflow" ? ".wf" : ""), { title: a.source === "workflow" ? "From the workflow's Gallery Info node" : "" },
+      h("button.link", { type: "button", onclick: () => { closeViewer(); selectView("album", a.name); } }, a.name),
+      h("button.x", { type: "button", "aria-label": `Take it out of ${a.name}`, onclick: () => change("unalbum", a.name) }, icon("remove")))), pick);
+  };
+  const change = async (action, name) => {
+    try {
+      await api("/ops/bulk", { method: "POST", body: { selection: [info.id], action, value: name } });
+      await loadAlbums();
+      render((await api(`/file/${info.id}/info`)).albums);
+    } catch (e) { toast(e.message, true); }
+  };
+  render(info.albums || []);
+  return wrap;
+}
+
+// the file in the viewer to the Trash; the next one takes its place
+async function deleteViewing() {
+  const item = itemAt(viewing);
+  if (!item) return;
+  const at = viewing;
+  const r = await org.trashFiles([item.id], 1, { ask: false });
+  if (!r || !r.trashed) return;
+  state.pages.clear();
+  state.total = Math.max(0, state.total - 1);
+  if (!state.total) return closeViewer();
+  const i = Math.min(at, state.total - 1);
+  await loadPage(Math.floor(i / PAGE));
+  openViewer(i);
+}
+
+async function refreshViewer() {
+  const item = itemAt(viewing);
+  if (item) loadDetails(item);
 }
 
 function tagEditor(info) {
@@ -794,6 +1008,7 @@ async function poll() {
       draw();
     }
     lastMeta = st.meta_pending;
+    $("trash-count").textContent = st.trash ? st.trash.toLocaleString() : "";
     loadCharacters(); // matches change as files are read
     pollTimer = setTimeout(poll, busy ? 1500 : 4000);
   } catch {
@@ -808,6 +1023,11 @@ $("view-all").onclick = () => selectView("all");
 $("view-recent").onclick = () => selectView("recent");
 $("view-random").onclick = () => selectView("random");
 $("view-stats").onclick = () => selectView("stats");
+$("view-trash").onclick = () => selectView("trash");
+$("view-duplicates").onclick = () => selectView("duplicates");
+$("view-history").onclick = () => selectView("history");
+$("album-new").onclick = newAlbum;
+$("empty-trash").onclick = () => org.emptyTrash(null, state.total);
 $("view-characters").onclick = () => selectView("characters");
 $("view-review").onclick = () => selectView("review");
 $("shuffle").onclick = () => selectView("random");
@@ -867,6 +1087,22 @@ $("v-fav").onclick = () => favourite(itemAt(viewing));
 $("v-details").onclick = () => setDetails($("viewer").classList.contains("no-details"));
 document.addEventListener("keydown", (e) => {
   const inField = e.target.closest?.("input, select, textarea");
+  if (document.querySelector("dialog[open], .preview")) return;
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z" && !inField) {
+    e.preventDefault();
+    org.undoLast();
+    return;
+  }
+  if ($("viewer").hidden && !inField && !isPage()) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") { e.preventDefault(); selectAll(); return; }
+    if (e.key === "Escape" && selCount()) { e.preventDefault(); clearSel(); return; }
+    if (e.key === "Delete" && state.view !== "trash") {
+      const one = !selCount() && e.target.classList?.contains("tile") ? itemAt(Number(e.target.dataset.i)) : null;
+      if (selCount()) { e.preventDefault(); org.trashFiles(selection(), selCount()).then((r) => r && clearSel()); return; }
+      if (one) { e.preventDefault(); org.trashFiles([one.id], 1, { ask: false }); return; }
+    }
+  }
+  if (!$("viewer").hidden && !inField && e.key === "Delete" && state.view !== "trash") { e.preventDefault(); deleteViewing(); return; }
   if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
     e.preventDefault();
     if ($("viewer").hidden) setSide(!$("app").classList.contains("side-hidden"));
@@ -897,4 +1133,5 @@ setSide(store.get("sideHidden", false));
 setDetails(store.get("details", true));
 renderChips();
 loadCharacters();
+loadAlbums();
 loadFolders().then(() => { reload(true); poll(); });

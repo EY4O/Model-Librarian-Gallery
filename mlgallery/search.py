@@ -3,7 +3,7 @@
     lighthouse dusk            words in the file name, prompt, models or tags (each as a prefix: "light" finds "lighthouse")
     "paper cut"                a phrase
     model:krea  lora:aurelia   a checkpoint / LoRA whose name contains this (quote names with spaces: lora:"paper cut")
-    tag:dusk                   a tag (exactly)
+    tag:dusk                   a tag (exactly)          album:coast   an album (exactly)
     character:aurelia          a character (by name or alias; matched or confirmed)   review:aurelia  is:review
     rating:4  rating:>=3  rating:2-4  rating:0 (unrated)
     is:fav  is:video  is:image  has:prompt  has:workflow  no:prompt
@@ -21,7 +21,7 @@ import time
 
 TOKEN = re.compile(r'(-?)(?:(\w+):)?(?:"([^"]*)"?|(\S+))')
 KEYS = {"model", "lora", "tag", "rating", "is", "has", "no", "sampler", "scheduler", "seed", "steps", "neg", "vae", "ext",
-        "cfg", "size", "after", "before", "on", "character", "review"}
+        "cfg", "size", "after", "before", "on", "character", "review", "album"}
 
 
 def tokens(q: str) -> list[tuple[str | None, str]]:
@@ -85,6 +85,9 @@ def build(q: str) -> tuple[list[str], list]:
                          f" WHERE fc.file_id=f.id AND fc.state IN {states} AND (ch.name = ? COLLATE NOCASE"
                          " OR EXISTS (SELECT 1 FROM json_each(ch.aliases) a WHERE a.value = ? COLLATE NOCASE)))")
             args += [v, v]
+        elif key == "album":
+            where.append("EXISTS (SELECT 1 FROM album_files af JOIN albums al ON al.id=af.album_id WHERE af.file_id=f.id AND af.removed=0 AND al.name=? COLLATE NOCASE)")
+            args.append(v)
         elif key == "tag":
             where.append("EXISTS (SELECT 1 FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.file_id=f.id AND ft.removed=0 AND t.name=? COLLATE NOCASE)")
             args.append(v)

@@ -11,6 +11,7 @@ import time
 
 import json
 
+from . import bulk, fileops
 from . import characters as chars
 from . import metadata
 from . import scan as scanner
@@ -30,11 +31,44 @@ SORTS = {
     # (two rounds of multiply-and-mod, so a different seed reorders everything, within 64-bit integers)
     "random": "((((f.id * 2654435761) % 4294967291) + ?) * 1597334677) % 4294967291, f.id",
     "viewed": "v.at DESC, f.id DESC",  # Recently viewed
+    "trashed": "f.trashed DESC, f.id DESC",  # the Trash, last deleted first
 }
+BACKUPS = 7  # daily copies of the index kept
 ITEM = ("f.id, f.name, f.rel, f.kind, f.width, f.height, f.size, f.mtime, f.duration, f.thumb, f.folder_id, f.meta,"
         " COALESCE(m.rating, 0) AS rating, COALESCE(m.favorite, 0) AS favorite")
 RECENT = 500  # how many files Recently viewed keeps
 DAY = "date(f.mtime, 'unixepoch', 'localtime')"
+
+
+def similar(items: list[tuple[int, str, str]], within: int = 3, bucket_cap: int = 400) -> list[list[int]]:
+    """Groups of files whose picture fingerprints differ in at most `within` of 64 bits (a picture saved again:
+    another format, size or metadata), and whose bytes differ (exact copies are their own kind). Fingerprints
+    are split in 4 blocks: two that close share a block exactly, so only those are compared."""
+    parent: dict[int, int] = {}
+
+    def root(x):
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent[x], parent[x])
+            x = parent[x]
+        return x
+
+    vals = {i: (fp, int(h, 16)) for i, fp, h in items}
+    for block in range(4):
+        buckets: dict[int, list[int]] = {}
+        for i, (fp, h) in vals.items():
+            buckets.setdefault((h >> (16 * block)) & 0xFFFF, []).append(i)
+        for ids in buckets.values():
+            if len(ids) < 2 or len(ids) > bucket_cap:  # a huge bucket is flat pictures (all black, all white): not useful
+                continue
+            for x in range(len(ids)):
+                for y in range(x + 1, len(ids)):
+                    a, b = ids[x], ids[y]
+                    if vals[a][0] != vals[b][0] and bin(vals[a][1] ^ vals[b][1]).count("1") <= within:
+                        parent[root(a)] = root(b)
+    groups: dict[int, list[int]] = {}
+    for i in parent:
+        groups.setdefault(root(i), []).append(i)
+    return [sorted(g) for g in groups.values() if len(g) > 1]
 
 
 def stem_of(name: str) -> str:
@@ -62,6 +96,8 @@ class Library:
     # ---------------------------------------------------------------- lifecycle
     def start(self, rescan: bool = True) -> None:
         threading.Thread(target=metadata.backfill_prompt_tags, args=(self.db,), name="prompt-tags", daemon=True).start()
+        threading.Thread(target=self.thumbs.backfill_fingerprints, name="fingerprints", daemon=True).start()
+        threading.Thread(target=self._backups, name="backups", daemon=True).start()
         self.thumbs.start()
         self.meta.start()
         self.watcher.start()
@@ -151,7 +187,7 @@ class Library:
     @staticmethod
     def _from(folder: int | None, kind: str | None, q: str = "", sort: str = "newest") -> tuple[str, list]:
         """FROM ... WHERE ... for a view: a folder or everything, a kind, a search, Recently viewed."""
-        where, args = ["f.missing=0", "d.online=1"], []
+        where, args = ["f.missing=2" if sort == "trashed" else "f.missing=0", "d.online=1"], []
         if folder:
             where.append("f.folder_id=?")
             args.append(int(folder))
@@ -208,6 +244,9 @@ class Library:
             gen["info"] = json.loads(gen["info"]) if gen["info"] else None
             gen["has_workflow"] = bool(gen["has_workflow"])
         with self.db.read() as c:
+            out["albums"] = [dict(r) for r in c.execute(
+                "SELECT al.id, al.name, af.source FROM album_files af JOIN albums al ON al.id=af.album_id WHERE af.file_id=? AND af.removed=0"
+                " ORDER BY al.name COLLATE NOCASE", (fid,))]
             out["characters"] = [dict(r) for r in c.execute(
                 "SELECT ch.id, ch.name, fc.state, fc.source FROM file_characters fc JOIN characters ch ON ch.id=fc.character_id"
                 " WHERE fc.file_id=? AND fc.state <> 'rejected' ORDER BY ch.name COLLATE NOCASE", (fid,))]
@@ -445,13 +484,120 @@ class Library:
                 c.execute("DELETE FROM views WHERE file_id NOT IN (SELECT file_id FROM views ORDER BY at DESC LIMIT ?)", (RECENT,))
 
     def file_path(self, file_id: int) -> str | None:
+        """Where the file is now (in the Trash: its place in .mlg-trash)."""
         with self.db.read() as c:
-            r = c.execute("SELECT f.rel, d.path FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.id=? AND f.missing=0", (int(file_id),)).fetchone()
-        return os.path.join(r["path"], r["rel"]) if r else None
+            r = c.execute("SELECT f.rel, f.trash_rel, f.missing, d.path FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.id=? AND f.missing IN (0, 2)",
+                          (int(file_id),)).fetchone()
+        if not r:
+            return None
+        return os.path.join(r["path"], *(r["trash_rel"] if r["missing"] == 2 else r["rel"]).split("/"))
+
+    # ---------------------------------------------------------------- organising
+    def resolve(self, sel) -> list[int]:
+        """A selection: a list of ids, or a whole view ({"view": {sort, folder, kind, q}}) -> ids."""
+        if isinstance(sel, dict) and isinstance(sel.get("view"), dict):
+            v = sel["view"]
+            sort = v.get("sort") if v.get("sort") in SORTS else "newest"
+            frm, args = self._from(int(v["folder"]) if str(v.get("folder", "")).isdigit() else None, v.get("kind") or None, str(v.get("q") or "")[:2000], sort)
+            order_args = [int(v.get("seed") or 0) % 4294967291] if sort == "random" else []
+            with self.db.read() as c:
+                return [r[0] for r in c.execute(f"SELECT f.id FROM {frm} ORDER BY {SORTS[sort]} LIMIT ?", [*args, *order_args, fileops.MAX_ITEMS])]
+        if isinstance(sel, list):
+            return [int(i) for i in sel[:fileops.MAX_ITEMS]]
+        raise fileops.OpError("A selection is a list of ids or a view.")
+
+    def albums(self) -> list[dict]:
+        with self.db.read() as c:
+            return [dict(r) for r in c.execute(
+                "SELECT al.id, al.name, al.cover, (SELECT COUNT(*) FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0) n,"
+                " (SELECT af.file_id FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0 ORDER BY f.mtime DESC LIMIT 1) latest"
+                " FROM albums al ORDER BY al.name COLLATE NOCASE")]
+
+    def album_save(self, aid: int | None, name: str, cover=...) -> dict:
+        name = str(name or "").strip()[:100]
+        if not name:
+            raise ValueError("An album needs a name.")
+        with self.db.write() as c:
+            clash = c.execute("SELECT id FROM albums WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+            if clash and clash[0] != aid:
+                raise ValueError(f"There's already an album called {name}.")
+            if aid is None:
+                aid = c.execute("INSERT INTO albums (name, created) VALUES (?,?)", (name, time.time())).lastrowid
+            elif not c.execute("UPDATE albums SET name=? WHERE id=?", (name, int(aid))).rowcount:
+                raise KeyError(aid)
+            if cover is not ...:
+                c.execute("UPDATE albums SET cover=? WHERE id=?", (int(cover) if cover else None, aid))
+        return next(a for a in self.albums() if a["id"] == aid)
+
+    def album_delete(self, aid: int) -> bool:
+        """The album goes; its files stay where they are."""
+        with self.db.write() as c:
+            return c.execute("DELETE FROM albums WHERE id=?", (int(aid),)).rowcount > 0
+
+    def duplicates(self, limit: int = 300) -> dict:
+        """Files that are the same: exact copies (the same bytes), and the same picture saved twice (another format
+        or metadata). Each group lists its files, the one to keep first (with generation data, then the biggest, then the oldest)."""
+        cols = ("f.id, f.name, f.rel, f.size, f.mtime, f.width, f.height, f.kind, f.meta, f.folder_id, d.path AS folder_path,"
+                " COALESCE(m.rating, 0) rating, COALESCE(m.favorite, 0) favorite")
+        live = "f.missing=0 AND d.online=1"
+        with self.db.read() as c:
+            exact = c.execute(f"SELECT f.fp, f.size FROM files f JOIN folders d ON d.id=f.folder_id WHERE {live} AND f.fp IS NOT NULL"
+                              " GROUP BY f.fp, f.size HAVING COUNT(*) > 1 LIMIT ?", (limit,)).fetchall()
+            pics = c.execute(f"SELECT f.id, f.fp, f.phash FROM files f JOIN folders d ON d.id=f.folder_id WHERE {live}"
+                             " AND f.phash IS NOT NULL AND f.phash NOT IN ('0000000000000000', 'ffffffffffffffff')").fetchall()
+            groups = []
+            for g in exact:
+                rows = c.execute(f"SELECT {cols} FROM files f JOIN folders d ON d.id=f.folder_id LEFT JOIN marks m ON m.file_id=f.id"
+                                 f" WHERE {live} AND f.fp=? AND f.size=?", (g["fp"], g["size"])).fetchall()
+                groups.append({"kind": "copies", "files": [dict(r) for r in rows]})
+            for ids in similar([(r["id"], r["fp"], r["phash"]) for r in pics])[:limit]:
+                rows = c.execute(f"SELECT {cols} FROM files f JOIN folders d ON d.id=f.folder_id LEFT JOIN marks m ON m.file_id=f.id"
+                                 f" WHERE f.id IN ({','.join('?' * len(ids))})", ids).fetchall()
+                groups.append({"kind": "same picture", "files": [dict(r) for r in rows]})
+        for g in groups:
+            g["files"].sort(key=lambda f: (-(f["rating"] or 0), -(f["favorite"] or 0), f["meta"] != 1, -(f["size"] or 0), f["mtime"], f["id"]))  # then the one found first
+            g["wasted"] = sum(f["size"] or 0 for f in g["files"][1:])
+        groups.sort(key=lambda g: -g["wasted"])
+        return {"groups": groups, "wasted": sum(g["wasted"] for g in groups)}
+
+    def _backups(self) -> None:
+        """A copy of the index once a day (the last 7 kept), while the Gallery runs."""
+        while not self._stop.is_set():
+            try:
+                self.backup()
+            except Exception:
+                pass
+            self._stop.wait(6 * 3600)
+
+    def backup(self, force: bool = False) -> str | None:
+        import sqlite3
+        folder = os.path.join(self.data_dir, "backups")
+        os.makedirs(folder, exist_ok=True)
+        today = os.path.join(folder, time.strftime("library-%Y-%m-%d.db"))
+        if os.path.exists(today) and not force:
+            return None
+        tmp = today + ".part"
+        src = self.db.connect()
+        try:
+            dst = sqlite3.connect(tmp)
+            with dst:
+                src.backup(dst)
+            dst.close()
+        finally:
+            src.close()
+        os.replace(tmp, today)
+        old = sorted(f for f in os.listdir(folder) if f.startswith("library-") and f.endswith(".db"))
+        for f in old[:-BACKUPS]:
+            try:
+                os.remove(os.path.join(folder, f))
+            except OSError:
+                pass
+        return today
 
     def status(self) -> dict:
         with self.db.read() as c:
             total = c.execute("SELECT COUNT(*) FROM files WHERE missing=0").fetchone()[0]
+            trash = c.execute("SELECT COUNT(*) FROM files WHERE missing=2").fetchone()[0]
         return {"files": total, "scanning": self.scanning, "last_scan": self.last_scan,
                 "queued": len(self._queue), "thumbs_pending": self.thumbs.pending(), "thumbs_failed": self.thumbs.failed,
-                "meta_pending": self.meta.pending()}
+                "meta_pending": self.meta.pending(), "trash": trash}

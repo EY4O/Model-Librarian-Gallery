@@ -127,6 +127,37 @@ MIGRATIONS = [
     );
     CREATE INDEX file_characters_char ON file_characters (character_id, state);
     """,
+    # 5: albums, the Gallery's Trash, every file operation (for Undo), and a picture fingerprint for duplicates
+    """
+    CREATE TABLE albums (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        cover INTEGER REFERENCES files(id) ON DELETE SET NULL,
+        created REAL
+    );
+    CREATE TABLE album_files (
+        album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+        file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        source TEXT NOT NULL DEFAULT 'user',   -- or 'workflow' (a Gallery Info node)
+        removed INTEGER NOT NULL DEFAULT 0,    -- a workflow's album you took it out of: reading the file again doesn't put it back
+        added REAL,
+        PRIMARY KEY (album_id, file_id)
+    );
+    CREATE INDEX album_files_file ON album_files (file_id);
+    ALTER TABLE files ADD COLUMN trashed REAL;      -- when it went to the Gallery's Trash
+    ALTER TABLE files ADD COLUMN trash_rel TEXT;    -- where it is meanwhile (inside the folder's .mlg-trash)
+    ALTER TABLE files ADD COLUMN phash TEXT;        -- the picture's fingerprint (from its thumbnail): the same picture saved twice
+    CREATE INDEX files_trashed ON files (trashed) WHERE trashed IS NOT NULL;
+    CREATE INDEX files_phash ON files (phash) WHERE phash IS NOT NULL;
+    CREATE TABLE ops (
+        id INTEGER PRIMARY KEY,
+        at REAL NOT NULL,
+        kind TEXT NOT NULL,                     -- move, trash, restore, empty, marks, tags, albums
+        summary TEXT NOT NULL,
+        data TEXT NOT NULL,                     -- what's needed to undo it (JSON)
+        undone REAL
+    );
+    """,
 ]
 
 
