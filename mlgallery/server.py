@@ -82,6 +82,10 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None) -> web
     r.add_post("/api/albums/{aid}", album_update)
     r.add_delete("/api/albums/{aid}", album_delete)
     r.add_get("/api/duplicates", duplicates)
+    r.add_post("/api/file/{id}/open-in-comfy", open_in_comfy)
+    r.add_post("/api/file/{id}/recipe", save_recipe)
+    r.add_post("/api/backup", backup_now)
+    r.add_post("/api/open-data", open_data)
     r.add_get("/api/settings", settings_get)
     r.add_post("/api/settings", settings_set)
     r.add_get("/api/thumb/{id}", thumb)
@@ -98,7 +102,10 @@ async def _guard(request: web.Request, handler):
         given = request.headers.get("X-MLG-Token") or request.query.get("t") or ""
         if not secrets.compare_digest(given, request.app[TOKEN]):
             return _err("Open the Gallery from its own window.", 403)
-    return await handler(request)
+    resp = await handler(request)
+    if request.method != "GET" and request.path.startswith("/api/") and not request.path.endswith("/viewed") and resp.status < 400:
+        request.app[LIB].db.user_change()  # something you did: Statistics and the like count it in straight away
+    return resp
 
 
 async def index(request: web.Request):
@@ -461,6 +468,49 @@ async def duplicates(request):
     return web.json_response(await asyncio.to_thread(_lib(request).duplicates))
 
 
+async def open_in_comfy(request):
+    from . import comfy
+    fid = _fid(request)
+    lib = _lib(request)
+    info = await asyncio.to_thread(lib.info, fid) if fid is not None else None
+    if not info:
+        return _err("not found", 404)
+    wf = await asyncio.to_thread(lib.workflow, fid) or {}
+    try:
+        r = await comfy.open_in_comfy(lib.settings.get("comfy_url"), wf.get("workflow"), wf.get("prompt"), os.path.splitext(info["name"])[0])
+    except comfy.ComfyError as ex:
+        return _err(str(ex), 502)
+    return web.json_response(r)
+
+
+async def save_recipe(request):
+    from . import comfy
+    fid, b = _fid(request), await _body(request)
+    lib = _lib(request)
+    info = await asyncio.to_thread(lib.info, fid) if fid is not None else None
+    path = await asyncio.to_thread(lib.file_path, fid) if info else None
+    if not path or not os.path.isfile(path):
+        return _err("not found", 404)
+    try:
+        r = await asyncio.to_thread(comfy.save_recipe, lib.models.data_dir(), path, info["kind"], info["name"], b.get("title"))
+    except comfy.ComfyError as ex:
+        return _err(str(ex), 422)
+    return web.json_response(r)
+
+
+async def backup_now(request):
+    path = await asyncio.to_thread(_lib(request).backup, True)
+    return web.json_response({"path": path})
+
+
+async def open_data(request):
+    if os.name != "nt":
+        return _err("Only on Windows.", 501)
+    import subprocess
+    subprocess.Popen(["explorer", os.path.normpath(_lib(request).data_dir)])
+    return web.json_response({"ok": True})
+
+
 async def stats_view(request):
     from . import stats
     d = request.query.get("days", "30")
@@ -469,7 +519,11 @@ async def stats_view(request):
 
 
 def _settings_out(lib) -> dict:
-    return {"settings": lib.settings.all(), "ml_data_found": lib.models.data_dir(), "data_dir": lib.data_dir}
+    from .thumbs import find_ffmpeg
+    backups = os.path.join(lib.data_dir, "backups")
+    last = sorted(f for f in os.listdir(backups) if f.endswith(".db")) if os.path.isdir(backups) else []
+    return {"settings": lib.settings.all(), "ml_data_found": lib.models.data_dir(), "data_dir": lib.data_dir,
+            "ffmpeg_found": find_ffmpeg(lib.settings.get("ffmpeg")), "last_backup": last[-1] if last else None, "version": VERSION}
 
 
 async def settings_get(request):

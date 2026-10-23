@@ -7,6 +7,7 @@ import { $, TOKEN, api, baseName, copyText, dayLabel, fmtDate, fmtDur, fmtNum, f
 import { renderStats } from "./stats.js";
 import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
 import * as org from "./organize.js";
+import { renderSettings } from "./settings.js";
 
 const PAGE = 300;
 const HEAD = 40;      // a day heading's height
@@ -154,7 +155,7 @@ async function loadFolders() {
 function renderSide() {
   const total = state.folders.reduce((s, f) => s + (f.online ? f.file_count : 0), 0);
   $("all-count").textContent = total ? total.toLocaleString() : "";
-  for (const v of ["all", "recent", "random", "stats", "review", "trash", "duplicates", "history"]) $(`view-${v}`).classList.toggle("sel", state.view === v);
+  for (const v of ["all", "recent", "random", "stats", "review", "trash", "duplicates", "history", "settings"]) $(`view-${v}`).classList.toggle("sel", state.view === v);
   $("view-characters").classList.toggle("sel", state.view === "characters" || state.view === "character");
   const items = state.folders.map((f) => {
     const sel = state.view === "folder" && state.folder === f.id;
@@ -224,7 +225,7 @@ function actKey(e) {
   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.currentTarget.click(); }
 }
 
-const PAGES = new Set(["stats", "characters", "character", "review", "duplicates", "history"]); // screens of their own, instead of the grid
+const PAGES = new Set(["stats", "characters", "character", "review", "duplicates", "history", "settings"]); // screens of their own, instead of the grid
 const isPage = () => PAGES.has(state.view);
 const pageCtx = { open: (chips) => openFromStats(chips), show: (view, id) => selectView(view, id), refresh: () => loadCharacters() };
 
@@ -249,7 +250,14 @@ function selectView(view, arg = null) {
   else if (view === "review") renderReview($("stats"), pageCtx);
   else if (view === "duplicates") org.renderDuplicates($("stats"));
   else if (view === "history") org.renderHistory($("stats"));
+  else if (view === "settings") renderSettings($("stats"), settingsCtx);
 }
+
+const settingsCtx = {
+  addFolder: async () => { await addFolder(); if (state.view === "settings") renderSettings($("stats"), settingsCtx); },
+  rescan: (f) => rescan(f),
+  removeFolder: async (f) => { await removeFolder(f); renderSettings($("stats"), settingsCtx); },
+};
 
 async function loadCharacters() {
   try {
@@ -803,6 +811,8 @@ function renderDetails(info) {
     if (g.has_workflow) {
       parts.push(section("Workflow", h("p.note", {}, `${g.source === "comfyui" ? "ComfyUI" : g.source}${g.nodes ? ` · ${plural(g.nodes, "node")}` : ""}`),
         h("div.row", {},
+          h("button.btn.primary", { type: "button", title: "Opens it in a new tab in ComfyUI (with Model Librarian)", onclick: (e) => openInComfy(info, e.currentTarget) }, icon("play"), "Open in ComfyUI"),
+          h("button.btn", { type: "button", title: "Into Model Librarian's recipes", onclick: (e) => saveRecipe(info, e.currentTarget) }, icon("save"), "Save as recipe"),
           h("button.btn", { type: "button", onclick: () => copyWorkflow(info) }, icon("copy"), "Copy workflow"),
           h("a.btn", { href: `/api/file/${info.id}/workflow?download=1&t=${encodeURIComponent(TOKEN)}`, download: "" }, icon("save"), "Save as .json"))));
     } else if (g.source && g.source !== "comfyui") {
@@ -839,6 +849,22 @@ function renderDetails(info) {
         : h("button.btn", { type: "button", onclick: () => org.moveDialog([info.id], 1, state.folders) }, icon("move"), "Move…"),
       state.view === "trash" ? null : h("button.btn", { type: "button", title: "Move to the Trash (Delete)", onclick: () => deleteViewing() }, icon("trash"), "Delete"))));
   $("v-panel").replaceChildren(...parts);
+}
+
+async function openInComfy(info, btn) {
+  btn.disabled = true;
+  try {
+    await api(`/file/${info.id}/open-in-comfy`, { method: "POST" });
+    toast("Sent to ComfyUI: it opens in a new tab there.");
+  } catch (e) { toast(e.message, true); } finally { btn.disabled = false; }
+}
+
+async function saveRecipe(info, btn) {
+  btn.disabled = true;
+  try {
+    const r = await api(`/file/${info.id}/recipe`, { method: "POST", body: {} });
+    toast(`Saved as the recipe "${r.title}": it's in Model Librarian's Recipes tab.`);
+  } catch (e) { toast(e.message, true); } finally { btn.disabled = false; }
 }
 
 async function copyWorkflow(info) {
@@ -1026,6 +1052,7 @@ $("view-stats").onclick = () => selectView("stats");
 $("view-trash").onclick = () => selectView("trash");
 $("view-duplicates").onclick = () => selectView("duplicates");
 $("view-history").onclick = () => selectView("history");
+$("view-settings").onclick = () => selectView("settings");
 $("album-new").onclick = newAlbum;
 $("empty-trash").onclick = () => org.emptyTrash(null, state.total);
 $("view-characters").onclick = () => selectView("characters");

@@ -69,66 +69,109 @@ def _range(v: str):
     return (m.group(1) or "="), [int(m.group(2))]
 
 
-def build(q: str) -> tuple[list[str], list]:
-    """-> (SQL conditions on files f, their parameters)."""
+def _names(db, kinds: tuple) -> list[str]:
+    """Every model name of these kinds (a few hundred at most), so a filter becomes an exact, indexed lookup."""
+    def load():
+        with db.read() as c:
+            return [r[0] for r in c.execute(f"SELECT DISTINCT name FROM uses WHERE kind IN ({','.join('?' * len(kinds))})", kinds)]
+    return db.cached(("names", kinds), load)
+
+
+def _characters(db, name: str) -> list[int]:
+    """The characters called this (or with it as an alias)."""
+    def load():
+        with db.read() as c:
+            return [(r[0], r[1], r[2]) for r in c.execute("SELECT id, name, aliases FROM characters")]
+    low = name.strip().lower()
+    out = []
+    import json
+    for cid, n, aliases in db.cached(("characters",), load):
+        if n.lower() == low or low in (a.lower() for a in json.loads(aliases or "[]")):
+            out.append(cid)
+    return out
+
+
+def _in(values: list) -> str:
+    return ",".join("?" * len(values))
+
+
+def build(q: str, db=None) -> tuple[list[str], list]:
+    """-> (SQL conditions on files f, their parameters). Each filter picks its files with one indexed lookup
+    (f.id IN (...)), never a lookup per file, so they stay quick on a big library. Without `db` (tests of the
+    grammar) names aren't resolved and matching uses LIKE."""
     where, args, words, neg_words = [], [], [], []
     for key, v in tokens(q):
         if key is None:
             words.append(v)
         elif key in ("model", "lora", "vae"):
             kinds = {"model": ("checkpoint", "unet"), "lora": ("lora",), "vae": ("vae",)}[key]
-            where.append(f"EXISTS (SELECT 1 FROM uses u WHERE u.file_id=f.id AND u.kind IN ({','.join('?' * len(kinds))}) AND u.name LIKE ? ESCAPE '\\')")
-            args += [*kinds, f"%{_like(v)}%"]
+            if db is None:
+                where.append(f"f.id IN (SELECT file_id FROM uses WHERE kind IN ({_in(kinds)}) AND name LIKE ? ESCAPE '\\')")
+                args += [*kinds, f"%{_like(v)}%"]
+                continue
+            low = v.lower()
+            hits = [n for n in _names(db, kinds) if low in n.lower()]
+            if not hits:
+                where.append("0")
+                continue
+            where.append(f"f.id IN (SELECT file_id FROM uses WHERE kind IN ({_in(kinds)}) AND name IN ({_in(hits)}))")
+            args += [*kinds, *hits]
         elif key in ("character", "review"):
-            states = "('auto', 'confirmed')" if key == "character" else "('review')"
-            where.append("EXISTS (SELECT 1 FROM file_characters fc JOIN characters ch ON ch.id=fc.character_id"
-                         f" WHERE fc.file_id=f.id AND fc.state IN {states} AND (ch.name = ? COLLATE NOCASE"
-                         " OR EXISTS (SELECT 1 FROM json_each(ch.aliases) a WHERE a.value = ? COLLATE NOCASE)))")
-            args += [v, v]
+            states = ("auto", "confirmed") if key == "character" else ("review",)
+            ids = _characters(db, v) if db is not None else None
+            if ids is None:
+                where.append(f"f.id IN (SELECT fc.file_id FROM file_characters fc JOIN characters ch ON ch.id=fc.character_id"
+                             f" WHERE fc.state IN ({_in(states)}) AND ch.name = ? COLLATE NOCASE)")
+                args += [*states, v]
+            elif not ids:
+                where.append("0")
+            else:
+                where.append(f"f.id IN (SELECT file_id FROM file_characters WHERE character_id IN ({_in(ids)}) AND state IN ({_in(states)}))")
+                args += [*ids, *states]
         elif key == "album":
-            where.append("EXISTS (SELECT 1 FROM album_files af JOIN albums al ON al.id=af.album_id WHERE af.file_id=f.id AND af.removed=0 AND al.name=? COLLATE NOCASE)")
+            where.append("f.id IN (SELECT af.file_id FROM album_files af JOIN albums al ON al.id=af.album_id WHERE af.removed=0 AND al.name = ? COLLATE NOCASE)")
             args.append(v)
         elif key == "tag":
-            where.append("EXISTS (SELECT 1 FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.file_id=f.id AND ft.removed=0 AND t.name=? COLLATE NOCASE)")
+            where.append("f.id IN (SELECT ft.file_id FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.removed=0 AND t.name = ? COLLATE NOCASE)")
             args.append(v)
         elif key == "rating":
             if v.strip() in ("0", "none"):
-                where.append("COALESCE(m.rating, 0) = 0")
+                where.append("f.id NOT IN (SELECT file_id FROM marks WHERE rating > 0)")
                 continue
             r = _range(v if any(ch in v for ch in "<>=-") else f">={v}")
             if r:
                 op, vals = r
                 if len(vals) == 2:
-                    where.append("m.rating >= ? AND m.rating <= ?")
+                    where.append("f.id IN (SELECT file_id FROM marks WHERE rating >= ? AND rating <= ?)")
                 else:
-                    where.append(f"m.rating {op} ?")
+                    where.append(f"f.id IN (SELECT file_id FROM marks WHERE rating {op} ?)")
                 args += vals
         elif key == "is":
             v = v.lower()
             if v in ("fav", "favorite", "favourite"):
-                where.append("m.favorite = 1")
+                where.append("f.id IN (SELECT file_id FROM marks WHERE favorite = 1)")
             elif v in ("image", "video"):
                 where.append("f.kind = ?")
                 args.append(v)
             elif v == "rated":
-                where.append("m.rating > 0")
+                where.append("f.id IN (SELECT file_id FROM marks WHERE rating > 0)")
             elif v == "review":
-                where.append("EXISTS (SELECT 1 FROM file_characters fc WHERE fc.file_id=f.id AND fc.state='review')")
+                where.append("f.id IN (SELECT file_id FROM file_characters WHERE state = 'review')")
         elif key in ("has", "no"):
             v = v.lower()
-            cond = {"prompt": "EXISTS (SELECT 1 FROM generations g WHERE g.file_id=f.id AND COALESCE(g.positive, '') <> '')",
-                    "workflow": "EXISTS (SELECT 1 FROM generations g WHERE g.file_id=f.id AND g.workflow IS NOT NULL)",
+            cond = {"prompt": "f.id IN (SELECT file_id FROM generations WHERE COALESCE(positive, '') <> '')",
+                    "workflow": "f.id IN (SELECT file_id FROM generations WHERE workflow IS NOT NULL)",
                     "meta": "f.meta = 1", "data": "f.meta = 1",
-                    "tags": "EXISTS (SELECT 1 FROM file_tags ft WHERE ft.file_id=f.id AND ft.removed=0)",
-                    "lora": "EXISTS (SELECT 1 FROM uses u WHERE u.file_id=f.id AND u.kind='lora')"}.get(v)
+                    "tags": "f.id IN (SELECT file_id FROM file_tags WHERE removed = 0)",
+                    "lora": "f.id IN (SELECT file_id FROM uses WHERE kind = 'lora')"}.get(v)
             if cond:
                 where.append(cond if key == "has" else f"NOT ({cond})")
         elif key in ("sampler", "scheduler"):
             if v.endswith("*"):
-                where.append(f"EXISTS (SELECT 1 FROM generations g WHERE g.file_id=f.id AND g.{key} LIKE ? ESCAPE '\\')")
+                where.append(f"f.id IN (SELECT file_id FROM generations WHERE {key} LIKE ? ESCAPE '\\')")
                 args.append(f"{_like(v[:-1])}%")
             else:
-                where.append(f"EXISTS (SELECT 1 FROM generations g WHERE g.file_id=f.id AND g.{key} = ? COLLATE NOCASE)")
+                where.append(f"f.id IN (SELECT file_id FROM generations WHERE {key} = ? COLLATE NOCASE)")
                 args.append(v)
         elif key == "cfg":
             try:
@@ -136,8 +179,8 @@ def build(q: str) -> tuple[list[str], list]:
             except ValueError:
                 where.append("0")
                 continue
-            where.append("EXISTS (SELECT 1 FROM generations g WHERE g.file_id=f.id AND abs(g.cfg - ?) < 0.001)")
-            args.append(cfg)
+            where.append("f.id IN (SELECT file_id FROM generations WHERE cfg BETWEEN ? AND ?)")
+            args += [cfg - 0.001, cfg + 0.001]
         elif key == "size":
             m = re.fullmatch(r"(\d+)\s*[x×*]\s*(\d+)", v.strip().lower())
             if m:
@@ -162,9 +205,8 @@ def build(q: str) -> tuple[list[str], list]:
             r = _range(v)
             if r:
                 op, vals = r
-                col = f"g.{key}"
-                sql = f"{col} >= ? AND {col} <= ?" if len(vals) == 2 else f"{col} {op} ?"
-                where.append(f"EXISTS (SELECT 1 FROM generations g WHERE g.file_id=f.id AND {sql})")
+                sql = f"{key} >= ? AND {key} <= ?" if len(vals) == 2 else f"{key} {op} ?"
+                where.append(f"f.id IN (SELECT file_id FROM generations WHERE {sql})")
                 args += vals
         elif key == "neg":
             neg_words.append(v)

@@ -98,6 +98,7 @@ class Library:
         threading.Thread(target=metadata.backfill_prompt_tags, args=(self.db,), name="prompt-tags", daemon=True).start()
         threading.Thread(target=self.thumbs.backfill_fingerprints, name="fingerprints", daemon=True).start()
         threading.Thread(target=self._backups, name="backups", daemon=True).start()
+        threading.Thread(target=self._warm, name="warm", daemon=True).start()
         self.thumbs.start()
         self.meta.start()
         self.watcher.start()
@@ -184,21 +185,35 @@ class Library:
             self.meta.nudge()
 
     # ---------------------------------------------------------------- what's there
-    @staticmethod
-    def _from(folder: int | None, kind: str | None, q: str = "", sort: str = "newest") -> tuple[str, list]:
-        """FROM ... WHERE ... for a view: a folder or everything, a kind, a search, Recently viewed."""
-        where, args = ["f.missing=2" if sort == "trashed" else "f.missing=0", "d.online=1"], []
+    def _from(self, folder: int | None, kind: str | None, q: str = "", sort: str = "newest") -> tuple[str, list]:
+        """FROM ... WHERE ... for a view: a folder or everything, a kind, a search, Recently viewed, the Trash.
+        Every condition is on files itself or an indexed lookup, so counting and paging stay quick."""
+        where, args = ["f.missing=2" if sort == "trashed" else "f.missing=0"], []
         if folder:
             where.append("f.folder_id=?")
             args.append(int(folder))
+        offline = self.db.cached(("offline",), self._offline)
+        if offline:
+            where.append(f"f.folder_id NOT IN ({','.join('?' * len(offline))})")
+            args += offline
         if kind in ("image", "video"):
             where.append("f.kind=?")
             args.append(kind)
-        sw, sa = search.build(q)
+        sw, sa = search.build(q, self.db)
         where += sw
         args += sa
         joins = " JOIN views v ON v.file_id=f.id" if sort == "viewed" else ""
-        return (f"files f JOIN folders d ON d.id=f.folder_id LEFT JOIN marks m ON m.file_id=f.id{joins} WHERE {' AND '.join(where)}", args)
+        return (f"files f{joins} WHERE {' AND '.join(where)}", args)
+
+    def _offline(self) -> list[int]:
+        with self.db.read() as c:
+            return [r[0] for r in c.execute("SELECT id FROM folders WHERE online=0")]
+
+    def count(self, frm: str, args: list) -> int:
+        def run():
+            with self.db.read() as c:
+                return c.execute(f"SELECT COUNT(*) FROM {frm}", args).fetchone()[0]
+        return self.db.cached(("count", frm, tuple(args)), run)
 
     def files(self, offset: int = 0, limit: int = 200, sort: str = "newest", folder: int | None = None, kind: str | None = None,
               seed: int = 0, q: str = "") -> dict:
@@ -206,11 +221,14 @@ class Library:
         frm, args = self._from(folder, kind, q, sort)
         order_args = [int(seed) % 4294967291] if sort == "random" else []
         limit = max(1, min(1000, int(limit)))
+        total = self.count(frm, args)
         with self.db.read() as c:
-            total = c.execute(f"SELECT COUNT(*) FROM {frm}", args).fetchone()[0]
-            rows = c.execute(f"SELECT {ITEM} FROM {frm} ORDER BY {SORTS[sort]} LIMIT ? OFFSET ?",
-                             [*args, *order_args, limit, max(0, int(offset))]).fetchall()
-        return {"total": total, "offset": offset, "items": [dict(r) for r in rows]}
+            # the page's ids straight from the index, then their details (the marks for those few only)
+            ids = [r[0] for r in c.execute(f"SELECT f.id FROM {frm} ORDER BY {SORTS[sort]} LIMIT ? OFFSET ?",
+                                           [*args, *order_args, limit, max(0, int(offset))])]
+            rows = c.execute(f"SELECT {ITEM} FROM files f LEFT JOIN marks m ON m.file_id=f.id WHERE f.id IN ({','.join('?' * len(ids))})", ids).fetchall() if ids else []
+        at = {r["id"]: dict(r) for r in rows}
+        return {"total": total, "offset": offset, "items": [at[i] for i in ids if i in at]}
 
     def days(self, sort: str = "newest", folder: int | None = None, kind: str | None = None, q: str = "") -> list[dict]:
         """How many files each day holds, in the grid's order, so it can put a heading over each day
@@ -218,9 +236,12 @@ class Library:
         if sort not in ("newest", "oldest"):
             return []
         frm, args = self._from(folder, kind, q, sort)
-        with self.db.read() as c:
-            return [{"day": r[0], "n": r[1]} for r in c.execute(
-                f"SELECT {DAY} AS day, COUNT(*) FROM {frm} GROUP BY day ORDER BY day {'DESC' if sort == 'newest' else 'ASC'}", args)]
+
+        def run():
+            with self.db.read() as c:
+                return [{"day": r[0], "n": r[1]} for r in c.execute(
+                    f"SELECT {DAY} AS day, COUNT(*) FROM {frm} GROUP BY day ORDER BY day {'DESC' if sort == 'newest' else 'ASC'}", args)]
+        return self.db.cached(("days", sort, frm, tuple(args)), run)
 
     # ---------------------------------------------------------------- one file
     def info(self, file_id: int) -> dict | None:
@@ -319,14 +340,22 @@ class Library:
 
     # ---------------------------------------------------------------- characters
     def characters(self) -> dict:
+        return self.db.cached_lazy(("characters-list",), self._characters)[0]
+
+    def _characters(self) -> dict:
         with self.db.read() as c:
-            rows = c.execute(
-                "SELECT ch.id, ch.name, ch.aliases, ch.cover,"
-                " (SELECT COUNT(*) FROM file_characters fc JOIN files f ON f.id=fc.file_id WHERE fc.character_id=ch.id AND fc.state IN ('auto','confirmed') AND f.missing=0) n,"
-                " (SELECT COUNT(*) FROM file_characters fc JOIN files f ON f.id=fc.file_id WHERE fc.character_id=ch.id AND fc.state='review' AND f.missing=0) review,"
-                " (SELECT fc.file_id FROM file_characters fc JOIN files f ON f.id=fc.file_id WHERE fc.character_id=ch.id AND fc.state IN ('auto','confirmed') AND f.missing=0"
-                "  ORDER BY fc.state='confirmed' DESC, f.mtime DESC LIMIT 1) latest"
-                " FROM characters ch ORDER BY ch.name COLLATE NOCASE").fetchall()
+            counts = {r[0]: (r[1], r[2]) for r in c.execute(
+                "SELECT fc.character_id, SUM(fc.state IN ('auto','confirmed')), SUM(fc.state='review') FROM file_characters fc"
+                " JOIN files f ON f.id=fc.file_id WHERE f.missing=0 GROUP BY fc.character_id")}
+            rows = []
+            for ch in c.execute("SELECT id, name, aliases, cover FROM characters ORDER BY name COLLATE NOCASE").fetchall():
+                latest = None
+                if not ch["cover"]:
+                    r = c.execute("SELECT fc.file_id FROM file_characters fc JOIN files f ON f.id=fc.file_id WHERE fc.character_id=? AND fc.state IN ('auto','confirmed')"
+                                  " AND f.missing=0 ORDER BY fc.state='confirmed' DESC, f.mtime DESC LIMIT 1", (ch["id"],)).fetchone()
+                    latest = r[0] if r else None
+                n, review = counts.get(ch["id"], (0, 0))
+                rows.append({"id": ch["id"], "name": ch["name"], "aliases": ch["aliases"], "cover": ch["cover"], "n": n or 0, "review": review or 0, "latest": latest})
             sugg = chars.suggestions(c)
         out = []
         for r in rows:
@@ -535,6 +564,10 @@ class Library:
             return c.execute("DELETE FROM albums WHERE id=?", (int(aid),)).rowcount > 0
 
     def duplicates(self, limit: int = 300) -> dict:
+        out, fresh = self.db.cached_lazy(("duplicates", limit), lambda: self._duplicates(limit))
+        return {**out, "stale": not fresh}
+
+    def _duplicates(self, limit: int = 300) -> dict:
         """Files that are the same: exact copies (the same bytes), and the same picture saved twice (another format
         or metadata). Each group lists its files, the one to keep first (with generation data, then the biggest, then the oldest)."""
         cols = ("f.id, f.name, f.rel, f.size, f.mtime, f.width, f.height, f.kind, f.meta, f.folder_id, d.path AS folder_path,"
@@ -559,6 +592,23 @@ class Library:
             g["wasted"] = sum(f["size"] or 0 for f in g["files"][1:])
         groups.sort(key=lambda g: -g["wasted"])
         return {"groups": groups, "wasted": sum(g["wasted"] for g in groups)}
+
+    def _warm(self) -> None:
+        """When indexing has gone quiet, count up Statistics and the like ahead of time, so they open at once."""
+        from . import stats
+        done = -1
+        while not self._stop.wait(20):
+            if self.scanning or self._queue or self.db.version == done:
+                continue
+            try:
+                if self.thumbs.pending() or self.meta.pending():
+                    continue
+                stats.overview(self, 30, self.models, fresh=True)
+                self.characters()
+                self.duplicates()
+                done = self.db.version
+            except Exception:
+                continue
 
     def _backups(self) -> None:
         """A copy of the index once a day (the last 7 kept), while the Gallery runs."""

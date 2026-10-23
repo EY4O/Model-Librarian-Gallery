@@ -33,8 +33,13 @@ def rule_files(c, rule) -> set[int]:
     kind, value = rule["kind"], rule["value"]
     if kind == "lora":
         v = norm(value)
-        rows = c.execute("SELECT DISTINCT file_id, name FROM uses WHERE kind='lora'").fetchall() if v else []
-        return {r[0] for r in rows if v in norm(r[1])}
+        if not v:
+            return set()
+        # the LoRA names that match (a few hundred to look through), then their files from the index
+        names = [r[0] for r in c.execute("SELECT DISTINCT name FROM uses WHERE kind='lora'") if v in norm(r[0])]
+        if not names:
+            return set()
+        return {r[0] for r in c.execute(f"SELECT file_id FROM uses WHERE kind='lora' AND name IN ({','.join('?' * len(names))})", names)}
     if kind == "word":
         q = _fts_phrase(value)
         return {r[0] for r in c.execute("SELECT rowid FROM search WHERE search MATCH ?", (q,))} if q else set()
@@ -80,29 +85,32 @@ def _set(c, file_id: int, cid: int, state: str, source: str) -> None:
 
 
 def rematch(c, character_id: int) -> None:
-    """Match one character against every file again (after its rules changed)."""
+    """Match one character against every file again (after its rules changed), as whole sets: a rule that
+    matches 50,000 files takes a moment, not minutes."""
     strong, weak, src = set(), set(), {}
     for r in _rules(c, character_id):
         files = rule_files(c, r)
         if r["strength"] == "strong":
             strong |= files
-            for f in files:
-                src.setdefault(f, r["kind"])
         elif not r["muted"]:
             weak |= files
-            for f in files:
-                src.setdefault(f, r["kind"])
-    # matches no rule makes any more go (yours stay)
-    keep = strong | weak
-    for (fid,) in c.execute("SELECT file_id FROM file_characters WHERE character_id=? AND state IN ('auto', 'review')", (character_id,)).fetchall():
-        if fid not in keep:
-            c.execute("DELETE FROM file_characters WHERE file_id=? AND character_id=?", (fid, character_id))
-        elif fid not in strong:  # was strong, now only weak
-            c.execute("UPDATE file_characters SET state='review' WHERE file_id=? AND character_id=? AND state='auto'", (fid, character_id))
-    for f in strong:
-        _set(c, f, character_id, "auto", src.get(f, "lora"))
-    for f in weak - strong:
-        _set(c, f, character_id, "review", src.get(f, "tag"))
+        else:
+            continue
+        for f in files:
+            src.setdefault(f, r["kind"])
+    weak -= strong
+    have = dict(c.execute("SELECT file_id, state FROM file_characters WHERE character_id=?", (character_id,)).fetchall())
+    now = time.time()
+    # matches no rule makes any more go; yours (confirmed, rejected) stay
+    c.executemany("DELETE FROM file_characters WHERE file_id=? AND character_id=?",
+                  [(f, character_id) for f, s in have.items() if s in ("auto", "review") and f not in strong and f not in weak])
+    c.executemany("UPDATE file_characters SET state='review' WHERE file_id=? AND character_id=?",
+                  [(f, character_id) for f, s in have.items() if s == "auto" and f in weak])
+    c.executemany("INSERT INTO file_characters (file_id, character_id, state, source, at) VALUES (?,?,'auto',?,?)"
+                  " ON CONFLICT (file_id, character_id) DO UPDATE SET state='auto', source=excluded.source, at=excluded.at",
+                  [(f, character_id, src.get(f, "lora"), now) for f in strong if have.get(f) not in ("confirmed", "rejected", "auto")])
+    c.executemany("INSERT INTO file_characters (file_id, character_id, state, source, at) VALUES (?,?,'review',?,?)",
+                  [(f, character_id, src.get(f, "tag"), now) for f in weak if f not in have])
     _apply_workflow_names(c, character_id)
 
 

@@ -15,7 +15,17 @@ TOP = 12
 SERIES = 7  # families shown in the timeline; the rest are "Other families"
 
 
-def overview(lib, days: int | None = 30, models=None) -> dict:
+def overview(lib, days: int | None = 30, models=None, *, fresh: bool = False) -> dict:
+    """Counting up a library of 250,000 takes a few seconds, so the last count is shown at once and a new one made
+    in the background when the index has changed (`fresh` waits for an up-to-date one)."""
+    key = ("stats", days, models is not None and models.data_dir())
+    if fresh:
+        return lib.db.cached(key, lambda: _overview(lib, days, models))
+    out, is_fresh = lib.db.cached_lazy(key, lambda: _overview(lib, days, models))
+    return {**out, "stale": not is_fresh}
+
+
+def _overview(lib, days: int | None = 30, models=None) -> dict:
     since = time.time() - days * 86400 if days else 0
     base = "FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.missing=0 AND d.online=1 AND f.mtime >= ?"
     a = [since]
@@ -29,10 +39,11 @@ def overview(lib, days: int | None = 30, models=None) -> dict:
         bucket = f"date(f.mtime, 'unixepoch', 'localtime', 'weekday 0', '-6 days')" if week else DAY
         out["timeline"] = {"by": "week" if week else "day", "points": [dict(r) for r in c.execute(
             f"SELECT {bucket} AS at, SUM(f.kind='image') images, SUM(f.kind='video') videos {base} GROUP BY at ORDER BY at", a)]}
-        # what it was made with: each file under its (first) checkpoint's family
+        # what it was made with: each file under its checkpoint's family (the model stored with what made it)
         made_with = c.execute(
-            f"SELECT {bucket} AS at, (SELECT u.name || char(1) || COALESCE(u.file, '') FROM uses u WHERE u.file_id=f.id AND u.kind IN ('checkpoint', 'unet')"
-            f" ORDER BY u.rowid LIMIT 1) AS model, COUNT(*) n {base} GROUP BY at, model ORDER BY at", a).fetchall()
+            f"SELECT {bucket} AS at, g.model AS model, COUNT(*) n FROM files f JOIN folders d ON d.id=f.folder_id LEFT JOIN generations g ON g.file_id=f.id"
+            f" WHERE f.missing=0 AND d.online=1 AND f.mtime >= ? GROUP BY at, g.model ORDER BY at", a).fetchall()
+        model_files = {r[0]: r[1] for r in c.execute("SELECT name, MIN(file) FROM uses WHERE kind IN ('checkpoint', 'unet') GROUP BY name")}
         uses = f"FROM uses u JOIN files f ON f.id=u.file_id JOIN folders d ON d.id=f.folder_id WHERE f.missing=0 AND d.online=1 AND f.mtime >= ?"
         out["checkpoints"] = [dict(r) for r in c.execute(
             f"SELECT u.name, COUNT(DISTINCT u.file_id) n, MAX(f.mtime) last {uses} AND u.kind IN ('checkpoint', 'unet')"
@@ -46,8 +57,8 @@ def overview(lib, days: int | None = 30, models=None) -> dict:
             "SELECT ch.id, ch.name, COUNT(*) n FROM file_characters fc JOIN characters ch ON ch.id=fc.character_id JOIN files f ON f.id=fc.file_id"
             " JOIN folders d ON d.id=f.folder_id WHERE fc.state IN ('auto','confirmed') AND f.missing=0 AND d.online=1 AND f.mtime >= ?"
             " GROUP BY ch.id ORDER BY n DESC LIMIT ?", (*a, TOP))]
-        out["prompt_tags"] = [dict(r) for r in c.execute(
-            f"SELECT p.tag AS name, COUNT(DISTINCT p.file_id) n FROM prompt_tags p JOIN files f ON f.id=p.file_id JOIN folders d ON d.id=f.folder_id"
+        out["prompt_tags"] = [dict(r) for r in c.execute(  # a file's parts are stored once each: COUNT(*) counts files
+            f"SELECT p.tag AS name, COUNT(*) n FROM prompt_tags p JOIN files f ON f.id=p.file_id JOIN folders d ON d.id=f.folder_id"
             f" WHERE f.missing=0 AND d.online=1 AND f.mtime >= ? GROUP BY p.tag ORDER BY n DESC LIMIT ?", (*a, 15))]
         gen = f"FROM generations g JOIN files f ON f.id=g.file_id JOIN folders d ON d.id=f.folder_id WHERE f.missing=0 AND d.online=1 AND f.mtime >= ?"
         out["settings"] = {}
@@ -73,8 +84,8 @@ def overview(lib, days: int | None = 30, models=None) -> dict:
     totals: dict[str, int] = {}
     rows = []
     for r in made_with:
-        name, _, file = (r["model"] or "").partition(chr(1))
-        fam = (resolve.family(name, file or None) or "Unknown family") if name else "No model recorded"
+        name = r["model"] or ""
+        fam = (resolve.family(name, model_files.get(name)) or "Unknown family") if name else "No model recorded"
         fam_of[name] = fam
         totals[fam] = totals.get(fam, 0) + r["n"]
         rows.append((r["at"], fam, r["n"]))

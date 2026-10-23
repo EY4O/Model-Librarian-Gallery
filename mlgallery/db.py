@@ -158,7 +158,23 @@ MIGRATIONS = [
         undone REAL
     );
     """,
+    # 6: indexes for a big library (the grid's order, filters by model, sampler, steps, review)
+    """
+    CREATE INDEX files_list ON files (missing, mtime DESC, id DESC);
+    CREATE INDEX uses_kind_name ON uses (kind, name, file_id);
+    CREATE INDEX generations_sampler ON generations (sampler COLLATE NOCASE);
+    CREATE INDEX generations_scheduler ON generations (scheduler COLLATE NOCASE);
+    CREATE INDEX generations_steps ON generations (steps);
+    CREATE INDEX generations_model ON generations (model);
+    CREATE INDEX file_characters_state ON file_characters (state, file_id);
+    CREATE INDEX file_tags_file ON file_tags (file_id);
+    CREATE INDEX files_name ON files (missing, name COLLATE NOCASE, id);
+    CREATE INDEX files_size ON files (missing, size DESC, id DESC);
+    CREATE INDEX files_fp_size ON files (fp, size);
+    ANALYZE;
+    """,
 ]
+CACHE = 256  # cached query results kept (each tied to the index as it was)
 
 
 class Database:
@@ -166,6 +182,11 @@ class Database:
         self.path = path
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.write_lock = threading.Lock()
+        self.version = 0  # goes up with every write: a cached result from an older version is stale
+        self._cache: dict = {}
+        self._cache_lock = threading.Lock()
+        self._lazy: dict = {}           # key -> (version, result): shown at once, recounted behind the scenes
+        self._refreshing: set = set()
         with self.connect() as c:
             c.execute("PRAGMA journal_mode=WAL")
             self._migrate(c)
@@ -175,7 +196,57 @@ class Database:
         c.row_factory = sqlite3.Row
         c.execute("PRAGMA foreign_keys=ON")
         c.execute("PRAGMA synchronous=NORMAL")
+        c.execute("PRAGMA cache_size=-32768")    # 32 MB of pages per connection
+        c.execute("PRAGMA mmap_size=268435456")  # reads straight from the file's pages
+        c.execute("PRAGMA temp_store=MEMORY")
         return c
+
+    def cached_lazy(self, key, fn):
+        """For the big counts (Statistics, characters, duplicates): the last result at once, even if the index has
+        changed since, while a fresh one is worked out in the background for next time. Only the very first
+        call waits. -> (result, fresh)"""
+        v = self.version
+        with self._cache_lock:
+            hit = self._lazy.get(key)
+            stale = hit is not None and hit[0] != v
+            if stale and key not in self._refreshing:
+                self._refreshing.add(key)
+                threading.Thread(target=self._refresh, args=(key, fn), daemon=True).start()
+        if hit is None:
+            out = fn()
+            with self._cache_lock:
+                self._lazy[key] = (v, out)
+            return out, True
+        return hit[1], not stale
+
+    def user_change(self) -> None:
+        """You changed something: the counts are worked out afresh when next asked for (no stale view of your own change)."""
+        with self._cache_lock:
+            self._lazy.clear()
+
+    def _refresh(self, key, fn) -> None:
+        try:
+            v = self.version
+            out = fn()
+            with self._cache_lock:
+                self._lazy[key] = (v, out)
+        finally:
+            with self._cache_lock:
+                self._refreshing.discard(key)
+
+    def cached(self, key, fn):
+        """fn()'s result, reused until the next write (each write makes every cached result stale)."""
+        v = self.version
+        with self._cache_lock:
+            hit = self._cache.get(key)
+        if hit and hit[0] == v:
+            return hit[1]
+        out = fn()
+        with self._cache_lock:
+            if len(self._cache) >= CACHE:
+                self._cache.clear()
+            self._cache[key] = (v, out)
+        return out
 
     def _migrate(self, c: sqlite3.Connection) -> None:
         have = c.execute("PRAGMA user_version").fetchone()[0]
@@ -196,6 +267,8 @@ class Database:
                 c.execute("BEGIN IMMEDIATE")
                 yield c
                 c.execute("COMMIT")
+                if c.total_changes:
+                    self.version += 1
             except BaseException:
                 c.execute("ROLLBACK")
                 raise

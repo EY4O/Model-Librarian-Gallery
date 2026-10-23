@@ -26,6 +26,7 @@ export async function renderStats(root, { open }) {
     if (me === gen) root.removeAttribute("aria-busy");
   }
   if (me !== gen) return;
+  if (data.stale) setTimeout(() => { if (me === gen && root.isConnected && !root.hidden) renderStats(root, { open }); }, 3000); // a fresh count is on its way
   const go = (...chips) => open([...chips, ...sinceChip()]);
   root.replaceChildren(...[
     h("header.st-head", {},

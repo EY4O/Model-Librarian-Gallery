@@ -168,6 +168,7 @@ export async function renderDuplicates(root) {
   root.setAttribute("aria-busy", "true");
   let d;
   try { d = await api("/duplicates"); } catch (e) { toast(e.message, true); return; } finally { root.removeAttribute("aria-busy"); }
+  if (d.stale) setTimeout(() => { if (root.isConnected && !root.hidden && root.querySelector("h1")?.textContent === "Duplicates") renderDuplicates(root); }, 4000);
   const extra = (g) => g.files.slice(1).map((f) => f.id);
   const all = d.groups.flatMap(extra);
   root.replaceChildren(...[

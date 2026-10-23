@@ -18,6 +18,7 @@ DEFAULTS = {
     "skip_eagle": True,         # never index Eagle libraries (*.library folders) inside a chosen folder
     "ffmpeg": "",               # path to ffmpeg for video posters ("" = look on PATH)
     "ml_data": "",              # Model Librarian's shared data folder ("" = find it)
+    "comfy_url": "http://127.0.0.1:8188",  # where ComfyUI runs, for Open in ComfyUI
 }
 
 
