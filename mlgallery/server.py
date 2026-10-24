@@ -17,6 +17,7 @@ from aiohttp import web
 
 from . import APP_NAME, VERSION
 from .library import Library
+from .update import Updater
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 mimetypes.init()  # first: a later init() would drop the types added below (and Windows' registry can map .webp oddly)
@@ -29,17 +30,23 @@ mimetypes.add_type("text/javascript", ".js")
 LIB = web.AppKey("lib", Library)
 TOKEN = web.AppKey("token", str)
 PICK = web.AppKey("pick_folder", object)
+UPDATER = web.AppKey("updater", Updater)
+QUIT = web.AppKey("quit", object)
+DAILY = web.AppKey("daily", object)
 
 
 def _err(msg: str, status: int = 400) -> web.Response:
     return web.json_response({"error": msg}, status=status)
 
 
-def make_app(lib: Library, token: str | None = None, *, pick_folder=None) -> web.Application:
-    """The aiohttp application. `pick_folder()`: the window's folder dialog, when there is one."""
+def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=None) -> web.Application:
+    """The aiohttp application. `pick_folder()`: the window's folder dialog, when there is one; `quit()` closes the window."""
     token = token or secrets.token_urlsafe(24)
     app = web.Application(middlewares=[_guard], client_max_size=4 * 1024 * 1024)
-    app[LIB], app[TOKEN], app[PICK] = lib, token, pick_folder
+    app[LIB], app[TOKEN], app[PICK], app[QUIT] = lib, token, pick_folder, quit
+    app[UPDATER] = Updater(lib.data_dir, lib.settings)
+    app.on_startup.append(_start_daily)
+    app.on_cleanup.append(_stop_daily)
     r = app.router
     r.add_get("/", index)
     r.add_static("/ui/", UI_DIR, show_index=False)
@@ -100,6 +107,9 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None) -> web
     r.add_get("/api/eagle/folders", eagle_folders)
     r.add_post("/api/eagle/send", eagle_send)
     r.add_get("/api/settings", settings_get)
+    r.add_post("/api/update/check", update_check)
+    r.add_post("/api/update/install", update_install)
+    r.add_post("/api/update/restart", update_restart)
     r.add_post("/api/settings", settings_set)
     r.add_get("/api/thumb/{id}", thumb)
     r.add_get("/api/file/{id}", original)
@@ -149,7 +159,9 @@ def _lib(request) -> Library:
 
 
 async def status(request):
-    return web.json_response(await asyncio.to_thread(_lib(request).status))
+    st = await asyncio.to_thread(_lib(request).status)
+    st["update"] = request.app[UPDATER].available()  # a newer Gallery on GitHub (only known once it's been asked)
+    return web.json_response(st)
 
 
 async def folders(request):
@@ -690,18 +702,22 @@ async def stats_view(request):
     return web.json_response(await asyncio.to_thread(stats.overview, _lib(request), days, _lib(request).models))
 
 
-def _settings_out(lib) -> dict:
+def _settings_out(lib, updater: Updater, can_restart: bool) -> dict:
     from .thumbs import find_ffmpeg
     backups = os.path.join(lib.data_dir, "backups")
     last = sorted(f for f in os.listdir(backups) if f.endswith(".db")) if os.path.isdir(backups) else []
     from . import shortcut
     return {"settings": lib.settings.all(), "ml_data_found": lib.models.data_dir(), "data_dir": lib.data_dir,
             "ffmpeg_found": find_ffmpeg(lib.settings.get("ffmpeg")), "last_backup": last[-1] if last else None, "version": VERSION,
-            "shortcut": shortcut.exists() if os.name == "nt" else None}
+            "shortcut": shortcut.exists() if os.name == "nt" else None, "update": dict(updater.info(), can_restart=can_restart)}
+
+
+def _settings_view(request) -> dict:
+    return _settings_out(_lib(request), request.app[UPDATER], bool(request.app[QUIT] and request.app[UPDATER].root))
 
 
 async def settings_get(request):
-    return web.json_response(await asyncio.to_thread(_settings_out, _lib(request)))
+    return web.json_response(await asyncio.to_thread(_settings_view, request))
 
 
 def _check_settings(b: dict) -> dict:
@@ -741,7 +757,49 @@ async def settings_set(request):
     except ValueError as ex:
         return _err(str(ex), 422)
     await asyncio.to_thread(lib.settings.update, b)
-    return web.json_response(await asyncio.to_thread(_settings_out, lib))
+    return web.json_response(await asyncio.to_thread(_settings_view, request))
+
+
+# ---------------------------------------------------------------- updates (see update.py)
+async def _start_daily(app):
+    app[DAILY] = asyncio.get_running_loop().create_task(app[UPDATER].daily())
+
+
+async def _stop_daily(app):
+    app[DAILY].cancel()
+
+
+async def update_check(request):
+    from .update import UpdateError
+    try:
+        await request.app[UPDATER].check()
+    except UpdateError as ex:
+        return _err(str(ex), 502)
+    return web.json_response(await asyncio.to_thread(_settings_view, request))
+
+
+async def update_install(request):
+    from .update import UpdateError
+    try:
+        await request.app[UPDATER].install()
+    except UpdateError as ex:
+        return _err(str(ex), 502)
+    except OSError as ex:
+        return _err(f"The update couldn't be unpacked: {ex}", 500)
+    return web.json_response(await asyncio.to_thread(_settings_view, request))
+
+
+async def update_restart(request):
+    """Close the window and have the launcher start the Gallery again, swapping in the waiting update first."""
+    up, quit = request.app[UPDATER], request.app[QUIT]
+    if not (up.root and up.staged() and quit):
+        return _err("There's no update waiting, or this Gallery can't restart itself: close it and start it again.", 409)
+    import subprocess
+    exe = os.path.join(up.root, f"{APP_NAME}.exe")
+    subprocess.Popen([exe, "--wait", "--data", _lib(request).data_dir], cwd=up.root, close_fds=True,
+                     creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    asyncio.get_running_loop().call_later(0.3, quit)  # after this answer has gone
+    return web.json_response({"ok": True})
 
 
 async def reveal_folder(request):
@@ -793,9 +851,9 @@ async def original(request):
     return web.FileResponse(path, headers={"Cache-Control": "no-cache"})  # ranges supported: videos seek
 
 
-async def serve(lib: Library, port: int = 0, token: str | None = None, pick_folder=None):
+async def serve(lib: Library, port: int = 0, token: str | None = None, pick_folder=None, quit=None):
     """Start serving on 127.0.0.1 -> (runner, port, token)."""
-    app = make_app(lib, token, pick_folder=pick_folder)
+    app = make_app(lib, token, pick_folder=pick_folder, quit=quit)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", port)

@@ -7,6 +7,7 @@ mlgallery/        the app: server, index, scanner, thumbnails, metadata, search,
                   meta/ holds Model Librarian's metadata readers (copies); ui/ is the interface (plain JS and CSS, no build step)
 tests/            pytest suites, the sample media generator and the headless Edge driver
 tools/            helper scripts: the icon, screenshots on sample media (shots.py), timings at 250k (perf.py), the portable build
+                  and its launcher (launcher.cs), releases (release.py)
 docs/             the plan, this file, README images
 ```
 
@@ -40,6 +41,7 @@ Python 3.12 with `requirements-dev.txt`. The UI tests need Microsoft Edge; the v
 | `test_organize` | Moves on one drive and across drives (copy, check, remove; a copy that doesn't match leaves the original), refusals (offline drive, `..`), the Trash, Put back, emptying (to a stand-in, never your Recycle Bin), Undo of each, bulk ratings / favourites / tags / albums, albums from Gallery Info, duplicates, backups |
 | `test_eagle` | Reading an Eagle library (nested folders as albums, deleted items skipped), matching by bytes, what bringing it in adds (your own ratings and notes kept), copying in the files it doesn't have, Undo, Send to Eagle against a stand-in for Eagle's API; on made-up libraries only |
 | `test_comfy` | Open in ComfyUI against a stand-in for Model Librarian's route (sent, not open in a browser, too old, not running), Save as recipe into a made-up library, the Start menu shortcut (in a temp folder) |
+| `test_update` | Updates against a stand-in for GitHub's API: a newer release found (or not, or GitHub unreachable), the daily check only with the switch on, installing (SHA-256 from GitHub's digest or a .sha256 file), refusals (a download that doesn't match, other packages, another version, a file outside its folder, not a zip, a checkout), the release zip, the routes; the launcher swapping in the update, and waiting while a Gallery is open (needs the C# compiler that comes with Windows); in made-up portable folders only |
 | `test_edit` | Flip, rotate and crop: ComfyUI's PNG text chunks and A1111's JPEG EXIF kept, the date kept, the result matching what the viewer showed, Save as copy, Undo of each |
 | `test_edges` | The cases a bug hunt and a QA pass found: folder names Windows folds (case, trailing dots), names held by files in the Trash, a new file where a trashed one was, a cross-drive copy whose original can't go, undo that can't finish, words and filters left out of a search, values that can't be read, a character in more files than an IN list takes, requests and settings that make no sense |
 | `test_server` | The token and Host checks, the API the interface uses (files, details, marks, tags, workflows, suggestions), folder add and remove, Show in Explorer |
@@ -65,10 +67,22 @@ Builds a made-up index of 250,000 files (no image files; a few minutes) in a tem
 .venv/Scripts/python tools/build_portable.py
 ```
 
-Makes `%LOCALAPPDATA%\Programs\Model Librarian Gallery`: its own Python (copied from a standalone CPython 3.12, `uv python find 3.12`), the packages from `requirements.txt` (through uv's cache), the app, and ffmpeg (copied from the one on PATH, without ffplay), about 270 MB. Start it with `Model Librarian Gallery.cmd`, or from the Start menu once Settings has added it. Its data stays in `%LOCALAPPDATA%\Model Librarian Gallery`, so a new build simply replaces the folder. Don't build into a OneDrive folder: it would sync all of it.
+Makes `%LOCALAPPDATA%\Programs\Model Librarian Gallery`: its own Python (copied from a standalone CPython 3.12, `uv python find 3.12`), the packages from `requirements.txt` (through uv's cache), the app (`app\`: `mlgallery\`, `start.pyw` and `requirements.txt`), ffmpeg (copied from the one on PATH, without ffplay), about 270 MB, and `Model Librarian Gallery.exe`. Start it with the exe, or from the Start menu once Settings has added it.
+
+The exe is `tools/launcher.cs`, compiled with the C# compiler that comes with Windows (.NET Framework 4's `csc.exe`; no SDK to install). It starts `python\pythonw.exe app\start.pyw`, after swapping in a downloaded update (`update\app`, marked by `update\ready`) while no Gallery has the data folder open. Its data stays in `%LOCALAPPDATA%\Model Librarian Gallery`, so a new build simply replaces the folder. Don't build into a OneDrive folder: it would sync all of it.
 
 ## Releasing
 
 1. Bump `VERSION` in `mlgallery/__init__.py`.
-2. Commit and push to `main`.
-3. Build the portable folder again.
+2. Commit and push to `main`. The commit message becomes the release notes.
+3. `.venv/Scripts/python tools/release.py --full --publish` makes the GitHub release `v<version>` with three files:
+   - `mlgallery-<version>.zip`, the portable folder's `app\`, which Galleries with **Updates** on download;
+   - its `.sha256`;
+   - `Model-Librarian-Gallery-<version>-portable.zip`, the whole folder, for a first install.
+
+   Without `--publish`, the files are only made in `dist/`.
+4. Build your own portable folder again (or let it update itself).
+
+A Gallery only updates itself to a release with the same `requirements.txt`; one that needs other packages points to the full download instead. Changes to `tools/launcher.cs` also reach people only through the full download: the launcher sits beside `app\`, not in the update zip.
+
+Updates need the repository to be public: GitHub's API doesn't show a private repository's releases to a Gallery that has no key, and the Gallery never asks for one.

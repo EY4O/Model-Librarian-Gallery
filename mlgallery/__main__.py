@@ -112,13 +112,17 @@ def main(argv=None) -> int:
         chosen = w.create_file_dialog(kind)
         return chosen[0] if chosen else None
 
+    def quit_window():
+        if window["w"]:
+            window["w"].destroy()
+
     loop = asyncio.new_event_loop()
     ready = threading.Event()
     info = {}
 
     def run_server():
         asyncio.set_event_loop(loop)
-        runner, port, token = loop.run_until_complete(serve(lib, args.port, pick_folder=pick_folder if not (args.browser or args.server) else None))
+        runner, port, token = loop.run_until_complete(serve(lib, args.port, **({} if args.browser or args.server else {"pick_folder": pick_folder, "quit": quit_window})))
         info.update(runner=runner, port=port, token=token)
         ready.set()
         loop.run_forever()

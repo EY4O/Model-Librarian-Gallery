@@ -1465,7 +1465,7 @@ function step(d) {
 }
 
 // ---------------------------------------------------------------- status
-let lastStatus = null, pollTimer = null, lastFiles = -1, lastMeta = -1, lastOffline = 0;
+let lastStatus = null, pollTimer = null, lastFiles = -1, lastMeta = -1, lastOffline = 0, toldUpdate = null;
 
 async function poll() {
   clearTimeout(pollTimer);
@@ -1495,6 +1495,7 @@ async function poll() {
     }
     lastMeta = st.meta_pending;
     $("trash-count").textContent = st.trash ? st.trash.toLocaleString() : "";
+    if (st.update && st.update !== toldUpdate) { toldUpdate = st.update; toast(`Model Librarian Gallery ${st.update} is out: Settings, Updates.`); }
     loadCharacters(); // matches change as files are read
     pollTimer = setTimeout(poll, busy ? 1500 : 4000);
   } catch {

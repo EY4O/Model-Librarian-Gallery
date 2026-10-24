@@ -11,10 +11,12 @@
 The packages come from requirements.txt through uv (from its cache when they're there). The result:
 
     Model Librarian Gallery/
-      Model Librarian Gallery.cmd   start it (or use Settings -> Add to the Start menu)
+      Model Librarian Gallery.exe   start it (or use Settings -> Add to the Start menu); swaps in a downloaded update first
       python/                       its own Python
-      app/                          the Gallery (mlgallery/) and start.pyw
+      app/                          the Gallery (mlgallery/), start.pyw and requirements.txt: what an update replaces
       ffmpeg/                       for video posters
+
+The launcher is tools/launcher.cs, compiled with the C# compiler that comes with Windows (.NET Framework 4).
 """
 from __future__ import annotations
 
@@ -43,16 +45,12 @@ from mlgallery.__main__ import main  # noqa: E402
 sys.exit(main())
 '''
 
-CMD = '''@echo off
-rem Starts Model Librarian Gallery (portable: its own Python and ffmpeg are in this folder).
-start "" "%~dp0python\\pythonw.exe" "%~dp0app\\start.pyw" %*
-'''
-
 README = '''Model Librarian Gallery (portable)
 
-Start it with "Model Librarian Gallery.cmd" (or, once it's open, Settings > Add to the Start menu).
+Start it with "Model Librarian Gallery.exe" (or, once it's open, Settings > Add to the Start menu).
 Everything it needs is in this folder; its index, thumbnails and settings live in
 %LOCALAPPDATA%\\Model Librarian Gallery, so a newer build can replace this folder without losing anything.
+With Settings > Updates on, it brings itself up to date from GitHub.
 '''
 
 
@@ -82,12 +80,37 @@ def copy_python(src: str, dst: str) -> None:
             pass
 
 
-def main():
+def make_app(dst: str) -> None:
+    """The app folder (what an update zip holds): mlgallery/, start.pyw, and the requirements it was built with."""
+    shutil.copytree(os.path.join(ROOT, "mlgallery"), os.path.join(dst, "mlgallery"), ignore=shutil.ignore_patterns("__pycache__"))
+    with open(os.path.join(dst, "start.pyw"), "w", encoding="utf-8", newline="\n") as f:
+        f.write(START)
+    shutil.copy2(os.path.join(ROOT, "requirements.txt"), dst)  # an update that needs other packages needs a full build
+
+
+def csc() -> str:
+    for fw in ("Framework64", "Framework"):
+        exe = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Microsoft.NET", fw, "v4.0.30319", "csc.exe")
+        if os.path.isfile(exe):
+            return exe
+    sys.exit("The C# compiler that comes with Windows (.NET Framework 4, csc.exe) wasn't found: it builds the launcher.")
+
+
+def make_launcher(out_exe: str) -> None:
+    """Model Librarian Gallery.exe, from tools/launcher.cs, with the Gallery's icon."""
+    r = subprocess.run([csc(), "/nologo", "/optimize+", "/target:winexe", f"/out:{out_exe}",
+                        "/win32icon:" + os.path.join(ROOT, "mlgallery", "ui", "icon.ico"), "/r:System.Windows.Forms.dll",
+                        os.path.join(ROOT, "tools", "launcher.cs")], capture_output=True, text=True)
+    if r.returncode or not os.path.isfile(out_exe):
+        sys.exit("The launcher didn't build:\n" + (r.stdout + r.stderr).strip())
+
+
+def main(argv=None) -> str:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "Programs"))
     ap.add_argument("--python")
     ap.add_argument("--ffmpeg")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     pkg = os.path.join(a.out, NAME)
     if os.path.exists(pkg):
         shutil.rmtree(pkg)
@@ -99,9 +122,8 @@ def main():
     print("packages from requirements.txt")
     subprocess.run(["uv", "pip", "install", "--python", py, "--system", "--break-system-packages", "-q", "-r", os.path.join(ROOT, "requirements.txt")], check=True)
     print("the Gallery")
-    shutil.copytree(os.path.join(ROOT, "mlgallery"), os.path.join(pkg, "app", "mlgallery"), ignore=shutil.ignore_patterns("__pycache__"))
-    with open(os.path.join(pkg, "app", "start.pyw"), "w", encoding="utf-8", newline="\n") as f:
-        f.write(START)
+    make_app(os.path.join(pkg, "app"))
+    make_launcher(os.path.join(pkg, f"{NAME}.exe"))
     ff_dir = a.ffmpeg or (os.path.dirname(shutil.which("ffmpeg")) if shutil.which("ffmpeg") else None)
     if ff_dir and os.path.isfile(os.path.join(ff_dir, "ffmpeg.exe")):
         print("ffmpeg  from", ff_dir)
@@ -112,12 +134,11 @@ def main():
                 shutil.copy2(os.path.join(ff_dir, n), dst)
     else:
         print("ffmpeg  not found: the package will make no video posters until it's installed")
-    with open(os.path.join(pkg, f"{NAME}.cmd"), "w", encoding="utf-8", newline="\r\n") as f:
-        f.write(CMD)
     with open(os.path.join(pkg, "README.txt"), "w", encoding="utf-8", newline="\r\n") as f:
         f.write(README)
     size = sum(os.path.getsize(os.path.join(d, n)) for d, _, ns in os.walk(pkg) for n in ns)
     print(f"built {pkg} ({size / 1e6:.0f} MB)")
+    return pkg
 
 
 if __name__ == "__main__":

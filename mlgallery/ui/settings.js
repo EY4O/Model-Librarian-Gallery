@@ -1,7 +1,9 @@
-// Model Librarian Gallery: Settings - folders, thumbnails, videos, Model Librarian, ComfyUI, the data folder.
+// Model Librarian Gallery: Settings - folders, thumbnails, videos, Model Librarian, ComfyUI, the data folder, updates.
 
 import { api, askText, baseName, fmtDate, fmtSize, h, plural, toast } from "./util.js";
 import { done } from "./organize.js";
+
+const field = (label, control, note) => h("div.set-row", {}, h("label.set-label", {}, label), h("div.set-control", {}, control, note ? h("p.note", {}, note) : null));
 
 export async function renderSettings(root, ctx) {
   let s, folders;
@@ -15,7 +17,6 @@ export async function renderSettings(root, ctx) {
       renderSettings(root, ctx);
     } catch (e) { toast(e.message, true); }
   };
-  const field = (label, control, note) => h("div.set-row", {}, h("label.set-label", {}, label), h("div.set-control", {}, control, note ? h("p.note", {}, note) : null));
   const text = (key, placeholder, what) => {
     const input = h("input", { type: "text", value: s.settings[key] || "", placeholder, spellcheck: false, "aria-label": what });
     input.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") save({ [key]: input.value.trim() }, what); });
@@ -68,7 +69,45 @@ export async function renderSettings(root, ctx) {
         h("button.btn.small", { type: "button", onclick: async () => {
           try { await api("/shortcut", { method: "POST" }); toast("Added to the Start menu."); renderSettings(root, ctx); } catch (e) { toast(e.message, true); }
         } }, s.shortcut ? "Make it again" : "Add the Gallery to the Start menu")), "Starts it in its own window, with its icon.")),
+    updates(s, () => renderSettings(root, ctx), save),
   );
+}
+
+// ---------------------------------------------------------------- updates from GitHub Releases
+function updates(s, again, save) {
+  const u = s.update;
+  const act = (path, label, busyText, okText) => {
+    const b = h("button.btn.small", { type: "button", onclick: async () => {
+      b.disabled = true;
+      b.textContent = busyText;
+      try {
+        await api(path, { method: "POST" });
+        if (okText) toast(okText);
+        if (path !== "/update/restart") again();
+      } catch (e) { toast(e.message, true); b.disabled = false; b.textContent = label; }
+    } }, label);
+    return b;
+  };
+  const on = h("input", { type: "checkbox", id: "set-updates", checked: s.settings.updates, onchange: (e) => save({ updates: e.target.checked }, "Update setting") });
+  const v = u.newer && u.newer.version;
+  let state;
+  if (u.staged) {
+    state = h("div.row", {}, h("span", {}, `${u.staged} is ready: it's used the next time the Gallery starts.`),
+      u.can_restart ? act("/update/restart", "Restart now", "Restarting…", "Restarting with the new version…") : null);
+  } else if (v) {
+    state = h("div.row", {}, h("span", {}, `${v} is out (you have ${u.current}).`),
+      u.portable ? act("/update/install", `Install ${v}`, "Downloading…", `${v} is ready: it's used the next time the Gallery starts.`) : null);
+  } else {
+    state = h("span", {}, u.checked && !u.error ? `${u.current} is the newest (looked ${fmtDate(u.checked)}).` : `${u.current}${u.checked ? "" : ", not checked yet"}.`);
+  }
+  const notes = v && !u.staged && u.newer.notes ? h("details.update-notes", {}, h("summary", {}, `What's new in ${v}`), h("pre", {}, u.newer.notes)) : null;
+  const how = !u.portable ? "This Gallery runs from a checkout: bring it up to date with git pull, then start it again."
+    : "Installing downloads the new version from GitHub (about 1 MB), checks it, and swaps it in when the Gallery next starts. A version that needs a full download says so.";
+  return h("section.st-card.set", { "aria-label": "Updates" },
+    h("div.st-card-head", {}, h("h2", {}, "Updates"), act("/update/check", "Check now", "Checking…")),
+    field("Check for updates", h("label.check", { for: "set-updates" }, on, " Ask GitHub once a day whether there's a newer version"),
+      "Only GitHub's list of releases is read: nothing about you or your library is sent."),
+    field("This Gallery", h("div", {}, state, notes), u.error ? `The last check didn't work: ${u.error}` : how));
 }
 
 // ---------------------------------------------------------------- bring in an Eagle library

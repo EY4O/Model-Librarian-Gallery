@@ -21,6 +21,7 @@ DEFAULTS = {
     "comfy_url": "http://127.0.0.1:8188",  # where ComfyUI runs, for Open in ComfyUI
     "eagle_url": "http://localhost:41595",  # Eagle's local API, for Send to Eagle
     "eagle_token": "",          # Eagle's API token, if your Eagle asks for one (you type it in Settings)
+    "updates": False,           # ask GitHub once a day whether there's a newer Gallery (nothing else is sent)
 }
 
 

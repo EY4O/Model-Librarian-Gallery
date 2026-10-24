@@ -30,6 +30,7 @@ A Windows app for large libraries of AI generations: it indexes the folders you 
 - ♻️ **Duplicates** — exact copies, and the same picture saved twice in another format or size.
 - 🔗 **Model Librarian and ComfyUI** — **Open in ComfyUI** opens a file's workflow in a new ComfyUI tab, **Save as recipe** puts it in Model Librarian's recipes, and the **Gallery Info** node tags images as they're made.
 - 🦅 **Eagle bridge** — bring an Eagle library's tags, folders, ratings and notes onto your files (it's only read), and send any selection to Eagle.
+- 🔄 **Updates when you want them** — turn on **Updates** in Settings and the portable Gallery asks GitHub once a day for a new version, then installs it at its next start.
 - 🛡️ **Your files stay yours** — indexing only reads; nothing leaves your PC.
 
 ## 📸 Screenshots
@@ -55,7 +56,7 @@ cd Model-Librarian-Gallery
 uv run --python 3.12 --no-project tools/build_portable.py
 ```
 
-It lands in `%LOCALAPPDATA%\Programs\Model Librarian Gallery`. Start **Model Librarian Gallery.cmd** there, then use **Settings → Add the Gallery to the Start menu**.
+It lands in `%LOCALAPPDATA%\Programs\Model Librarian Gallery`. Start **Model Librarian Gallery.exe** there, then use **Settings → Add the Gallery to the Start menu**. To keep it up to date, turn on **Settings → Updates**.
 
 ### Option 2: **Run from the checkout**
 
@@ -130,6 +131,7 @@ Statistics count the files made in a range (7 days to all time): what they were 
 - A move shows what will happen first and only goes into your library folders. Across drives it copies, checks the copy's size and fingerprint, then removes the original.
 - **Delete** moves a file to the Gallery's Trash (a hidden `.mlg-trash` folder in its own library folder), from where **Put back** restores it. Emptying the Trash sends files to the Windows Recycle Bin.
 - The Gallery listens on 127.0.0.1 only, with a new token each start; other programs and web pages can't use it. It sends nothing anywhere: Open in ComfyUI talks only to the ComfyUI address you set.
+- **Updates** are off until you turn them on. Checking only reads GitHub's list of releases. An update is checked against its SHA-256 before it's unpacked beside the app, and the Gallery swaps it in at its next start, while it's closed.
 </details>
 
 ---

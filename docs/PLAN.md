@@ -152,6 +152,14 @@ The Gallery indexes your folders where they are; Eagle keeps its own copy of eac
 - **Send to Eagle** (the selection's More menu) asks a running Eagle to add copies through its own API (`/api/item/addFromPaths`), into a folder you pick, with the Gallery's tags and characters, and the prompt and settings as the note. An API token is only needed if your Eagle asks for one.
 - Eagle libraries (`*.library`) are still never indexed as folders.
 
+## Updates
+
+The portable folder can bring itself up to date from the repository's GitHub Releases. The switch is off by default (it's network use), and **Check now** works without it.
+
+- **Checking:** with the switch on, the Gallery asks GitHub's API for the latest release once a day. Nothing is sent but the request itself.
+- **Installing:** it downloads only `app\` (about 1 MB), checks its SHA-256, and unpacks it beside the running one. `Model Librarian Gallery.exe` swaps it in at the next start, while no Gallery is open; **Restart now** does that straight away.
+- **Limits:** a release that needs other packages isn't installed this way; it points to the full portable download instead. A checkout updates with `git pull`.
+
 ## Decisions
 
 1. **Where it lives:** its own private repo, `EY4O/Model-Librarian-Gallery`.

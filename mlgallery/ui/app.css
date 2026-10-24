@@ -514,6 +514,9 @@ select.pick:focus { border-style: solid; border-color: var(--accent); }
 .set-label { color: var(--text-2); padding-top: 6px; }
 .set-control { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .set-control .note { margin: 0; color: var(--dim); font-size: 12px; line-height: 1.5; }
+.update-notes { margin-top: 8px; font-size: 12px; }
+.update-notes summary { cursor: pointer; color: var(--dim); }
+.update-notes pre { white-space: pre-wrap; font: inherit; color: var(--dim); line-height: 1.5; margin: 6px 0 0; max-height: 220px; overflow: auto; }
 .set-control input[type=text], .set-control select { height: 32px; padding: 0 9px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--control); color: var(--text); min-width: 0; }
 .set-control code, .set-folders code { font-family: var(--mono); font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
 .check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; padding-top: 6px; }

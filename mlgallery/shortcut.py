@@ -22,8 +22,11 @@ def target() -> tuple[str, str, str]:
     if not os.path.isfile(pyw):
         pyw = sys.executable
     app = os.path.dirname(HERE)
+    exe = os.path.join(os.path.dirname(app), f"{APP_NAME}.exe")
+    if os.path.isfile(exe):  # the portable folder's launcher (it also swaps in a downloaded update)
+        return exe, "", os.path.dirname(app)
     start = os.path.join(app, "start.pyw")
-    if os.path.isfile(start):  # the portable folder
+    if os.path.isfile(start):  # a portable folder built before the launcher
         return pyw, f'"{start}"', os.path.dirname(app)
     return pyw, "-m mlgallery", app  # a checkout (run.bat's .venv)
 
@@ -35,7 +38,8 @@ def make() -> str:
     os.makedirs(folder, exist_ok=True)
     lnk = os.path.join(folder, f"{APP_NAME}.lnk")
     prog, args, wd = target()
-    env = dict(os.environ, MLG_LNK=lnk, MLG_TARGET=prog, MLG_ARGS=args, MLG_WD=wd, MLG_ICON=os.path.join(HERE, "ui", "icon.ico"),
+    icon = prog if prog.lower().endswith(f"{APP_NAME}.exe".lower()) else os.path.join(HERE, "ui", "icon.ico")  # the exe's own: app\ may be swapped
+    env = dict(os.environ, MLG_LNK=lnk, MLG_TARGET=prog, MLG_ARGS=args, MLG_WD=wd, MLG_ICON=icon,
                MLG_DESC="Browse every image and video you've generated, and see what made each one")
     r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", PS], env=env, capture_output=True, text=True, timeout=30,
                        creationflags=0x08000000)
