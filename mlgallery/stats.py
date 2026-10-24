@@ -98,7 +98,7 @@ def _overview(lib, days: int | None = 30, models=None) -> dict:
         key = fam if fam in shown or fam == "No model recorded" else folded
         pt = points.setdefault(at, {"at": at})
         pt[key] = pt.get(key, 0) + n
-    out["made_with"] = {"by": out["timeline"]["by"], "series": [{"name": f, "color": families.color(f) if f in shown else ("#5d6372" if f == folded else "#3a3f4b"),
+    out["made_with"] = {"by": out["timeline"]["by"], "series": [{"name": f, "color": families.color(f) if f in shown else ("#707070" if f == folded else "#4b4b4b"),
                                                                    "n": totals.get(f, 0) if f != folded else sum(v for k, v in totals.items() if k not in shown and k != "No model recorded")}
                                                                   for f in series],
                         "points": [points[k] for k in sorted(points)]}

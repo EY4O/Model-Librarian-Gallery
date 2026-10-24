@@ -26,7 +26,9 @@ SORTS = {
     "newest": "f.mtime DESC, f.id DESC",
     "oldest": "f.mtime ASC, f.id ASC",
     "name": "f.name COLLATE NOCASE ASC, f.id ASC",
+    "name_desc": "f.name COLLATE NOCASE DESC, f.id DESC",
     "largest": "f.size DESC, f.id DESC",
+    "smallest": "f.size ASC, f.id ASC",
     # a shuffle that stays put while you scroll (the same seed gives the same order, page after page)
     # (two rounds of multiply-and-mod, so a different seed reorders everything, within 64-bit integers)
     "random": "((((f.id * 2654435761) % 4294967291) + ?) * 1597334677) % 4294967291, f.id",
@@ -117,7 +119,7 @@ class Library:
     # ---------------------------------------------------------------- folders
     def folders(self) -> list[dict]:
         with self.db.read() as c:
-            return [dict(r) for r in c.execute("SELECT id, path, added, last_scan, online, file_count FROM folders ORDER BY path COLLATE NOCASE")]
+            return [dict(r) for r in c.execute("SELECT id, path, added, last_scan, online, file_count, icon, color FROM folders ORDER BY path COLLATE NOCASE")]
 
     def add_folder(self, path: str) -> dict:
         path = str(path or "").strip().strip('"').strip()
@@ -254,6 +256,40 @@ class Library:
         with self.db.read() as c:
             newest = c.execute("SELECT MAX(id) FROM files").fetchone()[0] or 0  # what "Select all" covers: files up to this one
         return {"total": total, "offset": offset, "items": [at[i] for i in ids if i in at], "max_id": newest}
+
+    def shapes(self, sort: str = "newest", folder: int | None = None, kind: str | None = None, q: str = "", seed: int = 0) -> list[int]:
+        """Each file's height for a width of 100 (33 to 300; 100 when not known), in the grid's order: what the
+        Waterfall layout needs to place every tile without fetching every page."""
+        sort = sort if sort in SORTS else "newest"
+        frm, args = self._from(folder, kind, q, sort)
+        order_args = [int(seed) % 4294967291] if sort == "random" else []
+
+        def run():
+            with self.db.read() as c:
+                return [min(300, max(33, round(r[1] * 100 / r[0]))) if r[0] and r[1] else 100
+                        for r in c.execute(f"SELECT f.width, f.height FROM {frm} ORDER BY {SORTS[sort]}", [*args, *order_args])]
+        return self.db.cached(("shapes", sort, frm, tuple(args), tuple(order_args)), run)
+
+    def set_look(self, kind: str, item_id: int, icon=..., color=...) -> None:
+        """A folder's or album's icon and colour in the sidebar. icon: svg:<name>, n:<0-99> or e:<an emoji>; color: #rrggbb; None for the default."""
+        import re
+        table = {"folder": "folders", "album": "albums"}[kind]
+        sets, args = [], []
+        if icon is not ...:
+            if icon is not None and not (isinstance(icon, str) and re.fullmatch(r"svg:[a-z0-9-]{1,30}|n:\d{1,2}|e:\S{1,8}", icon)):
+                raise ValueError("That isn't an icon.")
+            sets.append("icon=?")
+            args.append(icon)
+        if color is not ...:
+            if color is not None and not (isinstance(color, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", color)):
+                raise ValueError("A colour is like #ef5350.")
+            sets.append("color=?")
+            args.append(color.lower() if color else None)
+        if not sets:
+            return
+        with self.db.write() as c:
+            if not c.execute(f"UPDATE {table} SET {', '.join(sets)} WHERE id=?", (*args, int(item_id))).rowcount:
+                raise KeyError(item_id)
 
     def days(self, sort: str = "newest", folder: int | None = None, kind: str | None = None, q: str = "") -> list[dict]:
         """How many files each day holds, in the grid's order, so it can put a heading over each day
@@ -575,7 +611,7 @@ class Library:
     def albums(self) -> list[dict]:
         with self.db.read() as c:
             return [dict(r) for r in c.execute(
-                "SELECT al.id, al.name, al.cover, (SELECT COUNT(*) FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0) n,"
+                "SELECT al.id, al.name, al.cover, al.icon, al.color, (SELECT COUNT(*) FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0) n,"
                 " (SELECT af.file_id FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0 ORDER BY f.mtime DESC LIMIT 1) latest"
                 " FROM albums al ORDER BY al.name COLLATE NOCASE")]
 

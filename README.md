@@ -19,11 +19,14 @@ A Windows app for large libraries of AI generations: it indexes the folders you 
 ## ✨ Key Features
 
 - ⚡ **Fast at any size** — a virtual grid that scrolls the same at 200 files or 250,000; searches and filters answer in a fraction of a second.
+- 🖼️ **Grid or Waterfall** — square tiles or each picture at its own shape, a zoom bar (Ctrl + wheel), names and an info line under the tiles, and a viewer where the picture fills the stage: zoom, pan, actual size.
+- ✂️ **Light editing** — flip, rotate and crop in the viewer; the prompt and workflow the file carries are kept, Save is undoable, or save an edited copy beside it.
 - 🧬 **What made it** — the prompt, settings, checkpoint, LoRAs with their strengths and the ComfyUI workflow of every image and video (ComfyUI, A1111 / Forge, NovelAI, InvokeAI and more), read by Model Librarian's own readers.
 - 🔍 **Search that knows generations** — words in prompts and names, plus `model:`, `lora:`, `tag:`, `character:`, `rating:4`, `is:fav`, `seed:`, `after:` and more, suggested as you type.
 - 📊 **Statistics** — what you made with over time (by model family, in Model Librarian's colours), your most used checkpoints, LoRAs, prompt parts and settings, and the models you have but never use.
 - 👤 **Characters** — a name plus its LoRA, trigger words or tags finds every image it's in; anything uncertain waits in **To review** for a yes or no.
 - 🗂️ **Organise with Undo** — ratings, favourites, tags, albums, moving and deleting many files at once; every change is in **History** and Ctrl+Z undoes it. Deleting goes to the Gallery's own Trash first.
+- 🎨 **Your sidebar** — give any folder or album an icon (or a number, or an emoji) and a colour, from its right-click menu.
 - ♻️ **Duplicates** — exact copies, and the same picture saved twice in another format or size.
 - 🔗 **Model Librarian and ComfyUI** — **Open in ComfyUI** opens a file's workflow in a new ComfyUI tab, **Save as recipe** puts it in Model Librarian's recipes, and the **Gallery Info** node tags images as they're made.
 - 🦅 **Eagle bridge** — bring an Eagle library's tags, folders, ratings and notes onto your files (it's only read), and send any selection to Eagle.

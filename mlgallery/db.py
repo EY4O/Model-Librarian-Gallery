@@ -181,6 +181,13 @@ MIGRATIONS = [
         source TEXT NOT NULL DEFAULT 'user'   -- or 'eagle'
     );
     """,
+    # 8: an icon and a colour of your choosing for each folder and album (in the sidebar; nothing on disk changes)
+    """
+    ALTER TABLE folders ADD COLUMN icon TEXT;
+    ALTER TABLE folders ADD COLUMN color TEXT;
+    ALTER TABLE albums ADD COLUMN icon TEXT;
+    ALTER TABLE albums ADD COLUMN color TEXT;
+    """,
 ]
 CACHE = 256  # cached query results kept (each tied to the index as it was)
 

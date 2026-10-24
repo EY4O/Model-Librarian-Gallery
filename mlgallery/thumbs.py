@@ -152,9 +152,10 @@ class Thumbnails:
         self.failed = 0
 
     # ---------------------------------------------------------------- one file
-    def make(self, row) -> int:
-        """Make the thumbnail for a files row. -> its thumb state (1 made, -1 failed, -2 a video without ffmpeg)."""
-        size = int(self.settings.get("thumb_size"))
+    def make(self, row, size: int | None = None) -> int:
+        """Make the thumbnail for a files row (at the thumbnail size, or this one). -> its thumb state (1 made,
+        -1 failed, -2 a video without ffmpeg)."""
+        size = size or int(self.settings.get("thumb_size"))
         dest = cache_path(self.dir, row["fp"], size)
         if os.path.isfile(dest):
             return 1
@@ -188,12 +189,16 @@ class Thumbnails:
                               (extra.get("width"), extra.get("height"), extra.get("duration"), row["id"]))
         return 1
 
-    def get(self, file_id: int) -> str | None:
+    def get(self, file_id: int, size: int | None = None) -> str | None:
         """The thumbnail file for a file id, made now if it isn't yet. None if it can't be made
-        (one that failed before isn't tried again on every scroll: a rescan of a changed file resets it)."""
+        (one that failed before isn't tried again on every scroll: a rescan of a changed file resets it).
+        A size other than the thumbnail size (sharper tiles, made as they're asked for) leaves the file's state alone."""
         row = self._row(file_id)
         if not row or not row["fp"] or row["thumb"] < 0:
             return None
+        if size and size != int(self.settings.get("thumb_size")):
+            dest = cache_path(self.dir, row["fp"], size)
+            return dest if os.path.isfile(dest) or self.make(row, size) == 1 else None
         size = int(self.settings.get("thumb_size"))
         dest = cache_path(self.dir, row["fp"], size)
         if os.path.isfile(dest):

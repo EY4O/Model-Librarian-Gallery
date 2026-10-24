@@ -113,6 +113,11 @@ def main():
     # two characters: one its LoRA gives away, one only a weak tag suggests (so To review has something)
     api("/characters", {"name": "Aurelia", "aliases": ["Aury"], "rules": [{"kind": "lora", "value": "aurelia_character"}, {"kind": "word", "value": "aurelia"}]})
     glow = api("/characters", {"name": "Glow", "rules": [{"kind": "tag", "value": "soft light", "strength": "weak"}]})
+    # a folder and an album with an icon and colour of their own, as you'd set from the sidebar
+    for f in api("/folders")["folders"][:1]:
+        api(f"/folders/{f['id']}/look", {"icon": "svg:sparkle", "color": "#a78bfa"})
+    for al in api("/albums")["albums"][:1]:
+        api(f"/albums/{al['id']}/look", {"icon": "svg:mountain", "color": "#22d3ee"})
 
     async def js(e, code):
         await e.js(code)
@@ -129,6 +134,7 @@ def main():
                     lambda e: e.wait("!document.querySelector('.chip') && document.querySelector('.tile')"),
                     lambda e: js(e, f"([...document.querySelectorAll('.tile')].find(t => t.getAttribute('aria-label') === {json.dumps(first_png['name'])}) || document.querySelector('.tile')).click(); true"),
                     lambda e: e.wait("document.querySelector('.v-panel .models') && document.querySelector('#v-media img')?.complete")]),
+        ("crop", [lambda e: e.key("C", shiftKey=True), lambda e: e.wait("document.querySelector('.v-crop')"), lambda e: asyncio.sleep(0.3)]),
         ("stats", [lambda e: js(e, "document.getElementById('v-close').click(); true"),
                    lambda e: js(e, "document.getElementById('view-stats').click(); true"),
                    lambda e: e.wait("document.querySelector('.kpis') && document.querySelector('.tl-col')")]),
@@ -149,6 +155,22 @@ def main():
         ("review", [lambda e: js(e, "document.getElementById('view-review').click(); true"),
                     lambda e: e.wait("document.querySelector('.r-card img')"),
                     lambda e: asyncio.sleep(0.8)]),
+        ("waterfall", [lambda e: js(e, "document.getElementById('view-all').click(); true"),
+                       lambda e: e.wait("document.querySelectorAll('.tile img.on').length > 8"),
+                       lambda e: js(e, "document.getElementById('view-btn').click(); true"),
+                       lambda e: js(e, "document.querySelector('.view-panel .seg button[data-v=waterfall]').click(); true"),
+                       lambda e: js(e, "[...document.querySelectorAll('.view-panel .vp-row')].find(r => r.textContent.startsWith('Name')).querySelector('.switch').click(); true"),
+                       lambda e: js(e, "[...document.querySelectorAll('.view-panel .vp-row')].find(r => r.textContent.startsWith('Info')).querySelector('.switch').click(); true"),
+                       lambda e: js(e, "document.querySelector('.menu')._close(); true"),
+                       lambda e: e.wait("document.querySelector('.tile .t-cap') && document.querySelectorAll('.tile img.on').length > 8"),
+                       lambda e: asyncio.sleep(0.6)]),
+        ("view-panel", [lambda e: js(e, "document.getElementById('view-btn').click(); true"), lambda e: asyncio.sleep(0.2)]),
+        ("folder-menu", [lambda e: js(e, "document.querySelector('.menu')?._close(); document.querySelector('#folders .nav-item').dispatchEvent(new MouseEvent('contextmenu', {bubbles: true})); true"),
+                         lambda e: e.wait("document.querySelector('.look-colors')")]),
+        ("icon-picker", [lambda e: js(e, "document.querySelector('.menu .menu-item').click(); true"), lambda e: e.wait("document.querySelector('.look-grid')")]),
+        ("grid-captions", [lambda e: js(e, "document.querySelector('.menu')?._close(); document.getElementById('view-btn').click(); true"),
+                           lambda e: js(e, "document.querySelector('.view-panel .seg button[data-v=grid]').click(); document.querySelector('.menu')._close(); true"),
+                           lambda e: e.wait("document.querySelectorAll('.tile img.on').length > 8"), lambda e: asyncio.sleep(0.4)]),
     ]
     os.makedirs(a.out, exist_ok=True)
     try:

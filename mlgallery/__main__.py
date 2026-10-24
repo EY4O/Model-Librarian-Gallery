@@ -140,7 +140,7 @@ def main(argv=None) -> int:
         else:
             import webview
             _own_taskbar_entry()
-            window["w"] = webview.create_window(APP_NAME, url, width=1440, height=920, min_size=(900, 600), background_color="#121317")
+            window["w"] = webview.create_window(APP_NAME, url, width=1440, height=920, min_size=(900, 600), background_color="#262626")
 
             def shown():
                 try:

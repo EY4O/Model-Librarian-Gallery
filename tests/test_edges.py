@@ -207,3 +207,23 @@ def test_settings_that_cant_work_are_refused(lib, tmp_path):
     out = run(lib, go)
     assert [s for s, _ in out.values()] == [422, 422, 422, 422, 200]
     assert out["127.0.0.1:8199"][1] == "http://127.0.0.1:8199"  # no scheme: http:// is meant
+
+
+def test_folder_and_album_icons_and_colours(lib, media):
+    image(media / "x.png")
+    f = lib.add_folder(str(media))
+    al = lib.album_save(None, "Picks")
+
+    async def go(client):
+        out = []
+        for path, body in ((f"/api/folders/{f['id']}/look", {"icon": "svg:sparkle", "color": "#A78BFA"}),
+                           (f"/api/albums/{al['id']}/look", {"icon": "e:🦊"}),
+                           (f"/api/albums/{al['id']}/look", {"icon": "n:12", "color": None}),
+                           (f"/api/folders/{f['id']}/look", {"icon": "<svg onload=x>"}),
+                           (f"/api/folders/{f['id']}/look", {"color": "red"}),
+                           ("/api/folders/999/look", {"icon": "svg:star"})):
+            out.append((await client.post(path, headers=H, json=body)).status)
+        return out
+    assert run(lib, go) == [200, 200, 200, 422, 422, 404]
+    assert {k: lib.folders()[0][k] for k in ("icon", "color")} == {"icon": "svg:sparkle", "color": "#a78bfa"}
+    assert {k: lib.albums()[0][k] for k in ("icon", "color")} == {"icon": "n:12", "color": None}

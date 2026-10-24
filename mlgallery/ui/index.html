@@ -116,7 +116,12 @@
             <option value="0">Unrated</option>
           </select>
         </label>
-        <button type="button" class="btn" id="view-btn" aria-haspopup="menu" title="Sort, what to show, tile size">
+        <div class="zoom" title="Tile size (Ctrl + mouse wheel, Ctrl+= and Ctrl+−)">
+          <button type="button" class="icon-btn small" id="zoom-out" aria-label="Smaller tiles"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+          <input type="range" id="zoom-range" step="2" aria-label="Tile size">
+          <button type="button" class="icon-btn small" id="zoom-in" aria-label="Bigger tiles"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+        </div>
+        <button type="button" class="btn" id="view-btn" aria-haspopup="menu" title="Layout, thumbnails, sort, what's shown">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
           <span id="view-label">View</span>
         </button>
@@ -136,19 +141,30 @@
 
   <div class="viewer" id="viewer" hidden>
     <header class="v-bar">
-      <button type="button" class="btn" id="v-close" title="Back to the library (Esc)">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18 9 12l6-6"/></svg><span id="v-back">Library</span>
-      </button>
-      <div class="v-title"><span class="v-name" id="v-name"></span><span class="v-meta" id="v-meta"></span></div>
-      <div class="spacer"></div>
+      <button type="button" class="icon-btn" id="v-close" title="Back to the library (Esc)" aria-label="Back to the library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18 9 12l6-6"/></svg></button>
       <span class="v-pos" id="v-pos"></span>
+      <span class="v-name" id="v-name"></span>
+      <div class="spacer"></div>
+      <div class="v-zoom" id="v-zoom">
+        <input type="range" id="v-zoom-range" min="0" max="1000" aria-label="Zoom">
+        <span class="v-zoom-pct" id="v-zoom-pct" aria-live="off"></span>
+      </div>
+      <div class="spacer"></div>
+      <div class="v-edit" id="v-edit" hidden></div>
+      <div class="v-tools" id="v-tools" role="toolbar" aria-label="Picture">
+        <button type="button" class="icon-btn" id="v-flip" title="Flip horizontally (Shift+F)" aria-label="Flip horizontally"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M9 7 4 17h5ZM15 7l5 10h-5Z"/></svg></button>
+        <button type="button" class="icon-btn" id="v-rotate" title="Rotate (Shift+R)" aria-label="Rotate"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="9" width="11" height="11" rx="1.5"/><path d="M9 5h5a5 5 0 0 1 5 5v1M16.5 8.5 19 11l2.5-2.5"/></svg></button>
+        <button type="button" class="icon-btn" id="v-crop" title="Crop (Shift+C)" aria-label="Crop"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2v14a2 2 0 0 0 2 2h14M2 6h14a2 2 0 0 1 2 2v14"/></svg></button>
+        <span class="bar-sep"></span>
+        <button type="button" class="icon-btn" id="v-actual" title="Actual size (Ctrl+0)" aria-label="Actual size"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M8 10v4M15 10v4M11.5 10.5h.01M11.5 13.5h.01"/></svg></button>
+        <button type="button" class="icon-btn" id="v-fit" title="Fit to the window (`)" aria-label="Fit to the window"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+      </div>
+      <span class="bar-sep"></span>
       <div class="stars" id="v-stars" role="group" aria-label="Rating (1 to 5, 0 clears)"></div>
       <button type="button" class="icon-btn fav" id="v-fav" aria-pressed="false" aria-label="Favourite" title="Favourite (F)">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5s-7.5-4.6-9.5-9.3C1.2 7.9 3.3 4.5 6.8 4.5c2 0 3.4 1.1 4.2 2.3h2c.8-1.2 2.2-2.3 4.2-2.3 3.5 0 5.6 3.4 4.3 6.7-2 4.7-9.5 9.3-9.5 9.3Z"/></svg>
       </button>
-      <button type="button" class="btn" id="v-details" aria-pressed="true" title="Hide details (I)">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M15 4v16"/></svg>Details
-      </button>
+      <button type="button" class="icon-btn" id="v-details" aria-pressed="true" title="Hide details (I)" aria-label="Details"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M15 4v16"/></svg></button>
     </header>
     <div class="v-body">
       <div class="v-stage">

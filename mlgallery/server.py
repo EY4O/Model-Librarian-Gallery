@@ -49,10 +49,15 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None) -> web
     r.add_post("/api/folders/pick", pick)
     r.add_delete("/api/folders/{fid}", remove_folder)
     r.add_post("/api/folders/{fid}/scan", scan_folder)
+    r.add_post("/api/folders/{fid}/look", folder_look)
+    r.add_post("/api/albums/{aid}/look", album_look)
+    r.add_get("/api/shapes", shapes)
     r.add_post("/api/scan", scan_all)
     r.add_get("/api/files", files)
     r.add_get("/api/days", days)
     r.add_post("/api/file/{id}/reveal", reveal)
+    r.add_post("/api/folders/{fid}/reveal", reveal_folder)
+    r.add_post("/api/file/{id}/edit", file_edit)
     r.add_get("/api/file/{id}/info", file_info)
     r.add_get("/api/file/{id}/workflow", file_workflow)
     r.add_post("/api/file/{id}/mark", file_mark)
@@ -198,6 +203,29 @@ async def files(request):
     except ValueError:
         return _err("bad paging")
     return web.json_response(res)
+
+
+async def shapes(request):
+    q = request.query
+    return web.json_response({"shapes": await asyncio.to_thread(_lib(request).shapes, seed=int(q.get("seed", 0) or 0), **_view(q))})
+
+
+def _look(kind, key):
+    async def handler(request):
+        b = await _body(request)
+        try:
+            await asyncio.to_thread(_lib(request).set_look, kind, int(request.match_info[key]),
+                                    b["icon"] if "icon" in b else ..., b["color"] if "color" in b else ...)
+        except KeyError:
+            return _err("not found", 404)
+        except ValueError as ex:
+            return _err(str(ex), 422)
+        return web.json_response({"ok": True})
+    return handler
+
+
+folder_look = _look("folder", "fid")
+album_look = _look("album", "aid")
 
 
 async def days(request):
@@ -425,6 +453,17 @@ async def empty(request, b):
 async def bulk_op(request, b):
     from . import bulk
     return await asyncio.to_thread(bulk.apply, _lib(request).db, await _ids(request, b), str(b.get("action")), b.get("value"))
+
+
+@_op
+async def file_edit(request, b):
+    from . import edit
+    lib = _lib(request)
+    r = await asyncio.to_thread(edit.apply, lib.db, int(request.match_info["id"]), b.get("rotate") or 0, bool(b.get("flip")),
+                                b.get("crop"), bool(b.get("copy")))
+    lib.thumbs.nudge()
+    lib.meta.nudge()
+    return r
 
 
 async def history(request):
@@ -705,6 +744,16 @@ async def settings_set(request):
     return web.json_response(await asyncio.to_thread(_settings_out, lib))
 
 
+async def reveal_folder(request):
+    """Open a library folder in Explorer (only one that's in the library)."""
+    f = next((f for f in await asyncio.to_thread(_lib(request).folders) if f["id"] == int(request.match_info["fid"])), None)
+    if not f or not os.path.isdir(f["path"]):
+        return _err("That folder isn't reachable right now.", 404)
+    import subprocess
+    subprocess.Popen(["explorer", os.path.normpath(f["path"])])
+    return web.json_response({"ok": True})
+
+
 async def reveal(request):
     """Show the file in Explorer, selected (only on this PC, and only a file that's in the index)."""
     try:
@@ -726,7 +775,8 @@ async def thumb(request):
         fid = int(request.match_info["id"])
     except ValueError:
         return _err("bad id")
-    path = await asyncio.to_thread(_lib(request).thumbs.get, fid)
+    size = int(request.query.get("s", 0) or 0)
+    path = await asyncio.to_thread(_lib(request).thumbs.get, fid, size if size in (512, 768) else None)
     if not path:
         return web.Response(status=404)
     return web.FileResponse(path, headers={"Cache-Control": "max-age=86400", "Content-Type": "image/webp"})

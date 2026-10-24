@@ -3,7 +3,7 @@
 // scrolls the same at 200 files or 250,000. Day headings come from a per-day count (one small request),
 // so every tile's place is known without fetching the pages above it.
 
-import { $, TOKEN, api, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, media, menu, plural, stars, store, toast } from "./util.js";
+import { $, LOOK_COLORS, LOOK_ICONS, TOKEN, api, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lookIcon, media, menu, plural, stars, store, toast } from "./util.js";
 import { renderStats } from "./stats.js";
 import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
 import * as org from "./organize.js";
@@ -13,7 +13,13 @@ const PAGE = 300;
 const HEAD = 40;      // a day heading's height
 const GROUP_GAP = 14; // space under a day's last row
 
-const SORT_NAMES = { newest: "Newest first", oldest: "Oldest first", name: "Name", largest: "Largest" };
+const SORT_NAMES = { newest: "Newest first", oldest: "Oldest first", name: "Name A–Z", name_desc: "Name Z–A", largest: "Largest first", smallest: "Smallest first" };
+// the View panel's sort: what it's by, then which way round
+const SORT_BY = { date: ["newest", "oldest"], name: ["name", "name_desc"], size: ["largest", "smallest"] };
+const SORT_BY_NAMES = { date: "Date made", name: "Name", size: "File size" };
+const INFO_NAMES = { dims: "Dimensions", size: "File size", date: "Date made", model: "Checkpoint", type: "File type" };
+const SHOW = { name: false, info: false, infoKind: "dims", ext: false, badges: true, made: true };
+const TILE_MIN = 100, TILE_MAX = 480;
 const KIND_NAMES = { "": "Images and videos", image: "Images only", video: "Videos only" };
 
 // ---------------------------------------------------------------- state
@@ -22,6 +28,7 @@ const state = {
   albums: [], album: null,
   folders: [], view: "all", folder: null, seed: 1 + Math.floor(Math.random() * 1e9),
   sort: store.get("sort", "newest"), kind: store.get("kind", ""), tile: store.get("tile", 176),
+  layout: store.get("layout", "grid"), quality: store.get("quality", "speed"), show: { ...SHOW, ...store.get("show", {}) }, shapes: null,
   chips: [], text: "",                     // the search: filter chips, and the words typed
   total: 0, groups: [], pages: new Map(), loading: new Map(), gen: 0, focus: -1, maxId: 0, selUpto: 0, stale: false,
 };
@@ -165,8 +172,8 @@ function renderSide() {
   const items = state.folders.map((f) => {
     const sel = state.view === "folder" && state.folder === f.id;
     return h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", title: f.path, onclick: () => selectView("folder", f.id),
-      "aria-current": sel ? "true" : null },
-      icon("folder"),
+      "aria-current": sel ? "true" : null, oncontextmenu: (e) => { e.preventDefault(); lookMenu(e.currentTarget, "folder", f); } },
+      lookIcon(f, "folder"),
       h("span.label", {}, baseName(f.path)),
       f.online ? h("span.n", {}, f.file_count.toLocaleString())
         : h("span.off", { title: "Not reachable right now (a drive that isn't plugged in?): its files are kept" }, "offline"),
@@ -180,8 +187,9 @@ function renderSide() {
     : [h("p.nav-empty", {}, "No folders yet. ", h("button", { type: "button", onclick: addFolder }, "Add one"))]));
   $("albums").replaceChildren(...(state.albums.length ? state.albums.map((a) => {
     const sel = state.view === "album" && state.album === a.name;
-    return h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", onclick: () => selectView("album", a.name), "aria-current": sel ? "true" : null },
-      icon("album"), h("span.label", {}, a.name), h("span.n", {}, a.n.toLocaleString()),
+    return h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", onclick: () => selectView("album", a.name), "aria-current": sel ? "true" : null,
+      oncontextmenu: (e) => { e.preventDefault(); lookMenu(e.currentTarget, "album", a); } },
+      lookIcon(a, "album"), h("span.label", {}, a.name), h("span.n", {}, a.n.toLocaleString()),
       h("span.acts", {},
         h("span.act", { role: "button", tabIndex: 0, title: "Rename", "aria-label": `Rename ${a.name}`, onkeydown: actKey,
           onclick: async (e) => { e.stopPropagation(); renameAlbum(a); } }, icon("tag")),
@@ -197,6 +205,48 @@ async function loadAlbums() {
     if (state.view === "album" && !state.albums.some((a) => a.name === state.album)) selectView("all");
     renderSide();
   } catch {}
+}
+
+// right-click on a folder or album: its icon and colour (Eagle's), and what else can be done with it
+function lookMenu(anchor, kind, it) {
+  const set = async (body) => {
+    try {
+      await api(`/${kind === "folder" ? "folders" : "albums"}/${it.id}/look`, { method: "POST", body });
+      await (kind === "folder" ? loadFolders() : loadAlbums());
+    } catch (e) { toast(e.message, true); }
+  };
+  const colours = h("div.look-colors", { role: "group", "aria-label": "Colour" },
+    h("button.look-color.none" + (it.color ? "" : ".on"), { type: "button", title: "No colour", "aria-label": "No colour", onclick: () => { closeMenu(); set({ color: null }); } }),
+    LOOK_COLORS.map((c) => h("button.look-color" + (it.color === c ? ".on" : ""), { type: "button", style: { background: c }, "aria-label": `Colour ${c}`,
+      onclick: () => { closeMenu(); set({ color: c }); } })));
+  const name = kind === "folder" ? baseName(it.path) : it.name;
+  menu(anchor, [
+    { label: "Change icon…", icon: "smile", onclick: () => iconPicker(anchor, it, (icon) => set({ icon })) },
+    { node: colours },
+    null,
+    ...(kind === "folder"
+      ? [{ label: "Look again", icon: "rescan", onclick: () => rescan(it) }, { label: "Show in Explorer", icon: "explorer", onclick: () => api(`/folders/${it.id}/reveal`, { method: "POST" }).catch((e) => toast(e.message, true)) }]
+      : [{ label: "Rename…", icon: "pen", onclick: () => renameAlbum(it) }]),
+    null,
+    kind === "folder" ? { label: `Remove ${name} from the library`, icon: "remove", danger: true, onclick: () => removeFolder(it) }
+      : { label: "Delete the album", icon: "remove", danger: true, onclick: () => deleteAlbum(it) },
+  ]);
+}
+
+function iconPicker(anchor, it, pick) {
+  const choose = (v) => { closeMenu(); pick(v); };
+  const grid = h("div.look-grid", { role: "group", "aria-label": "Icons" }, LOOK_ICONS.map((n) => h("button.look-pick" + (it.icon === `svg:${n}` ? ".on" : ""),
+    { type: "button", title: n, "aria-label": n, onclick: () => choose(`svg:${n}`) }, icon(n))));
+  const nums = h("div.look-grid", { role: "group", "aria-label": "Numbers" }, Array.from({ length: 21 }, (_, n) => h("button.look-pick" + (it.icon === `n:${n}` ? ".on" : ""),
+    { type: "button", "aria-label": `Number ${n}`, onclick: () => choose(`n:${n}`) }, h("span.look-num", {}, String(n)))));
+  const emoji = h("input.look-emoji-in", { type: "text", maxLength: 8, placeholder: "🦊", "aria-label": "An emoji", value: (it.icon || "").startsWith("e:") ? it.icon.slice(2) : "",
+    onkeydown: (e) => { e.stopPropagation(); if (e.key === "Enter" && emoji.value.trim()) choose(`e:${emoji.value.trim()}`); if (e.key === "Escape") closeMenu(); } });
+  menu(anchor, [{ node: h("div.look-picker", {},
+    h("div.menu-label", {}, "Icon"), grid,
+    h("div.menu-label", {}, "Number"), nums,
+    h("div.menu-label", {}, "Emoji"),
+    h("div.row.tight", {}, emoji, h("button.btn.small", { type: "button", onclick: () => emoji.value.trim() && choose(`e:${emoji.value.trim()}`) }, "Use it"),
+      h("span.spacer"), h("button.btn.small", { type: "button", onclick: () => choose(null) }, "Default"))) }], { cls: "look-menu" });
 }
 
 async function newAlbum() {
@@ -305,7 +355,7 @@ function setSide(hidden) {
   $("app").classList.toggle("side-hidden", hidden);
   $("side-show").hidden = !hidden;
   store.set("sideHidden", hidden);
-  requestAnimationFrame(draw);
+  requestAnimationFrame(() => { draw(); if (!$("viewer").hidden) vApply(); });
 }
 
 async function addFolder() {
@@ -345,23 +395,49 @@ const scroller = $("scroll"), sizer = $("sizer");
 const tiles = new Map(); // index -> element
 const heads = new Map(); // group index -> element
 
+let lastLayout = null;
+// a caption under each tile when the name or the info line is shown
+const captionHeight = () => (state.show.name || state.show.info ? 8 + (state.show.name ? 18 : 0) + (state.show.info ? 16 : 0) : 0);
+
 function layout() {
   const gap = 8;
   const width = sizer.clientWidth;
   const cols = Math.max(1, Math.floor((width + gap) / (state.tile + gap)));
   const size = Math.floor((width - gap * (cols - 1)) / cols);
-  const row = size + gap;
+  const cap = captionHeight();
+  const tileH = size + cap, row = tileH + gap;
   // day headings only while they add up to what's listed (mid-index they can lag behind: plain until the next refresh)
   const counted = state.groups.reduce((s, g) => s + g.n, 0);
-  const groups = state.groups.length && counted === state.total ? state.groups : [{ label: null, n: state.total, start: 0 }];
+  const daily = state.groups.length && counted === state.total ? state.groups : null;
+  const water = state.layout === "waterfall" && !!state.shapes && state.shapes.length === state.total;
+  const L0 = lastLayout;
+  if (L0 && L0.width === width && L0.tile === state.tile && L0.cap === cap && L0.water === water && L0.daily === daily
+      && L0.total === state.total && L0.shapes === state.shapes) return L0;
+  const groups = daily || [{ label: null, n: state.total, start: 0 }];
   let y = 0;
   for (const g of groups) {
     g.top = y;
     g.head = g.label ? HEAD : 4;
-    g.rows = Math.ceil(g.n / cols);
-    y += g.head + Math.max(0, g.rows * row - gap) + (g.label ? GROUP_GAP : 0);
+    if (water) {
+      // each file goes under the shortest column: tops only ever grow, so the visible ones are found by bisection
+      const colH = new Float64Array(cols);
+      g.wt = new Float32Array(g.n); g.wc = new Uint16Array(g.n); g.wh = new Float32Array(g.n);
+      for (let j = 0; j < g.n; j++) {
+        let c = 0;
+        for (let k = 1; k < cols; k++) if (colH[k] < colH[c]) c = k;
+        const hh = Math.round((size * state.shapes[g.start + j]) / 100) + cap;
+        g.wt[j] = colH[c]; g.wc[j] = c; g.wh[j] = hh;
+        colH[c] += hh + gap;
+      }
+      g.body = Math.max(0, Math.max(...colH) - gap);
+    } else {
+      g.rows = Math.ceil(g.n / cols);
+      g.body = Math.max(0, g.rows * row - gap);
+    }
+    y += g.head + g.body + (g.label ? GROUP_GAP : 0);
   }
-  return { gap, cols, size, row, groups, height: y };
+  lastLayout = { gap, cols, size, cap, tileH, row, groups, height: y, water, maxH: size * 3 + cap, width, tile: state.tile, daily, total: state.total, shapes: state.shapes };
+  return lastLayout;
 }
 
 // where tile i sits: its group, row and column
@@ -369,8 +445,9 @@ function place(i, L = layout()) {
   let lo = 0, hi = L.groups.length - 1;
   while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (L.groups[mid].start <= i) lo = mid; else hi = mid - 1; }
   const g = L.groups[lo], j = i - g.start;
+  if (L.water) return { g, gi: lo, j, c: g.wc[j], top: g.top + g.head + g.wt[j], left: g.wc[j] * (L.size + L.gap), h: g.wh[j] };
   const r = Math.floor(j / L.cols), c = j % L.cols;
-  return { g, gi: lo, r, c, top: g.top + g.head + r * L.row, left: c * (L.size + L.gap) };
+  return { g, gi: lo, j, r, c, top: g.top + g.head + r * L.row, left: c * (L.size + L.gap), h: L.tileH };
 }
 
 function query(path, offset) {
@@ -411,6 +488,19 @@ async function fetchPage(p) {
   }
 }
 
+async function loadShapes() {
+  if (state.layout !== "waterfall") { state.shapes = null; return; }
+  const gen = state.gen;
+  try {
+    const { shapes } = await api(query("/shapes"));
+    if (gen !== state.gen) return;
+    state.shapes = shapes;
+    draw();
+  } catch {
+    state.shapes = null;
+  }
+}
+
 async function loadDays() {
   const gen = state.gen;
   if (!["newest", "oldest"].includes(sortFor())) { state.groups = []; return; }
@@ -441,20 +531,43 @@ function tileFor(item) {
     const img = h("img", { alt: "", decoding: "async", draggable: false });
     img.onload = () => img.classList.add("on");
     img.onerror = () => { img.remove(); el.prepend(h("div.ph", {}, item.name)); };
-    img.src = media("thumb", item.id);
+    img.src = media("thumb", item.id) + thumbSize();
     el.append(img);
   }
   if (item.kind === "video") el.append(h("span.badge", {}, icon("play"), fmtDur(item.duration)));
-  if (item.favorite) el.append(h("span.t-fav", { title: "Favourite" }, icon("heart")));
-  if (item.rating) el.append(h("span.t-rating", { title: `Rated ${item.rating}` }, stars(item.rating, { size: 10 })));
-  if (item.color) el.append(h("span.t-fam", { style: { background: item.color }, title: item.family || "" }));
+  const sh = state.show;
+  const ext = (item.name.split(".").pop() || "").toUpperCase();
+  el.append(h("span.t-tr", {}, sh.ext && ext ? h("span.t-ext", {}, ext) : null,
+    sh.badges && item.favorite ? h("span.t-fav", { title: "Favourite" }, icon("heart")) : null));
+  if (sh.badges && item.rating) el.append(h("span.t-rating", { title: `Rated ${item.rating}` }, stars(item.rating, { size: 10 })));
+  if (sh.made && item.color) el.append(h("span.t-fam", { style: { background: item.color }, title: item.family || "" }));
+  if (sh.name || sh.info) {
+    el.classList.add("capped");
+    el.append(h("span.t-cap", {}, sh.name ? h("span.c1", {}, item.name) : null, sh.info ? h("span.c2", {}, infoLine(item, ext)) : null));
+  }
   const made = [item.model, item.lora ? `${item.lora}${item.lora_strength != null ? ` ${fmtNum(item.lora_strength)}` : ""}${item.loras > 1 ? ` +${item.loras - 1}` : ""}` : null].filter(Boolean);
-  el.append(h("span.name", {}, h("span.n1", {}, item.name), made.length ? h("span.n2", {}, made.join(" · ")) : null));
+  el.append(h("span.name", {}, h("span.n1", {}, item.name), sh.made && made.length ? h("span.n2", {}, made.join(" · ")) : null));
   el.title = `${item.name}\n${item.width && item.height ? `${item.width} × ${item.height} · ` : ""}${fmtSize(item.size)} · ${fmtDate(item.mtime)}`;
   return el;
 }
 
-const tileKey = (item) => `${item.id}:${item.thumb}:${item.rating}:${item.favorite}:${isSelected(item) ? 1 : 0}`;
+const tileKey = (item) => `${item.id}:${item.thumb}:${item.rating}:${item.favorite}:${isSelected(item) ? 1 : 0}:${thumbSize()}`;
+
+// Quality: thumbnails as sharp as the tile (made as they're asked for); Speed: the ones made ahead
+function thumbSize() {
+  if (state.quality !== "quality") return "";
+  const need = (lastLayout?.size || state.tile) * (window.devicePixelRatio || 1);
+  return need > 300 ? `&s=${need > 560 ? 768 : 512}` : "";
+}
+
+function infoLine(item, ext) {
+  const k = state.show.infoKind;
+  if (k === "size") return fmtSize(item.size);
+  if (k === "date") return fmtDate(item.mtime);
+  if (k === "model") return item.model || "No checkpoint recorded";
+  if (k === "type") return item.kind === "video" ? `${ext} video` : `${ext} image`;
+  return item.width && item.height ? `${item.width} × ${item.height}` : "";
+}
 
 // ---------------------------------------------------------------- the selection
 const isSelected = (item) => state.selAll || state.sel.has(item.id);
@@ -564,7 +677,7 @@ async function bulkAlbumOut() {
 // after anything that changed files: the counts, the lists and the grid
 org.onChange(async () => {
   await Promise.all([loadFolders(), loadAlbums(), loadCharacters()]);
-  if (!isPage()) reload(false);
+  if (!isPage()) await reload(false);
   else if (state.view === "history") org.renderHistory($("stats"));
   pollSoon();
   if (!$("viewer").hidden) refreshViewer();
@@ -574,12 +687,34 @@ function draw() {
   const L = layout();
   const { gap, cols, size, row, groups, height } = L;
   sizer.style.height = `${height}px`;
+  sizer.style.setProperty("--cap", `${L.cap}px`);
   const top = scroller.scrollTop - sizer.offsetTop, view = scroller.clientHeight;
   const lo = top - row * 2, hi = top + view + row * 2;
   const want = new Set(), wantHeads = new Set();
+  const put = (i, left, y, w, hh) => {
+    want.add(i);
+    const item = itemAt(i);
+    if (!item) { loadPage(Math.floor(i / PAGE)); return; }
+    let el = tiles.get(i);
+    if (!el || el.dataset.key !== tileKey(item)) {
+      const hadFocus = el && document.activeElement === el;
+      el?.remove();
+      item.__i = i;
+      el = tileFor(item);
+      el.dataset.key = tileKey(item);
+      sizer.append(el);
+      tiles.set(i, el);
+      if (hadFocus) el.focus({ preventScroll: true });
+    }
+    el.dataset.i = i;
+    el.tabIndex = i === Math.max(0, state.focus) ? 0 : -1; // one tab stop for the grid; arrows move within it
+    const pos = `${w},${hh},${left},${y}`;
+    if (el.dataset.pos === pos) return;
+    el.dataset.pos = pos;
+    Object.assign(el.style, { width: `${w}px`, height: `${hh}px`, left: `${left}px`, top: `${y}px` });
+  };
   groups.forEach((g, gi) => {
-    const gBottom = g.top + g.head + g.rows * row;
-    if (gBottom < lo || g.top > hi) return;
+    if (g.top + g.head + g.body < lo || g.top > hi) return;
     if (g.label) {
       wantHeads.add(gi);
       if (!heads.has(gi)) {
@@ -591,32 +726,22 @@ function draw() {
       }
       heads.get(gi).style.top = `${g.top}px`;
     }
-    const r0 = Math.max(0, Math.floor((lo - g.top - g.head) / row)), r1 = Math.min(g.rows - 1, Math.floor((hi - g.top - g.head) / row));
+    const base = g.top + g.head;
+    if (L.water) {
+      let a = 0, b = g.n;
+      const from = lo - base - L.maxH;
+      while (a < b) { const m = (a + b) >> 1; if (g.wt[m] < from) a = m + 1; else b = m; }
+      for (let j = a; j < g.n && g.wt[j] <= hi - base; j++) {
+        if (g.wt[j] + g.wh[j] >= lo - base) put(g.start + j, g.wc[j] * (size + gap), base + g.wt[j], size, g.wh[j]);
+      }
+      return;
+    }
+    const r0 = Math.max(0, Math.floor((lo - base) / row)), r1 = Math.min(g.rows - 1, Math.floor((hi - base) / row));
     for (let r = r0; r <= r1; r++) {
       for (let c = 0; c < cols; c++) {
         const j = r * cols + c;
         if (j >= g.n) break;
-        const i = g.start + j;
-        want.add(i);
-        const item = itemAt(i);
-        if (!item) { loadPage(Math.floor(i / PAGE)); continue; }
-        let el = tiles.get(i);
-        if (!el || el.dataset.key !== tileKey(item)) {
-          const hadFocus = el && document.activeElement === el;
-          el?.remove();
-          item.__i = i;
-          el = tileFor(item);
-          el.dataset.key = tileKey(item);
-          sizer.append(el);
-          tiles.set(i, el);
-          if (hadFocus) el.focus({ preventScroll: true });
-        }
-        el.dataset.i = i;
-        el.tabIndex = i === Math.max(0, state.focus) ? 0 : -1; // one tab stop for the grid; arrows move within it
-        const pos = `${size},${c * (size + gap)},${g.top + g.head + r * row}`;
-        if (el.dataset.pos === pos) continue;
-        el.dataset.pos = pos;
-        Object.assign(el.style, { width: `${size}px`, height: `${size}px`, left: `${c * (size + gap)}px`, top: `${g.top + g.head + r * row}px` });
+        put(g.start + j, c * (size + gap), base + r * row, size, L.tileH);
       }
     }
   });
@@ -643,7 +768,7 @@ function reload(toTop = false) {
   renderToolbar();
   state.stale = false;
   const gen = state.gen;
-  return Promise.all([loadPage(0), loadDays()]).then(() => {
+  return Promise.all([loadPage(0), loadDays(), loadShapes()]).then(() => {
     if (gen === state.gen) state.shownPages = null;
     // a refresh keeps the tiles on screen until the new list is in (no blank flash); draw swaps the ones that changed
     for (const el of heads.values()) el.remove();
@@ -661,7 +786,7 @@ function focusTile(i) {
   const L = layout(), p = place(i, L);
   const top = p.top + sizer.offsetTop, view = scroller.clientHeight;
   if (top < scroller.scrollTop) scroller.scrollTop = top - (p.r === 0 && p.g.label ? HEAD : 8);
-  else if (top + L.size > scroller.scrollTop + view) scroller.scrollTop = top + L.size - view + 8;
+  else if (top + p.h > scroller.scrollTop + view) scroller.scrollTop = top + p.h - view + 8;
   draw();
   const go = () => { const el = tiles.get(i); if (el) { el.focus({ preventScroll: true }); return true; } return false; };
   if (!go()) loadPage(Math.floor(i / PAGE)).then(() => { draw(); go(); });
@@ -675,8 +800,14 @@ function gridKey(e) {
   const L = layout(), p = place(i, L);
   const g = p.g;
   let to = null;
+  const inColumn = (d) => { // the next file up or down in the same column, in a Waterfall
+    for (let k = p.j + d, n = 0; k >= 0 && k < g.n && n < L.cols * 8; k += d, n++) if (g.wc[k] === p.c) return g.start + k;
+    const other = L.groups[p.gi + d];
+    return other ? (d > 0 ? other.start : other.start + other.n - 1) : null;
+  };
   if (e.key === "ArrowRight") to = i + 1;
   else if (e.key === "ArrowLeft") to = i - 1;
+  else if (L.water && (e.key === "ArrowDown" || e.key === "ArrowUp")) to = inColumn(e.key === "ArrowDown" ? 1 : -1);
   else if (e.key === "ArrowDown") {
     // the same column on the next row, or the next day's first row
     if ((p.r + 1) * L.cols < g.n) to = Math.min(g.start + g.n - 1, i + L.cols);
@@ -693,6 +824,7 @@ function gridKey(e) {
   else if (/^[0-5]$/.test(e.key)) { rate(itemAt(i), Number(e.key)); return true; }
   else if (e.key.toLowerCase() === "f") { favourite(itemAt(i)); return true; }
   else return false;
+  if (to == null) return true;
   focusTile(Math.max(0, Math.min(state.total - 1, to)));
   return true;
 }
@@ -796,10 +928,7 @@ function openViewer(i) {
   const v = $("viewer");
   const wasHidden = v.hidden;
   v.hidden = false;
-  $("v-back").textContent = $("view-title").textContent;
   $("v-name").textContent = item.name;
-  $("v-meta").textContent = [folderOf(item) ? baseName(folderOf(item).path) : "", item.width && item.height ? `${item.width} × ${item.height}` : "",
-    item.kind === "video" ? fmtDur(item.duration) : "", fmtSize(item.size), fmtDate(item.mtime)].filter(Boolean).join(" · ");
   $("v-pos").textContent = `${(i + 1).toLocaleString()} of ${state.total.toLocaleString()}`;
   $("v-prev").disabled = i <= 0;
   $("v-next").disabled = i >= state.total - 1;
@@ -808,6 +937,7 @@ function openViewer(i) {
   el.addEventListener("error", () => $("v-media").replaceChildren(h("div.v-broken", {}, h("p", {}, `This ${item.kind === "video" ? "video" : "picture"} can't be shown.`),
     h("p.note", {}, item.size ? "It may be damaged, or only partly saved." : "The file is empty (0 bytes)."))));
   $("v-media").replaceChildren(el);
+  viewerReset(item, el);
   renderMarks(item);
   loadDetails(item);
   clearTimeout(viewedTimer);
@@ -852,52 +982,57 @@ function promptBlock(text, cls = "") {
 
 function renderDetails(info) {
   const g = info.generation;
-  const parts = [];
+  const gen = []; // what made it
   if (g && g.source) {
-    if (g.positive) parts.push(section("Prompt", promptBlock(g.positive)));
-    if (g.negative) parts.push(section("Negative", promptBlock(g.negative, ".neg")));
+    if (g.positive) gen.push(section("Prompt", promptBlock(g.positive)));
+    if (g.negative) gen.push(section("Negative", promptBlock(g.negative, ".neg")));
     const settings = [["Seed", g.seed, "seed"], ["Steps", g.steps, "steps"], ["CFG", g.cfg], ["Sampler", g.sampler, "sampler"],
       ["Scheduler", g.scheduler, "scheduler"], ["Size", g.width && g.height ? `${g.width} × ${g.height}` : null],
       g.denoise != null && g.denoise !== 1 ? ["Denoise", g.denoise] : null, g.clip_skip ? ["Clip skip", g.clip_skip] : null].filter((s) => s && s[1] != null);
     if (settings.length) {
-      parts.push(section("Settings", h("div.settings", {}, settings.map(([k, v, key]) => h("div.set", {}, h("span.k", {}, k),
+      gen.push(section("Settings", h("div.settings", {}, settings.map(([k, v, key]) => h("div.set", {}, h("span.k", {}, k),
         key ? filterLink(key, String(v), typeof v === "number" ? fmtNum(v) : v) : h("span.v", {}, typeof v === "number" ? fmtNum(v) : v))))));
     }
     if (info.uses.length) {
-      parts.push(section("Models", h("div.models", {}, info.uses.map((u) => h("div.model", {},
+      gen.push(section("Models", h("div.models", {}, info.uses.map((u) => h("div.model", {},
         h("span.kind." + u.kind, {}, KIND[u.kind] || u.kind.toUpperCase()),
         filterLink(u.kind === "lora" ? "lora" : u.kind === "vae" ? "vae" : "model", u.name),
         u.kind === "lora" && u.strength != null ? h("span.strength", { title: u.clip != null && u.clip !== u.strength ? `model ${fmtNum(u.strength)} · clip ${fmtNum(u.clip)}` : `strength ${fmtNum(u.strength)}` },
           h("span.bar", {}, h("span", { style: { width: `${Math.max(4, Math.min(100, Math.abs(u.strength) * 100))}%` } })), fmtNum(u.strength)) : null)))));
     }
     if (g.has_workflow && state.view === "trash") {
-      parts.push(section("Workflow", h("p.note", {}, "Put it back from the Trash to open its workflow in ComfyUI or save it as a recipe.")));
+      gen.push(section("Workflow", h("p.note", {}, "Put it back from the Trash to open its workflow in ComfyUI or save it as a recipe.")));
     } else if (g.has_workflow) {
-      parts.push(section("Workflow", h("p.note", {}, `${g.source === "comfyui" ? "ComfyUI" : g.source}${g.nodes ? ` · ${plural(g.nodes, "node")}` : ""}`),
+      gen.push(section("Workflow", h("p.note", {}, `${g.source === "comfyui" ? "ComfyUI" : g.source}${g.nodes ? ` · ${plural(g.nodes, "node")}` : ""}`),
         h("div.row", {},
           h("button.btn.primary", { type: "button", title: "Opens it in a new tab in ComfyUI (with Model Librarian)", onclick: (e) => openInComfy(info, e.currentTarget) }, icon("play"), "Open in ComfyUI"),
           h("button.btn", { type: "button", title: "Into Model Librarian's recipes", onclick: (e) => saveRecipe(info, e.currentTarget) }, icon("save"), "Save as recipe"),
           h("button.btn", { type: "button", onclick: () => copyWorkflow(info) }, icon("copy"), "Copy workflow"),
           h("a.btn", { href: `/api/file/${info.id}/workflow?download=1&t=${encodeURIComponent(TOKEN)}`, download: "" }, icon("save"), "Save as .json"))));
     } else if (g.source && g.source !== "comfyui") {
-      parts.push(section("Made with", h("p.note", {}, { a1111: "Automatic1111 / Forge", novelai: "NovelAI", invokeai: "InvokeAI" }[g.source] || g.source)));
+      gen.push(section("Made with", h("p.note", {}, { a1111: "Automatic1111 / Forge", novelai: "NovelAI", invokeai: "InvokeAI" }[g.source] || g.source)));
     }
   } else {
-    parts.push(section("What made it", h("p.note", {}, "No generation data in this file. It may have been saved without it, or edited since.")));
+    gen.push(section("What made it", h("p.note", {}, "No generation data in this file. It may have been saved without it, or edited since.")));
   }
   const gi = g && g.info;
   if (gi) {
     const bits = [["Albums", gi.albums], ["Characters", gi.characters], ["Project", gi.project ? [gi.project] : []]].filter(([, v]) => v && v.length);
     if (bits.length || gi.note) {
-      parts.push(section("From the workflow",
+      gen.push(section("From the workflow",
         bits.length ? h("dl", {}, bits.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v.join(", "))])) : null,
         gi.note ? h("p.note", {}, gi.note) : null));
     }
   }
+  const ext = info.name.split(".").pop().toUpperCase();
+  const parts = [h("header.v-head", {}, h("h2.v-fname", {}, info.name),
+    h("p.v-sub", {}, [info.width && info.height ? `${info.width} × ${info.height}` : "", info.kind === "video" ? fmtDur(info.duration) : "", fmtSize(info.size), ext, fmtDate(info.mtime)]
+      .filter(Boolean).join(" · ")))];
   parts.push(section("Note", noteEditor(info)));
-  parts.push(section("Characters", characterEditor(info)));
-  parts.push(section("Albums", albumEditor(info)));
   parts.push(section("Tags", tagEditor(info)));
+  parts.push(section("Albums", albumEditor(info)));
+  parts.push(section("Characters", characterEditor(info)));
+  parts.push(...gen);
   const rows = [
     ["Type", `${info.kind === "video" ? "Video" : "Image"} · ${info.name.split(".").pop().toUpperCase()}`],
     ["Dimensions", info.width && info.height ? `${info.width} × ${info.height}` : "—"],
@@ -1032,7 +1167,239 @@ async function deleteViewing() {
   }
 }
 
+// ---------------------------------------------------------------- the picture: fit, zoom, pan; flip, rotate, crop
+// fit fills the stage (small pictures grow, big ones shrink); the wheel zooms at the cursor, a drag pans, a double-click
+// goes between fit and 100%. Edits are shown at once and written only on Save (over the file; Undo puts it back) or Save as copy.
+const vz = { fit: true, scale: 1, x: 0, y: 0, nw: 0, nh: 0, rot: 0, flip: false, crop: null, edited: false, item: null };
+const ZMIN = 0.05, ZMAX = 8;
+const vImg = () => $("v-media").querySelector("img");
+const shownDims = () => (vz.rot % 180 ? [vz.nh, vz.nw] : [vz.nw, vz.nh]);
+const editable = (item) => !!item && item.kind === "image" && /\.(png|jpe?g|webp)$/i.test(item.name) && state.view !== "trash";
+
+function viewerReset(item, el) {
+  Object.assign(vz, { fit: true, scale: 1, x: 0, y: 0, nw: 0, nh: 0, rot: 0, flip: false, crop: null, edited: false, item });
+  renderEditBar();
+  for (const id of ["v-flip", "v-rotate", "v-crop"]) $(id).disabled = !editable(item);
+  for (const id of ["v-actual", "v-fit"]) $(id).disabled = item.kind !== "image";
+  $("v-zoom").hidden = item.kind !== "image";
+  if (item.kind !== "image") return;
+  const ready = () => { vz.nw = el.naturalWidth; vz.nh = el.naturalHeight; vApply(); el.classList.add("on"); };
+  if (el.complete && el.naturalWidth) ready();
+  else el.addEventListener("load", ready, { once: true });
+}
+
+function vApply() {
+  const img = vImg();
+  if (!img || !vz.nw) return;
+  const box = $("v-media"), cw = box.clientWidth, ch = box.clientHeight;
+  const [w, h] = shownDims();
+  if (vz.fit || vz.crop) {
+    const pad = vz.crop ? 24 : 0; // room for the crop handles
+    vz.scale = Math.min((cw - pad * 2) / w, (ch - pad * 2) / h);
+    vz.x = (cw - w * vz.scale) / 2;
+    vz.y = (ch - h * vz.scale) / 2;
+  } else {
+    const W = w * vz.scale, H = h * vz.scale;
+    vz.x = W <= cw ? (cw - W) / 2 : Math.min(0, Math.max(cw - W, vz.x));
+    vz.y = H <= ch ? (ch - H) / 2 : Math.min(0, Math.max(ch - H, vz.y));
+  }
+  const ew = vz.nw * vz.scale, eh = vz.nh * vz.scale;
+  Object.assign(img.style, { width: `${ew}px`, height: `${eh}px`, left: `${vz.x + (w * vz.scale) / 2 - ew / 2}px`,
+    top: `${vz.y + (h * vz.scale) / 2 - eh / 2}px`, transform: `rotate(${vz.rot}deg) scaleX(${vz.flip ? -1 : 1})` });
+  $("v-zoom-pct").textContent = `${Math.round(vz.scale * 100)}%`;
+  $("v-zoom-range").value = String(Math.round((1000 * Math.log(vz.scale / ZMIN)) / Math.log(ZMAX / ZMIN)));
+  box.classList.toggle("pannable", !vz.crop && (w * vz.scale > cw + 1 || h * vz.scale > ch + 1));
+  if (vz.crop) drawCrop();
+}
+
+function zoomTo(scale, px, py) {
+  if (!vz.nw || vz.crop) return;
+  const box = $("v-media");
+  if (px == null) { px = box.clientWidth / 2; py = box.clientHeight / 2; }
+  const s = Math.max(ZMIN, Math.min(ZMAX, scale));
+  vz.x = px - ((px - vz.x) / vz.scale) * s;
+  vz.y = py - ((py - vz.y) / vz.scale) * s;
+  vz.scale = s;
+  vz.fit = false;
+  vApply();
+}
+const fitView = () => { vz.fit = true; vApply(); };
+
+function setEdited() { vz.edited = true; renderEditBar(); }
+function flipView() { // a flip of what's shown: turned the other way round, mirrored
+  if (!editable(vz.item) || !vz.nw) return;
+  vz.flip = !vz.flip;
+  vz.rot = (360 - vz.rot) % 360;
+  vz.crop = null;
+  $("v-media").querySelector(".v-crop")?.remove();
+  setEdited();
+  vApply();
+}
+function rotateView() {
+  if (!editable(vz.item) || !vz.nw) return;
+  vz.rot = (vz.rot + 90) % 360;
+  vz.crop = null;
+  $("v-media").querySelector(".v-crop")?.remove();
+  vz.fit = true;
+  setEdited();
+  vApply();
+}
+function cropView() {
+  if (!editable(vz.item) || !vz.nw) return;
+  const [w, h] = shownDims();
+  vz.crop = vz.crop || { x: 0, y: 0, w, h };
+  setEdited();
+  vApply();
+}
+function cancelEdit() {
+  Object.assign(vz, { rot: 0, flip: false, crop: null, edited: false, fit: true });
+  $("v-media").querySelector(".v-crop")?.remove();
+  renderEditBar();
+  vApply();
+}
+
+function renderEditBar() {
+  const bar = $("v-edit");
+  bar.hidden = !vz.edited;
+  $("v-tools").classList.toggle("editing", vz.edited);
+  if (!vz.edited) return bar.replaceChildren();
+  const num = (key, label) => {
+    const inp = h("input.v-num", { type: "number", min: 16, value: String(Math.round(vz.crop[key])), "aria-label": label, title: label,
+      onchange: () => {
+        const [W, H] = shownDims(), c = vz.crop;
+        c[key] = Math.max(16, Math.min(key === "w" ? W - c.x : H - c.y, Math.round(Number(inp.value) || 16)));
+        vApply();
+      } });
+    return inp;
+  };
+  bar.replaceChildren(
+    vz.crop ? h("span.v-crop-size", {}, num("w", "Width"), h("span", { "aria-hidden": "true" }, "×"), num("h", "Height")) : null,
+    h("button.btn.primary.small", { type: "button", title: "Save over the file (Undo puts the original back)", onclick: () => saveEdit(false) }, vz.crop ? "Crop" : "Save"),
+    h("button.btn.small", { type: "button", title: "Keep the original; save the edit beside it", onclick: () => saveEdit(true) }, "Save as copy"),
+    h("button.btn.small", { type: "button", onclick: cancelEdit }, "Cancel"));
+}
+
+function drawCrop() {
+  const box = $("v-media");
+  let ov = box.querySelector(".v-crop");
+  if (!ov) {
+    ov = h("div.v-crop", { "aria-label": "Crop area: drag to move, the handles to resize" },
+      ["nw", "n", "ne", "e", "se", "s", "sw", "w"].map((d) => h("span.v-h." + d, { "data-d": d })));
+    ov.addEventListener("pointerdown", cropDrag);
+    box.append(ov);
+  }
+  const c = vz.crop, s = vz.scale;
+  Object.assign(ov.style, { left: `${vz.x + c.x * s}px`, top: `${vz.y + c.y * s}px`, width: `${c.w * s}px`, height: `${c.h * s}px` });
+  const [wi, hi] = $("v-edit").querySelectorAll(".v-num");
+  if (wi && document.activeElement !== wi) wi.value = String(Math.round(c.w));
+  if (hi && document.activeElement !== hi) hi.value = String(Math.round(c.h));
+}
+
+function cropDrag(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const d = e.target.dataset.d || "move", ov = e.currentTarget;
+  const start = { ...vz.crop }, sx = e.clientX, sy = e.clientY, [W, H] = shownDims(), MIN = 16;
+  ov.setPointerCapture(e.pointerId);
+  const move = (ev) => {
+    const dx = (ev.clientX - sx) / vz.scale, dy = (ev.clientY - sy) / vz.scale;
+    let { x, y, w, h: hh } = start;
+    if (d === "move") {
+      x = Math.max(0, Math.min(W - w, x + dx));
+      y = Math.max(0, Math.min(H - hh, y + dy));
+    } else {
+      if (d.includes("w")) { const nx = Math.max(0, Math.min(x + w - MIN, x + dx)); w += x - nx; x = nx; }
+      if (d.includes("e")) w = Math.max(MIN, Math.min(W - x, w + dx));
+      if (d.includes("n")) { const ny = Math.max(0, Math.min(y + hh - MIN, y + dy)); hh += y - ny; y = ny; }
+      if (d.includes("s")) hh = Math.max(MIN, Math.min(H - y, hh + dy));
+    }
+    Object.assign(vz.crop, { x, y, w, h: hh });
+    drawCrop();
+  };
+  const up = () => { ov.removeEventListener("pointermove", move); ov.removeEventListener("pointerup", up); };
+  ov.addEventListener("pointermove", move);
+  ov.addEventListener("pointerup", up);
+}
+
+async function saveEdit(copy) {
+  const item = vz.item;
+  if (!item || !vz.edited) return;
+  const c = vz.crop, [W, H] = shownDims();
+  const crop = c && (c.x > 0.5 || c.y > 0.5 || c.w < W - 0.5 || c.h < H - 0.5) ? [c.x, c.y, c.w, c.h].map(Math.round) : null;
+  if (!crop && !vz.rot && !vz.flip) return cancelEdit();
+  try {
+    const r = await api(`/file/${item.id}/edit`, { method: "POST", body: { rotate: vz.rot, flip: vz.flip, crop, copy } });
+    cancelEdit();
+    if (!copy) { // the new picture, not the cached one
+      const img = vImg();
+      if (img) {
+        vz.nw = 0;
+        img.classList.remove("on");
+        img.addEventListener("load", () => { vz.nw = img.naturalWidth; vz.nh = img.naturalHeight; vApply(); img.classList.add("on"); }, { once: true });
+        img.src = `${media("file", item.id)}&v=${Date.now()}`;
+      }
+    }
+    org.done(r, copy ? `Saved ${r.name} beside it.` : `Saved ${item.name}. Undo puts the original back.`);
+  } catch (e) { toast(e.message, true); }
+}
+
+function viewerKey(e) {
+  const k = e.key;
+  if (vz.edited && k === "Escape") { cancelEdit(); return true; }
+  if (vz.crop && k === "Enter") { saveEdit(false); return true; }
+  if (e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    if (k === "F") { flipView(); return true; }
+    if (k === "R") { rotateView(); return true; }
+    if (k === "C") { cropView(); return true; }
+  }
+  if (e.ctrlKey && k === "0") { zoomTo(1); return true; }
+  if (e.ctrlKey && (k === "=" || k === "+")) { zoomTo(vz.scale * 1.25); return true; }
+  if (e.ctrlKey && k === "-") { zoomTo(vz.scale / 1.25); return true; }
+  if (!e.ctrlKey && k === "`") { fitView(); return true; }
+  return false;
+}
+
+{
+  const box = $("v-media");
+  box.addEventListener("wheel", (e) => {
+    if (!vz.nw || vz.crop) return;
+    e.preventDefault();
+    const r = box.getBoundingClientRect();
+    zoomTo(vz.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+  box.addEventListener("dblclick", (e) => {
+    if (!vz.nw || vz.crop) return;
+    const r = box.getBoundingClientRect();
+    if (vz.fit) zoomTo(Math.abs(vz.scale - 1) < 0.05 ? 2 : 1, e.clientX - r.left, e.clientY - r.top);
+    else fitView();
+  });
+  box.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || vz.crop || !box.classList.contains("pannable") || e.target.tagName !== "IMG") return;
+    e.preventDefault();
+    box.setPointerCapture(e.pointerId);
+    let lx = e.clientX, ly = e.clientY;
+    const move = (ev) => { vz.x += ev.clientX - lx; vz.y += ev.clientY - ly; lx = ev.clientX; ly = ev.clientY; vApply(); };
+    const up = () => { box.removeEventListener("pointermove", move); box.removeEventListener("pointerup", up); };
+    box.addEventListener("pointermove", move);
+    box.addEventListener("pointerup", up);
+  });
+  window.addEventListener("resize", () => { if (!$("viewer").hidden) vApply(); });
+  $("v-zoom-range").addEventListener("input", (e) => zoomTo(ZMIN * Math.pow(ZMAX / ZMIN, Number(e.target.value) / 1000)));
+  $("v-flip").onclick = flipView;
+  $("v-rotate").onclick = rotateView;
+  $("v-crop").onclick = cropView;
+  $("v-actual").onclick = () => zoomTo(1);
+  $("v-fit").onclick = fitView;
+}
+
 async function refreshViewer() {
+  if (shown) {
+    for (const [p, items] of state.pages) {
+      const k = items.findIndex((it) => it.id === shown.id);
+      if (k >= 0) { viewing = p * PAGE + k; break; }
+    }
+    $("v-pos").textContent = `${(viewing + 1).toLocaleString()} of ${state.total.toLocaleString()}`;
+  }
   const item = itemAt(viewing);
   if (item) loadDetails(item);
 }
@@ -1079,6 +1446,7 @@ function setDetails(open) {
 
 function closeViewer() {
   if ($("viewer").hidden) return;
+  if (vz.edited) cancelEdit();
   $("viewer").hidden = true;
   $("v-media").replaceChildren();
   const i = viewing;
@@ -1089,6 +1457,7 @@ function closeViewer() {
 }
 
 function step(d) {
+  if (vz.edited) return toast("Save or cancel the edit first.");
   const i = viewing + d;
   if (i < 0 || i >= state.total) return;
   if (itemAt(i)) openViewer(i);
@@ -1151,19 +1520,83 @@ $("view-review").onclick = () => selectView("review");
 $("shuffle").onclick = () => selectView("random");
 $("side-hide").onclick = () => setSide(true);
 $("side-show").onclick = () => setSide(false);
-function viewMenu(anchor) {
-  const slider = h("input", { type: "range", min: 120, max: 300, step: 4, value: state.tile, "aria-label": "Tile size",
-    oninput: (e) => { state.tile = Number(e.target.value); store.set("tile", state.tile); draw(); } });
-  const pick = (label, on, fn) => h("button.menu-item" + (on ? ".on" : ""), { type: "button", role: "menuitemradio", "aria-checked": String(on),
-    onclick: () => { fn(); renderToolbar(); } }, on ? icon("check") : h("span.menu-gap"), h("span", {}, label));
-  const sorts = ["random", "recent", "trash"].includes(state.view) ? [] : [h("div.menu-label", {}, "Sort"),
-    ...Object.entries(SORT_NAMES).map(([k, v]) => pick(v, state.sort === k, () => { state.sort = k; store.set("sort", k); reload(true); }))];
-  menu(anchor, [...sorts.map((node) => ({ node })), ...(sorts.length ? [null] : []),
-    { node: h("div.menu-label", {}, "Show") },
-    ...Object.entries(KIND_NAMES).map(([k, v]) => ({ node: pick(v, state.kind === k, () => { state.kind = k; store.set("kind", k); reload(true); }) })),
-    null, { node: h("div.menu-label", {}, "Tile size") }, { node: h("div.menu-range", {}, icon("grid"), slider) }]);
+function viewPanel(anchor) {
+  const seg = (opts, cur, pick) => {
+    const wrap = h("div.seg.small", { role: "group" });
+    const paint = (v) => wrap.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.v === v)));
+    for (const [v, label] of opts) wrap.append(h("button", { type: "button", "data-v": v, onclick: () => { paint(v); pick(v); } }, label));
+    paint(cur);
+    return wrap;
+  };
+  const sw = (on, set, label) => {
+    const b = h("button.switch", { type: "button", role: "switch", "aria-checked": String(on), "aria-label": label,
+      onclick: () => { const v = b.getAttribute("aria-checked") !== "true"; b.setAttribute("aria-checked", String(v)); set(v); } });
+    return b;
+  };
+  const row = (label, ...controls) => h("div.vp-row", {}, h("span.vp-label", {}, label), h("div.vp-ctl", {}, ...controls));
+  const show = (key) => (v) => { state.show[key] = v; store.set("show", state.show); clearGrid(); draw(); };
+  const restyle = () => { clearGrid(); draw(); };
+  const fixedSort = ["random", "recent", "trash"].includes(state.view);
+  const by = Object.keys(SORT_BY).find((k) => SORT_BY[k].includes(state.sort)) || "date";
+  const sortBy = h("select", { "aria-label": "Sort by", onchange: () => setSort(sortBy.value, 0) },
+    Object.entries(SORT_BY_NAMES).map(([k, v]) => h("option", { value: k, selected: k === by }, v)));
+  const dir = h("button.icon-btn.small.vp-dir", { type: "button", "aria-label": "Which way round", title: SORT_NAMES[state.sort],
+    onclick: () => { const [a, b] = SORT_BY[sortBy.value]; setSort(sortBy.value, state.sort === a ? 1 : 0); } },
+  icon("sort"));
+  const paintDir = () => { dir.classList.toggle("up", SORT_BY[sortBy.value][1] === state.sort); dir.title = SORT_NAMES[state.sort]; };
+  function setSort(k, which) { state.sort = SORT_BY[k][which]; store.set("sort", state.sort); paintDir(); renderToolbar(); reload(true); }
+  paintDir();
+  const info = h("select", { "aria-label": "Info line", onchange: () => { state.show.infoKind = info.value; store.set("show", state.show); restyle(); } },
+    Object.entries(INFO_NAMES).map(([k, v]) => h("option", { value: k, selected: k === state.show.infoKind }, v)));
+  const body = h("div.vp", {},
+    row("Layout", seg([["grid", "Grid"], ["waterfall", "Waterfall"]], state.layout, (v) => {
+      state.layout = v; store.set("layout", v); clearGrid(); if (v === "waterfall") loadShapes(); else { state.shapes = null; draw(); }
+    })),
+    row("Thumbnails", seg([["speed", "Speed"], ["quality", "Quality"]], state.quality, (v) => { state.quality = v; store.set("quality", v); restyle(); })),
+    h("div.menu-sep"),
+    fixedSort ? null : row("Sort by", sortBy, dir),
+    row("Show", seg(Object.entries({ "": "All", image: "Images", video: "Videos" }), state.kind, (v) => {
+      state.kind = v; store.set("kind", v); renderToolbar(); reload(true);
+    })),
+    h("div.menu-sep"),
+    row("Name", sw(state.show.name, show("name"), "Show the name")),
+    row("Info", info, sw(state.show.info, show("info"), "Show an info line")),
+    row("Extension label", sw(state.show.ext, show("ext"), "Show the extension label")),
+    row("Ratings and favourites", sw(state.show.badges, show("badges"), "Show ratings and favourites")),
+    row("What made it", sw(state.show.made, show("made"), "Show the model family colour and the checkpoint")),
+    h("div.menu-sep"),
+    row("Sidebar", sw(!$("app").classList.contains("side-hidden"), (v) => setSide(!v), "Show the sidebar")),
+    row("Details beside a file", sw(!$("viewer").classList.contains("no-details"), (v) => setDetails(v), "Show the details panel")),
+    h("button.btn.vp-refresh", { type: "button", onclick: () => { closeMenu(); loadFolders(); reload(false); pollSoon(); } }, icon("rescan"), "Refresh"));
+  menu(anchor, [{ node: body }], { cls: "view-panel" });
 }
-$("view-btn").onclick = (e) => viewMenu(e.currentTarget);
+$("view-btn").onclick = (e) => viewPanel(e.currentTarget);
+
+// tile size, keeping the file at the top of the screen where it is
+function setTile(n) {
+  n = Math.max(TILE_MIN, Math.min(TILE_MAX, Math.round(n)));
+  $("zoom-range").value = n;
+  if (n === state.tile) return;
+  const L = layout(), top = scroller.scrollTop - sizer.offsetTop;
+  let keep = null;
+  for (const [i, el] of tiles) if (el.offsetTop + el.offsetHeight > top && (keep === null || i < keep)) keep = i;
+  const off = keep !== null ? place(keep, L).top - top : 0;
+  state.tile = n;
+  store.set("tile", n);
+  if (keep !== null) scroller.scrollTop = place(keep, layout()).top + sizer.offsetTop - off;
+  draw();
+}
+$("zoom-range").min = TILE_MIN;
+$("zoom-range").max = TILE_MAX;
+$("zoom-range").value = state.tile;
+$("zoom-range").oninput = (e) => setTile(Number(e.target.value));
+$("zoom-out").onclick = () => setTile(state.tile / 1.15);
+$("zoom-in").onclick = () => setTile(state.tile * 1.15);
+scroller.addEventListener("wheel", (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault(); // the grid zooms, not the page
+  setTile(state.tile * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+}, { passive: false });
 $("help-btn").onclick = () => showHelp();
 $("f-fav").onclick = () => {
   if (state.chips.some((c) => c.key === "is" && c.value === "fav")) removeChips((c) => c.key === "is" && c.value === "fav");
@@ -1238,6 +1671,12 @@ document.addEventListener("keydown", (e) => {
   const inField = e.target.closest?.("input, select, textarea");
   if (e.key === "?" && !inField && !document.querySelector("dialog[open]")) { e.preventDefault(); showHelp(); return; }
   if (document.querySelector("dialog[open], .preview, .menu")) return;
+  if (!$("viewer").hidden && !inField && viewerKey(e)) { e.preventDefault(); return; }
+  if (e.ctrlKey && ["=", "+", "-", "0"].includes(e.key) && $("viewer").hidden && !isPage()) {
+    e.preventDefault();
+    setTile(e.key === "0" ? 176 : state.tile * (e.key === "-" ? 1 / 1.15 : 1.15));
+    return;
+  }
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z" && !inField) {
     e.preventDefault();
     org.undoLast();
@@ -1255,7 +1694,7 @@ document.addEventListener("keydown", (e) => {
   if (!$("viewer").hidden && !inField && e.key === "Delete" && state.view !== "trash") { e.preventDefault(); deleteViewing(); return; }
   if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
     e.preventDefault();
-    if ($("viewer").hidden) setSide(!$("app").classList.contains("side-hidden"));
+    setSide(!$("app").classList.contains("side-hidden"));
     return;
   }
   if ((e.ctrlKey && e.key.toLowerCase() === "f") || (e.key === "/" && !inField)) {

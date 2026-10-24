@@ -96,11 +96,11 @@ def test_grid_viewer_and_controls(server):
 
             # Images only, then Random (no day headings, no Sort)
             await e.click("#view-btn")
-            await e.js("[...document.querySelectorAll('.menu .menu-item')].find(b => b.textContent === 'Images only').click(); true")
+            await e.js("document.querySelector('.view-panel .seg button[data-v=\"image\"]').click(); true")
             await e.wait(f"document.getElementById('count').textContent === '{api('/files?kind=image')['total']} items'")
             assert await e.js("document.getElementById('view-label').textContent") == "Images only"  # the filter shows on the button
-            await e.click("#view-btn")
-            await e.js("[...document.querySelectorAll('.menu .menu-item')].find(b => b.textContent === 'Images and videos').click(); true")
+            await e.js("document.querySelector('.view-panel .seg button[data-v=\"\"]').click(); true")
+            await e.js("document.querySelector('.menu')?._close(); true")
             await e.click("#view-random")
             await e.wait("document.getElementById('view-title').textContent === 'Random' && document.querySelector('.tile')")
             assert await e.js("document.querySelectorAll('.day').length") == 0
@@ -119,11 +119,23 @@ def test_grid_viewer_and_controls(server):
             await e.click("#view-all")
             await e.wait("document.querySelector('.tile')")
             small = await e.js("document.querySelector('.tile').getBoundingClientRect().width")
-            await e.click("#view-btn")
-            await e.js("const t = document.querySelector('.menu input[type=range]'); t.value = 300; t.dispatchEvent(new Event('input')); true")
-            await e.js("document.querySelector('.menu')?.remove(); true")
+            await e.js("const t = document.getElementById('zoom-range'); t.value = 300; t.dispatchEvent(new Event('input')); true")
             big = await e.js("document.querySelector('.tile').getBoundingClientRect().width")
             assert big > small * 1.4
+            await e.click("#zoom-out")  # the - button, and Ctrl+-
+            await e.key("-", ctrlKey=True)
+            assert await e.js("document.querySelector('.tile').getBoundingClientRect().width") < big
+            # the View panel: Waterfall, and names under the tiles
+            await e.click("#view-btn")
+            await e.js("document.querySelector('.view-panel .seg button[data-v=\"waterfall\"]').click(); true")
+            await e.wait("document.querySelectorAll('.tile').length > 4")
+            await e.js("[...document.querySelectorAll('.view-panel .vp-row')].find(r => r.textContent.startsWith('Name')).querySelector('.switch').click(); true")
+            await e.wait("document.querySelector('.tile .t-cap .c1')")
+            names = await e.js("[...document.querySelectorAll('.tile .t-cap .c1')].slice(0, 3).map(c => c.textContent)")
+            assert all(n.endswith(('.png', '.jpg', '.webp', '.mp4')) for n in names), names
+            await e.js("[...document.querySelectorAll('.view-panel .vp-row')].find(r => r.textContent.startsWith('Name')).querySelector('.switch').click(); true")
+            await e.js("document.querySelector('.view-panel .seg button[data-v=\"grid\"]').click(); true")
+            await e.js("document.querySelector('.menu')?._close(); true")
             errors = await e.js("window.__errors || []")
             assert not errors
     asyncio.run(go())
@@ -139,7 +151,7 @@ def test_videos_have_posters_and_play(server):
         async with page(url) as e:
             await e.wait("document.querySelector('.tile')")
             await e.click("#view-btn")
-            await e.js("[...document.querySelectorAll('.menu .menu-item')].find(b => b.textContent === 'Videos only').click(); true")
+            await e.js("document.querySelector('.view-panel .seg button[data-v=\"video\"]').click(); true")
             await e.wait("document.querySelector('.tile .badge') && document.getElementById('count').textContent.startsWith('" + str(len(videos)) + "')")
             await e.click(".tile")
             await e.wait("document.querySelector('#v-media video')?.readyState >= 2", timeout=20)
@@ -417,5 +429,36 @@ def test_delete_in_the_viewer_and_select_all(server):
             assert "null" not in await e.js("document.getElementById('selbar').textContent")
             await e.js("const q = document.getElementById('q'); q.value = 'lora:aurelia '; q.dispatchEvent(new Event('input')); true")
             await e.wait("document.getElementById('selbar').hidden && document.querySelector('#chips .chip')")
+            assert not await e.js("window.__errors.length")
+    asyncio.run(go())
+
+
+def test_rotate_in_the_viewer_and_undo(server):
+    url, api = server
+    png = next(i for i in api("/files?q=has:workflow&limit=200")["items"] if i["name"].endswith(".png") and i["width"] != i["height"])
+
+    async def go():
+        async with page(url) as e:
+            await e.js(f"const q = document.getElementById('q'); q.value = {json.dumps(png['name'].split('.')[0].replace('_', ' '))}; q.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', bubbles: true}})); true")
+            pick = f"[...document.querySelectorAll('.tile')].find(t => t.getAttribute('aria-label') === {json.dumps(png['name'])})"
+            await e.wait(pick)
+            await e.js(f"{pick}.click(); true")
+            await e.wait("document.querySelector('#v-media img.on') && document.getElementById('v-zoom-pct').textContent.endsWith('%')")
+            await e.key("R", shiftKey=True)  # shown turned at once; written only on Save
+            await e.wait("!document.getElementById('v-edit').hidden")
+            assert api(f"/file/{png['id']}/info")["width"] == png["width"]
+            await e.js("[...document.querySelectorAll('#v-edit .btn')].find(b => b.textContent === 'Save').click(); true")
+            await e.wait("document.querySelector('.toast')?.textContent.startsWith('Saved')")
+            info = api(f"/file/{png['id']}/info")
+            assert (info["width"], info["height"]) == (png["height"], png["width"])
+            assert info["generation"]["positive"]  # the prompt and workflow came through
+            await e.js("document.querySelector('.toast .btn').click(); true")  # Undo
+            await e.wait("document.querySelector('.toast')?.textContent === 'Undone.'")
+            assert api(f"/file/{png['id']}/info")["width"] == png["width"]
+            # crop mode: the box and its size; Esc leaves it
+            await e.key("C", shiftKey=True)
+            await e.wait("document.querySelector('.v-crop') && document.querySelectorAll('#v-edit .v-num').length === 2")
+            await e.key("Escape")
+            await e.wait("!document.querySelector('.v-crop') && document.getElementById('v-edit').hidden && !document.getElementById('viewer').hidden")
             assert not await e.js("window.__errors.length")
     asyncio.run(go())
