@@ -77,6 +77,8 @@ async def fake_github(tag=f"v{NEXT}", blob=None, digest=True, status=200, sha_fi
     async def dl(request):
         if request.match_info["name"] == "app.zip.sha256":
             return web.Response(text=f"{hashlib.sha256(blob).hexdigest()}  mlgallery.zip\n")
+        if request.match_info["name"] == "app.zip":  # like github.com: a redirect with a huge security header
+            raise web.HTTPFound("/dl/stored.zip", headers={"Content-Security-Policy": "default-src 'none'; " + "img-src x.example; " * 800})
         return web.Response(body=blob)
     app = web.Application()
     app.router.add_get(f"/repos/{update.REPO}/releases/latest", latest)

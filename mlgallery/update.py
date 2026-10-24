@@ -129,7 +129,9 @@ class Updater:
 
     def _session(self, timeout: float):
         import aiohttp
-        return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout), headers={"User-Agent": f"{APP_NAME}/{VERSION}"})
+        # github.com's redirect to a release file carries a Content-Security-Policy header far over aiohttp's 8 KB default
+        return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout), headers={"User-Agent": f"{APP_NAME}/{VERSION}"},
+                                     max_field_size=65536, max_line_size=65536)
 
     async def check(self) -> dict:
         """Ask GitHub for the newest release; remembered for Settings and the daily check."""
