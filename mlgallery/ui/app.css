@@ -20,7 +20,8 @@
   --tile-bg: #2e2e2e;
   --radius: 10px;
   --gap: 8px;
-  --sans: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --sans: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; /* Windows' own: what the title bar and dialogs use */
+  --display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
   font-family: var(--sans);
   color-scheme: dark;
@@ -763,3 +764,6 @@ select option { background: #2c2c2c; color: var(--text); }
 .v-head { display: flex; flex-direction: column; gap: 4px; }
 .v-fname { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
 .v-sub { margin: 0; color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* headings in Segoe's Display cut, made for larger sizes */
+h1, h2, .v-fname, .kpi .v { font-family: var(--display); }

@@ -20,7 +20,7 @@ A Windows app for large libraries of AI generations: it indexes the folders you 
 
 - ⚡ **Fast at any size** — a virtual grid that scrolls the same at 200 files or 250,000; searches and filters answer in a fraction of a second.
 - 🖼️ **Grid or Waterfall** — square tiles or each picture at its own shape, a zoom bar (Ctrl + wheel), names and an info line under the tiles, and a viewer where the picture fills the stage: zoom, pan, actual size.
-- ✂️ **Light editing** — flip, rotate and crop in the viewer; the prompt and workflow the file carries are kept, Save is undoable, or save an edited copy beside it.
+- ✂️ **Light editing** — flip, rotate and crop in the viewer; the prompt and workflow the file carries are kept, Save as copy keeps the original, or replace it (undoable).
 - 🧬 **What made it** — the prompt, settings, checkpoint, LoRAs with their strengths and the ComfyUI workflow of every image and video (ComfyUI, A1111 / Forge, NovelAI, InvokeAI and more), read by Model Librarian's own readers.
 - 🔍 **Search that knows generations** — words in prompts and names, plus `model:`, `lora:`, `tag:`, `character:`, `rating:4`, `is:fav`, `seed:`, `after:` and more, suggested as you type.
 - 📊 **Statistics** — what you made with over time (by model family, in Model Librarian's colours), your most used checkpoints, LoRAs, prompt parts and settings, and the models you have but never use.

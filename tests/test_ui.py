@@ -447,7 +447,8 @@ def test_rotate_in_the_viewer_and_undo(server):
             await e.key("R", shiftKey=True)  # shown turned at once; written only on Save
             await e.wait("!document.getElementById('v-edit').hidden")
             assert api(f"/file/{png['id']}/info")["width"] == png["width"]
-            await e.js("[...document.querySelectorAll('#v-edit .btn')].find(b => b.textContent === 'Save').click(); true")
+            assert await e.js("document.querySelector('#v-edit .btn.primary').textContent") == "Save as copy"  # keeping the original comes first
+            await e.js("[...document.querySelectorAll('#v-edit .btn')].find(b => b.textContent === 'Replace original').click(); true")
             await e.wait("document.querySelector('.toast')?.textContent.startsWith('Saved')")
             info = api(f"/file/{png['id']}/info")
             assert (info["width"], info["height"]) == (png["height"], png["width"])
@@ -455,6 +456,17 @@ def test_rotate_in_the_viewer_and_undo(server):
             await e.js("document.querySelector('.toast .btn').click(); true")  # Undo
             await e.wait("document.querySelector('.toast')?.textContent === 'Undone.'")
             assert api(f"/file/{png['id']}/info")["width"] == png["width"]
+            # Enter saves a copy beside it; the original stays as it was, and Undo moves the copy to the Trash
+            total = api("/files")["total"]
+            await e.js("document.querySelector('.toast')?.remove(); true")
+            await e.key("R", shiftKey=True)
+            await e.wait("!document.getElementById('v-edit').hidden")
+            await e.key("Enter")
+            await e.wait("document.querySelector('.toast')?.textContent.includes('(edited)')")
+            assert api("/files")["total"] == total + 1 and api(f"/file/{png['id']}/info")["width"] == png["width"]
+            await e.js("document.querySelector('.toast .btn').click(); true")
+            await e.wait("document.querySelector('.toast')?.textContent === 'Undone.'")
+            assert api("/files")["total"] == total
             # crop mode: the box and its size; Esc leaves it
             await e.key("C", shiftKey=True)
             await e.wait("document.querySelector('.v-crop') && document.querySelectorAll('#v-edit .v-num').length === 2")

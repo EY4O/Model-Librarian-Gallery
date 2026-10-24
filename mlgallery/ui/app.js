@@ -28,7 +28,7 @@ const state = {
   albums: [], album: null,
   folders: [], view: "all", folder: null, seed: 1 + Math.floor(Math.random() * 1e9),
   sort: store.get("sort", "newest"), kind: store.get("kind", ""), tile: store.get("tile", 176),
-  layout: store.get("layout", "grid"), quality: store.get("quality", "speed"), show: { ...SHOW, ...store.get("show", {}) }, shapes: null,
+  layout: store.get("layout", "waterfall"), quality: store.get("quality", "speed"), show: { ...SHOW, ...store.get("show", {}) }, shapes: null,
   chips: [], text: "",                     // the search: filter chips, and the words typed
   total: 0, groups: [], pages: new Map(), loading: new Map(), gen: 0, focus: -1, maxId: 0, selUpto: 0, stale: false,
 };
@@ -1274,8 +1274,8 @@ function renderEditBar() {
   };
   bar.replaceChildren(
     vz.crop ? h("span.v-crop-size", {}, num("w", "Width"), h("span", { "aria-hidden": "true" }, "×"), num("h", "Height")) : null,
-    h("button.btn.primary.small", { type: "button", title: "Save over the file (Undo puts the original back)", onclick: () => saveEdit(false) }, vz.crop ? "Crop" : "Save"),
-    h("button.btn.small", { type: "button", title: "Keep the original; save the edit beside it", onclick: () => saveEdit(true) }, "Save as copy"),
+    h("button.btn.primary.small", { type: "button", title: "Keep the original; save the edit beside it as \"name (edited)\" (Enter)", onclick: () => saveEdit(true) }, "Save as copy"),
+    h("button.btn.small", { type: "button", title: "Save over the file instead (Undo puts the original back)", onclick: () => saveEdit(false) }, "Replace original"),
     h("button.btn.small", { type: "button", onclick: cancelEdit }, "Cancel"));
 }
 
@@ -1346,7 +1346,7 @@ async function saveEdit(copy) {
 function viewerKey(e) {
   const k = e.key;
   if (vz.edited && k === "Escape") { cancelEdit(); return true; }
-  if (vz.crop && k === "Enter") { saveEdit(false); return true; }
+  if (vz.edited && k === "Enter") { saveEdit(true); return true; }
   if (e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
     if (k === "F") { flipView(); return true; }
     if (k === "R") { rotateView(); return true; }
