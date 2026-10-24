@@ -13,7 +13,8 @@ import time
 from . import scan
 
 QUIET = 1.0           # seconds a file must stay the same size before it's indexed
-OFFLINE_CHECK = 300   # how often a folder that isn't reachable is looked for again
+OFFLINE_CHECK = 30    # how often a folder that isn't reachable is looked for again
+GONE_CHECK = 5        # how often the folders that are online are checked still to be there (renamed, unplugged)
 
 
 class Watcher:
@@ -79,9 +80,12 @@ class Watcher:
             self._pending[(folder["id"], rel)] = (time.time(), -1)
 
     def _loop(self) -> None:
-        last_offline = time.time()
+        last_offline = last_gone = time.time()
         while not self._stop.wait(0.5):
             self._index_settled()
+            if time.time() - last_gone > GONE_CHECK:
+                last_gone = time.time()
+                self._check_gone()
             if time.time() - last_offline > OFFLINE_CHECK:
                 last_offline = time.time()
                 self._check_offline()
@@ -113,6 +117,12 @@ class Watcher:
                 continue
             self.lib.thumbs.nudge()
             self.lib.meta.nudge()
+
+    def _check_gone(self) -> None:
+        """A watched folder that isn't there any more: a scan marks it offline (its files are kept)."""
+        for f in self.lib.folders():
+            if f["online"] and not os.path.isdir(f["path"]):
+                self.lib.scan(f["id"])
 
     def _check_offline(self) -> None:
         for f in self.lib.folders():

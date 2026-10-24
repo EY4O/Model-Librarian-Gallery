@@ -120,6 +120,11 @@ def test_copy_in_what_the_gallery_lacks(lib, tmp_path):
     r = eagle.apply_import(lib.db, plan)
     assert r["files"] == 4
     assert lib.files()["total"] == 4 and q(lib, "tag:new") == ["only in eagle.png"] and q(lib, "rating:5") == ["only in eagle.png"]
+    # Undo takes it all back: the copies go to the Gallery's Trash, in the same step
+    u = fileops.undo(lib.db, r["op"])
+    assert u["trashed"] == 2 and lib.files()["total"] == 2 and lib.status()["trash"] == 2
+    assert not (media / "From Eagle - Test" / "only in eagle.png").exists() and (eag / "images" / "AAA3.info" / "only in eagle.png").is_file()
+    assert [o["kind"] for o in fileops.history(lib.db)] == ["eagle"]
 
 
 def test_the_gallery_still_never_indexes_an_eagle_library(lib, tmp_path):

@@ -11,6 +11,7 @@ import json
 import mimetypes
 import os
 import secrets
+import sqlite3
 
 from aiohttp import web
 
@@ -109,7 +110,13 @@ async def _guard(request: web.Request, handler):
         given = request.headers.get("X-MLG-Token") or request.query.get("t") or ""
         if not secrets.compare_digest(given, request.app[TOKEN]):
             return _err("Open the Gallery from its own window.", 403)
-    resp = await handler(request)
+    try:
+        resp = await handler(request)
+    except (ValueError, TypeError, OverflowError, sqlite3.IntegrityError) as ex:
+        if not request.path.startswith("/api/"):
+            raise
+        # a request that makes no sense (an id that isn't a number, a file that isn't there): said so, not a crash
+        return _err(f"That request doesn't fit: {ex}"[:300], 400)
     if request.method != "GET" and request.path.startswith("/api/") and not request.path.endswith("/viewed") and resp.status < 400:
         request.app[LIB].db.user_change()  # something you did: Statistics and the like count it in straight away
     return resp
@@ -529,7 +536,9 @@ async def make_shortcut(request):
 
 async def file_note(request):
     fid, b = _fid(request), await _body(request)
-    note = str(b.get("note") or "").strip()[:4000]
+    if not isinstance(b.get("note") or "", str):
+        return _err("note: text")
+    note = (b.get("note") or "").strip()[:4000]
     lib = _lib(request)
     if not fid or not await asyncio.to_thread(lib.info, fid):
         return _err("not found", 404)
@@ -584,13 +593,15 @@ async def eagle_apply(request):
     plan = _EAGLE.get("plan")
     if _EAGLE.get("state") != "ready" or not plan:
         return _err("Read an Eagle library first.", 409)
+    _EAGLE["state"] = "applying"  # a second click while this runs is refused, not done twice
     lib = _lib(request)
     try:
         copied = 0
         if b.get("copy_to") and plan["missing"]:
             copied = await asyncio.to_thread(eagle.copy_in, lib.db, plan, int(b["copy_to"]), b.get("sub") or "")
         r = await asyncio.to_thread(eagle.apply_import, lib.db, plan)
-    except (eagle.EagleError, ValueError) as ex:
+    except (eagle.EagleError, ValueError, OSError) as ex:
+        _EAGLE["state"] = "ready"
         return _err(str(ex), 422)
     _EAGLE.clear()
     lib.thumbs.nudge()
@@ -654,10 +665,43 @@ async def settings_get(request):
     return web.json_response(await asyncio.to_thread(_settings_out, _lib(request)))
 
 
+def _check_settings(b: dict) -> dict:
+    """Settings as they'll be saved, or ValueError saying why one can't work."""
+    import re
+    out = dict(b)
+    ff = str(out.get("ffmpeg") or "").strip().strip('"') if "ffmpeg" in out else None
+    if ff:
+        if os.path.isdir(ff) and os.path.isfile(os.path.join(ff, "ffmpeg.exe")):
+            ff = os.path.join(ff, "ffmpeg.exe")
+        if not os.path.isfile(ff):
+            raise ValueError("There's no ffmpeg there: pick ffmpeg.exe, or leave it empty to use the one the Gallery finds.")
+        if not os.path.basename(ff).lower().startswith("ffmpeg"):
+            raise ValueError(f"{os.path.basename(ff)} isn't ffmpeg: pick ffmpeg.exe.")
+        out["ffmpeg"] = ff
+    ml = str(out.get("ml_data") or "").strip().strip('"') if "ml_data" in out else None
+    if ml:
+        if not os.path.isdir(ml):
+            raise ValueError("That folder doesn't exist: Model Librarian's data folder is .sm_model_fetcher, next to your models folder.")
+        out["ml_data"] = ml
+    for key, what in (("comfy_url", "ComfyUI"), ("eagle_url", "Eagle")):
+        if key in out:
+            v = str(out[key] or "").strip().rstrip("/")
+            if v and not re.match(r"https?://", v, re.I) and re.fullmatch(r"[\w.-]+(:\d+)?", v):
+                v = "http://" + v  # 127.0.0.1:8188 means http://127.0.0.1:8188
+            if v and not re.fullmatch(r"https?://[\w.-]+(:\d{1,5})?(/\S*)?", v, re.I):
+                raise ValueError(f"{what}'s address looks like http://127.0.0.1:{8188 if key == 'comfy_url' else 41595}.")
+            out[key] = v
+    return out
+
+
 async def settings_set(request):
     b = await _body(request)
     lib = _lib(request)
-    await asyncio.to_thread(lib.settings.update, {k: v for k, v in b.items() if k in lib.settings.all()})
+    try:
+        b = _check_settings({k: v for k, v in b.items() if k in lib.settings.all()})
+    except ValueError as ex:
+        return _err(str(ex), 422)
+    await asyncio.to_thread(lib.settings.update, b)
     return web.json_response(await asyncio.to_thread(_settings_out, lib))
 
 

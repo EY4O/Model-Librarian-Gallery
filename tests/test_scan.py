@@ -145,8 +145,12 @@ def test_add_folder_refuses_eagle_overlaps_and_missing(lib, media):
     with pytest.raises(ValueError, match="exist"):
         lib.add_folder(str(media / "nope"))
     lib.add_folder(str(media))
-    with pytest.raises(ValueError, match="overlaps"):
+    with pytest.raises(ValueError, match="in the library already"):
         lib.add_folder(str(media / "Art.library" / ".."))  # the same folder, spelt differently
+    with pytest.raises(ValueError, match="a file"):
+        lib.add_folder(str(image(media / "one.png")))
+    with pytest.raises(ValueError, match="full path"):
+        lib.add_folder("   ")
     sub = media / "sub"
     sub.mkdir()
     with pytest.raises(ValueError, match="overlaps"):

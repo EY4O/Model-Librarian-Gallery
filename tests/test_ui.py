@@ -264,12 +264,12 @@ def test_statistics_screen(server):
         async with page(url) as e:
             await e.wait("document.querySelector('.tile')")
             await e.click("#view-stats")
-            await e.wait("document.querySelector('.kpis') && document.querySelector('.st-grid')")
+            await e.wait("document.querySelector('.kpis') && document.querySelector('.st-stacks')")
             assert await e.js("getComputedStyle(document.querySelector('.toolbar')).display") == "none"
             await e.js("[...document.querySelectorAll('.st-head .seg button')].find(b => b.textContent === 'All time').click(); true")
             await e.wait(f"document.querySelector('.kpi .v').textContent === '{o['totals']['n']:,}'")
             assert await e.js("document.querySelectorAll('.tl-col').length") >= 1
-            assert "wasn't found" in await e.js("document.querySelector('.st-grid').textContent")  # no Model Librarian in the tests
+            assert "wasn't found" in await e.js("document.querySelector('.st-stacks').textContent")  # no Model Librarian in the tests
             assert "null" not in await e.js("document.getElementById('stats').textContent")
             # a checkpoint's row opens the library filtered to it
             top = o["checkpoints"][0]
@@ -279,7 +279,7 @@ def test_statistics_screen(server):
             await e.wait(f"document.getElementById('count').textContent === '{top['n']} match{'' if top['n'] == 1 else 'es'}'")
             # a setting tab
             await e.click("#view-stats")
-            await e.wait("document.querySelector('.st-grid')")
+            await e.wait("document.querySelector('.st-stacks')")
             await e.js("[...document.querySelectorAll('[role=tab]')].find(b => b.textContent === 'Steps').click(); true")
             assert await e.js("document.querySelector('[role=tab][aria-selected=true]').textContent") == "Steps"
             await e.click("#view-all")
@@ -380,5 +380,42 @@ def test_organising(server):
             await e.wait("document.querySelectorAll('.history li').length >= 4")
             await e.click("#view-duplicates")
             await e.wait("document.querySelector('.stats h1')?.textContent === 'Duplicates'")
+            assert not await e.js("window.__errors.length")
+    asyncio.run(go())
+
+
+def test_delete_in_the_viewer_and_select_all(server):
+    url, api = server
+    total = api("/files")["total"]
+
+    async def go():
+        async with page(url) as e:
+            await e.wait("document.querySelectorAll('.tile').length > 4")
+            # Delete in the viewer: the file on screen goes, the next one is shown, and a second Delete takes that one
+            await e.click(".tile")
+            await e.wait("!document.getElementById('viewer').hidden")
+            first = await e.js("document.getElementById('v-name').textContent")
+            await e.key("Delete")
+            await e.wait(f"document.getElementById('v-name').textContent !== {json.dumps(first)}"
+                         f" && document.getElementById('v-pos').textContent.endsWith('of {total - 1}')")
+            second = await e.js("document.getElementById('v-name').textContent")
+            await e.key("Delete")
+            await e.wait(f"document.getElementById('v-name').textContent !== {json.dumps(second)}")
+            trashed = {i["name"] for i in api("/files?sort=trashed")["items"]}
+            assert trashed == {first, second}
+            await e.key("z", ctrlKey=True)
+            await e.wait("document.querySelector('.toast')?.textContent === 'Undone.'")
+            await e.js("document.querySelector('.toast').remove(); true")
+            await e.key("z", ctrlKey=True)
+            await e.wait("document.querySelector('.toast')?.textContent === 'Undone.'")
+            assert api("/status")["trash"] == 0
+            await e.key("Escape")
+            await e.wait("document.getElementById('viewer').hidden")
+            # Select all, then a search: the selection goes, so the bar can't act on files the grid doesn't show
+            await e.key("a", ctrlKey=True)
+            await e.wait("!document.getElementById('selbar').hidden && document.querySelector('.sel-n').textContent.startsWith('All')")
+            assert "null" not in await e.js("document.getElementById('selbar').textContent")
+            await e.js("const q = document.getElementById('q'); q.value = 'lora:aurelia '; q.dispatchEvent(new Event('input')); true")
+            await e.wait("document.getElementById('selbar').hidden && document.querySelector('#chips .chip')")
             assert not await e.js("window.__errors.length")
     asyncio.run(go())

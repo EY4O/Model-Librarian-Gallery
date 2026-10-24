@@ -177,6 +177,10 @@ def tag_id(c, name: str) -> int:
     return c.execute("SELECT id FROM tags WHERE name=? COLLATE NOCASE", (name,)).fetchone()[0]
 
 
+def search_name(name: str) -> str:
+    return re.sub(r"[_\-.]+", " ", name)  # sample_00042_png.png finds "sample 00042"
+
+
 def refresh_search(c, file_id: int) -> None:
     """The file's row in the search index, from what's in the tables now."""
     f = c.execute("SELECT name FROM files WHERE id=?", (file_id,)).fetchone()
@@ -185,7 +189,7 @@ def refresh_search(c, file_id: int) -> None:
     g = c.execute("SELECT positive, negative FROM generations WHERE file_id=?", (file_id,)).fetchone()
     models = " ".join(r[0] for r in c.execute("SELECT DISTINCT name FROM uses WHERE file_id=?", (file_id,)))
     tags = " ".join(r[0] for r in c.execute("SELECT t.name FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.file_id=? AND ft.removed=0", (file_id,)))
-    name = re.sub(r"[_\-.]+", " ", f["name"])  # sample_00042_png.png finds "sample 00042"
+    name = search_name(f["name"])
     c.execute("DELETE FROM search WHERE rowid=?", (file_id,))
     c.execute("INSERT INTO search (rowid, name, prompt, negative, models, tags) VALUES (?,?,?,?,?,?)",
               (file_id, name, g["positive"] if g else "", g["negative"] if g else "", models, tags))
@@ -282,6 +286,7 @@ class MetaReader:
             if ok:
                 return store(c, row["id"], got)
             c.execute("UPDATE files SET meta=-1 WHERE id=?", (row["id"],))
+            refresh_search(c, row["id"])  # unreadable, but still found by its name
             self.failed += 1
             return -1
 

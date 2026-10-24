@@ -121,7 +121,7 @@ async function eagleImport(folders) {
       h("li", {}, `${plural(s.tags, "tag")}, ${plural(s.album_count, "folder")}${s.albums.length ? ` (${s.albums.slice(0, 6).join(", ")}${s.album_count > 6 ? "…" : ""})` : ""}, ${plural(s.rated, "rating")}, ${plural(s.notes, "note")}.`),
       s.missing ? h("li", {}, h("b", {}, plural(s.missing, "item")), ` (${fmtSize(s.missing_size)}) aren't in the Gallery.`) : null),
     s.missing ? h("div.field-row", {}, h("label.check", { for: "eagle-copy" }, copy, " Copy them into"), into) : null,
-    h("p.note", {}, "Your own ratings and notes stay as they are. Eagle's library isn't changed: copied files are copies. It's one step in History, so Undo takes it all back."),
+    h("p.note", {}, "Your own ratings and notes stay as they are. Eagle's library isn't changed: copied files are copies. It's one step in History: Undo takes the tags, albums, ratings and notes off again, and moves the copies to the Gallery's Trash."),
     err,
     h("div.row.end", {}, h("button.btn", { type: "button", onclick: () => box.close() }, "Cancel"), go)));
   box.addEventListener("keydown", (e) => { if (e.key !== "Escape") e.stopPropagation(); });

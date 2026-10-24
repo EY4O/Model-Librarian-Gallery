@@ -148,6 +148,10 @@ def _visit(db, fid, full, rel, size, mtime, old, now, touched, pending, counts) 
     ext = os.path.splitext(name)[1].lower()
     kind = kind_of(name)
     w, h = image_size(full) if kind == "image" else (None, None)
+    if old and old["missing"] == 2:
+        # a new file where one in the Trash was: that one keeps its ratings and tags under a free name, this one is new
+        pending.append(("evict", (fid, old["id"], rel)))
+        old = None
     if old:
         pending.append(("change", (size, mtime, fp, w, h, now, old["id"])))
         counts["changed"] += 1
@@ -164,18 +168,33 @@ def _visit(db, fid, full, rel, size, mtime, old, now, touched, pending, counts) 
 def _flush(db, now, touched: list, pending: list) -> None:
     if not touched and not pending:
         return
+    from .metadata import refresh_search, search_name
     with db.write() as c:
         if touched:
             # back where it was: no longer missing (a file in the Trash brought back by hand leaves the Trash too)
             c.executemany("UPDATE files SET last_seen=?, missing=0, trashed=NULL, trash_rel=NULL WHERE id=?", [(now, i) for i in touched])
         for op, args in pending:
-            if op == "insert":
-                c.execute("INSERT INTO files (folder_id, rel, name, ext, kind, size, mtime, fp, width, height, first_seen, last_seen)"
-                          " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", args)
+            if op == "evict":
+                fid, oid, rel = args
+                parent, name = rel.rsplit("/", 1) if "/" in rel else ("", rel)
+                stem, ext = os.path.splitext(name)
+                n = 2
+                while c.execute("SELECT 1 FROM files WHERE folder_id=? AND rel=? COLLATE NOCASE",
+                                (fid, f"{parent}/{stem} ({n}){ext}" if parent else f"{stem} ({n}){ext}")).fetchone():
+                    n += 1
+                free = f"{stem} ({n}){ext}"
+                c.execute("UPDATE files SET rel=?, name=? WHERE id=?", (f"{parent}/{free}" if parent else free, free, oid))
+                refresh_search(c, oid)
+            elif op == "insert":
+                new = c.execute("INSERT INTO files (folder_id, rel, name, ext, kind, size, mtime, fp, width, height, first_seen, last_seen)"
+                                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", args).lastrowid
+                # findable by its name at once; reading its metadata fills in the rest
+                c.execute("INSERT INTO search (rowid, name, prompt, negative, models, tags) VALUES (?,?,'','','','')", (new, search_name(args[2])))
             elif op == "change":
                 c.execute("UPDATE files SET size=?, mtime=?, fp=?, width=?, height=?, last_seen=?, missing=0, thumb=0, meta=0, phash=NULL, trashed=NULL, trash_rel=NULL WHERE id=?", args)
             elif op == "move":
                 c.execute("UPDATE files SET folder_id=?, rel=?, name=?, ext=?, size=?, mtime=?, last_seen=?, missing=0, meta=0 WHERE id=?", args)
+                refresh_search(c, args[-1])
     touched.clear()
     pending.clear()
 

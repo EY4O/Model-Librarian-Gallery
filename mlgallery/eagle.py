@@ -152,9 +152,12 @@ def copy_in(db, plan: dict, folder_id: int, sub: str = "") -> int:
         it["copied_rel"] = f"{sub}/{name}"
         rels.append(it["copied_rel"])
     scan.index_files(db, {"id": d["id"], "path": d["path"]}, rels)
+    ids = {}
     with db.read() as c:
-        ids = {r["rel"]: r["id"] for r in c.execute(f"SELECT id, rel FROM files WHERE folder_id=? AND rel IN ({','.join('?' * len(rels))})",
-                                                     (d["id"], *rels))} if rels else {}
+        for i in range(0, len(rels), 30000):  # an IN list stops at 32,766 parameters
+            part = rels[i:i + 30000]
+            ids.update({r["rel"]: r["id"] for r in c.execute(f"SELECT id, rel FROM files WHERE folder_id=? AND rel IN ({','.join('?' * len(part))})",
+                                                              (d["id"], *part))})
     n = 0
     for it in plan["missing"]:
         fid = ids.get(it.get("copied_rel"))
@@ -205,32 +208,35 @@ def apply_import(db, plan: dict) -> dict:
         for fid in {i["file_id"] for i in plan["matched"]}:
             metadata.refresh_search(c, fid)
         n = len({i["file_id"] for i in plan["matched"]})
-        op = fileops.record(c, "eagle", f"Brought in {n} file{'s' if n != 1 else ''}' tags, albums and ratings from Eagle ({plan['name']})",
-                            {"tags": tagged, "albums": filed, "marks": rated, "notes": noted})
+        copied = sorted({i["file_id"] for i in plan["matched"] if i.get("copied_rel")})
+        op = fileops.record(c, "eagle", f"Brought in {n} file{'s' if n != 1 else ''}' tags, albums and ratings from Eagle ({plan['name']})"
+                            + (f", {len(copied)} of them copied in" if copied else ""),
+                            {"tags": tagged, "albums": filed, "marks": rated, "notes": noted, "copied": copied})
     return {"op": op, "files": n, "tags": len(tagged), "albums": len(filed), "ratings": len(rated), "notes": len(noted)}
 
 
 def undo_import(db, data: dict) -> dict:
+    """Each list backwards, so a file changed twice (two Eagle items of one picture) ends as it was."""
     from . import characters as chars
     with db.write() as c:
-        for it in data["tags"]:
+        for it in reversed(data["tags"]):
             tid = metadata.tag_id(c, it["tag"])
             if it["was"] is None:
                 c.execute("DELETE FROM file_tags WHERE file_id=? AND tag_id=?", (it["file_id"], tid))
             else:
                 c.execute("INSERT OR REPLACE INTO file_tags (file_id, tag_id, source, removed) VALUES (?,?,?,?)", (it["file_id"], tid, it["was"]["source"], it["was"]["removed"]))
-        for it in data["albums"]:
+        for it in reversed(data["albums"]):
             if it["was"] is None:
                 c.execute("DELETE FROM album_files WHERE album_id=? AND file_id=?", (it["album"], it["file_id"]))
             else:
                 c.execute("UPDATE album_files SET removed=? WHERE album_id=? AND file_id=?", (it["was"]["removed"], it["album"], it["file_id"]))
-        for m in data["marks"]:
+        for m in reversed(data["marks"]):
             if m.get("source") is None:
                 c.execute("DELETE FROM marks WHERE file_id=?", (m["file_id"],))
             else:
                 c.execute("INSERT OR REPLACE INTO marks (file_id, rating, favorite, source, updated) VALUES (?,?,?,?,?)",
                           (m["file_id"], m.get("rating"), m.get("favorite") or 0, m["source"], time.time()))
-        for it in data.get("notes") or []:
+        for it in reversed(data.get("notes") or []):
             if it["was"] is None:
                 c.execute("DELETE FROM file_notes WHERE file_id=?", (it["file_id"],))
             else:
@@ -242,7 +248,15 @@ def undo_import(db, data: dict) -> dict:
         c.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM file_tags)")
         c.execute("DELETE FROM albums WHERE id NOT IN (SELECT album_id FROM album_files) AND id IN (%s)" % ",".join(str(int(a["album"])) for a in data["albums"])
                   if data["albums"] else "SELECT 1")
-    return {"undone": len(data["tags"]) + len(data["albums"]) + len(data["marks"])}
+    out = {"undone": len(data["tags"]) + len(data["albums"]) + len(data["marks"]) + len(data.get("notes") or [])}
+    if data.get("copied"):  # the copies it made go to the Gallery's Trash (Eagle's own files were never touched)
+        r = fileops.trash(db, data["copied"])
+        if r["op"]:
+            with db.write() as c:
+                c.execute("DELETE FROM ops WHERE id=?", (r["op"],))  # the undo itself isn't a new step
+        out["undone"] += r["trashed"]
+        out["trashed"] = r["trashed"]
+    return out
 
 
 # ---------------------------------------------------------------- send to Eagle

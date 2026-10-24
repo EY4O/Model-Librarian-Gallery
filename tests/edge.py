@@ -73,7 +73,11 @@ class Edge:
             await self.ws.close()
         finally:
             self.proc.kill()
-            self.proc.wait(10)
+            try:
+                self.proc.wait(10)
+            except subprocess.TimeoutExpired:  # Edge's own child processes holding on: end the whole tree
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)], capture_output=True)
+                self.proc.wait(10)
             shutil.rmtree(self.profile, ignore_errors=True)
 
     async def call(self, method, **params):

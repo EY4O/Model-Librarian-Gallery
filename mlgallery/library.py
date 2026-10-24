@@ -120,9 +120,17 @@ class Library:
             return [dict(r) for r in c.execute("SELECT id, path, added, last_scan, online, file_count FROM folders ORDER BY path COLLATE NOCASE")]
 
     def add_folder(self, path: str) -> dict:
-        path = os.path.abspath(os.path.expanduser(str(path or "").strip().strip('"')))
+        path = str(path or "").strip().strip('"').strip()
+        if not path:
+            raise ValueError("Type or paste the folder's full path, like D:\\ComfyUI\\output.")
+        path = os.path.abspath(os.path.expanduser(path))
+        if os.path.isfile(path):
+            raise ValueError("That's a file: add the folder it's in.")
         if not os.path.isdir(path):
             raise ValueError("That folder doesn't exist (or isn't reachable right now).")
+        same = next((f for f in self.folders() if os.path.normcase(os.path.normpath(f["path"])) == os.path.normcase(os.path.normpath(path))), None)
+        if same:
+            raise ValueError("That folder is in the library already.")
         if self.settings.get("skip_eagle") and any(p.lower().endswith(".library") for p in path.replace("\\", "/").split("/")):
             raise ValueError("That's inside an Eagle library, which Eagle manages: the Gallery leaves those alone.")
         clash = scanner.overlapping([f["path"] for f in self.folders()], path)
@@ -243,7 +251,9 @@ class Library:
             if loras.get(i):
                 (name, strength), n = loras[i][0], len(loras[i])
                 it.update(lora=name, lora_strength=strength, loras=n)
-        return {"total": total, "offset": offset, "items": [at[i] for i in ids if i in at]}
+        with self.db.read() as c:
+            newest = c.execute("SELECT MAX(id) FROM files").fetchone()[0] or 0  # what "Select all" covers: files up to this one
+        return {"total": total, "offset": offset, "items": [at[i] for i in ids if i in at], "max_id": newest}
 
     def days(self, sort: str = "newest", folder: int | None = None, kind: str | None = None, q: str = "") -> list[dict]:
         """How many files each day holds, in the grid's order, so it can put a heading over each day
@@ -274,7 +284,7 @@ class Library:
                                                " WHERE ft.file_id=? AND ft.removed=0 ORDER BY t.name COLLATE NOCASE", (fid,))]
             src = c.execute("SELECT source FROM marks WHERE file_id=?", (fid,)).fetchone()
         out = dict(f)
-        out["path"] = os.path.join(f["folder_path"], f["rel"])
+        out["path"] = os.path.join(f["folder_path"], *f["rel"].split("/"))
         gen = dict(g) if g else None
         if gen:
             gen["info"] = json.loads(gen["info"]) if gen["info"] else None
@@ -385,7 +395,9 @@ class Library:
 
     def character_save(self, cid: int | None, name: str, aliases=(), rules=None, cover=...) -> int:
         """Create (cid None) or change a character; its files are matched again."""
-        name = str(name or "").strip()[:100]
+        if not isinstance(name or "", str):
+            raise ValueError("A character's name is text.")
+        name = (name or "").strip()[:100]
         if not name:
             raise ValueError("A character needs a name.")
         aliases = [a for a in metadata._split(list(aliases or [])) if a.lower() != name.lower()][:16]
@@ -454,6 +466,10 @@ class Library:
             out["models"] = [dict(r) for r in c.execute(
                 f"SELECT u.name, COUNT(DISTINCT u.file_id) n {counted.replace('FROM file_characters fc', 'FROM file_characters fc JOIN uses u ON u.file_id=fc.file_id', 1)}"
                 f" AND u.kind IN ('checkpoint','unet') GROUP BY u.name COLLATE NOCASE ORDER BY n DESC LIMIT 6", (cid,))]
+            resolve = self.db.cached(("family-resolver",), lambda: families.Resolver(self.models))
+            for m in out["models"]:
+                m["family"] = resolve.family(m["name"])
+                m["color"] = families.color(m["family"]) if m["family"] else None
             out["timeline"] = [dict(r) for r in c.execute(
                 f"SELECT strftime('%Y-%m', f.mtime, 'unixepoch', 'localtime') AS month, COUNT(*) n {counted} GROUP BY month ORDER BY month", (cid,))]
         return out
@@ -505,12 +521,13 @@ class Library:
                         continue
         if not words:
             with self.db.read() as c:
-                withl = [r[0] for r in c.execute("SELECT DISTINCT file_id FROM uses WHERE kind='lora' AND name=? COLLATE NOCASE", (stem_of(lora),))]
-                if withl:
-                    rows = c.execute(f"SELECT tag, COUNT(*) n FROM prompt_tags WHERE file_id IN ({','.join('?' * len(withl))}) GROUP BY tag ORDER BY n DESC LIMIT 40", withl).fetchall()
+                withl = "SELECT DISTINCT file_id FROM uses WHERE kind='lora' AND name=? COLLATE NOCASE"
+                with_n = c.execute(f"SELECT COUNT(*) FROM ({withl})", (stem_of(lora),)).fetchone()[0]
+                if with_n:
+                    rows = c.execute(f"SELECT tag, COUNT(*) n FROM prompt_tags WHERE file_id IN ({withl}) GROUP BY tag ORDER BY n DESC LIMIT 40", (stem_of(lora),)).fetchall()
                     for tag, n in rows:
                         total = c.execute("SELECT COUNT(DISTINCT file_id) FROM prompt_tags WHERE tag=?", (tag,)).fetchone()[0]
-                        if n >= max(2, len(withl) // 2) and n / total >= 0.6:  # comes with this LoRA, rarely without it
+                        if n >= max(2, with_n // 2) and n / total >= 0.6:  # comes with this LoRA, rarely without it
                             words.append(tag)
         return words[:12]
 
@@ -546,6 +563,9 @@ class Library:
             sort = v.get("sort") if v.get("sort") in SORTS else "newest"
             frm, args = self._from(int(v["folder"]) if str(v.get("folder", "")).isdigit() else None, v.get("kind") or None, str(v.get("q") or "")[:2000], sort)
             order_args = [int(v.get("seed") or 0) % 4294967291] if sort == "random" else []
+            if str(v.get("upto", "")).isdigit():
+                frm += " AND f.id <= ?"
+                args = [*args, int(v["upto"])]
             with self.db.read() as c:
                 return [r[0] for r in c.execute(f"SELECT f.id FROM {frm} ORDER BY {SORTS[sort]} LIMIT ?", [*args, *order_args, fileops.MAX_ITEMS])]
         if isinstance(sel, list):
@@ -560,7 +580,9 @@ class Library:
                 " FROM albums al ORDER BY al.name COLLATE NOCASE")]
 
     def album_save(self, aid: int | None, name: str, cover=...) -> dict:
-        name = str(name or "").strip()[:100]
+        if not isinstance(name or "", str):
+            raise ValueError("An album's name is text.")
+        name = (name or "").strip()[:100]
         if not name:
             raise ValueError("An album needs a name.")
         with self.db.write() as c:
@@ -665,6 +687,7 @@ class Library:
         with self.db.read() as c:
             total = c.execute("SELECT COUNT(*) FROM files WHERE missing=0").fetchone()[0]
             trash = c.execute("SELECT COUNT(*) FROM files WHERE missing=2").fetchone()[0]
-        return {"files": total, "scanning": self.scanning, "last_scan": self.last_scan,
+            offline = c.execute("SELECT COUNT(*) FROM folders WHERE online=0").fetchone()[0]
+        return {"files": total, "offline": offline, "scanning": self.scanning, "last_scan": self.last_scan,
                 "queued": len(self._queue), "thumbs_pending": self.thumbs.pending(), "thumbs_failed": self.thumbs.failed,
                 "meta_pending": self.meta.pending(), "trash": trash}

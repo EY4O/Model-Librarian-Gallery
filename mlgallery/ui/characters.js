@@ -1,6 +1,6 @@
 // Model Librarian Gallery: characters - the list, one character's page, the editor, and To review.
 
-import { api, ask, fmtNum, h, icon, media, plural, toast } from "./util.js";
+import { api, ask, fmtNum, h, icon, media, plural, stacks, toast } from "./util.js";
 
 const KIND = { lora: "LORA", word: "WORD", tag: "TAG" };
 const KIND_HELP = {
@@ -96,13 +96,13 @@ export async function renderCharacter(root, id, ctx) {
         h("div.row", {},
           h("button.btn.primary", { type: "button", onclick: filter, disabled: !c.n }, icon("grid"), "Show all files"),
           h("button.btn", { type: "button", onclick: () => editCharacter(c, ctx) }, "Edit"),
-          h("button.btn", { type: "button", onclick: async () => {
+          h("button.btn.danger.c-del", { type: "button", onclick: async () => {
             if (!await ask(`Delete the character ${c.name}?`, "Its rules and your yes and no answers go; the files themselves are untouched.", { ok: "Delete the character", danger: true })) return;
             await api(`/characters/${id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
             ctx.refresh();
             ctx.show("characters");
           } }, "Delete")))),
-    h("div.st-grid", {},
+    stacks([
       h("section.st-card", { "aria-label": "How they're recognised" },
         h("div.st-card-head", {}, h("h2", {}, "How they're recognised"), h("span", {}, "Strong rules count at once; weak ones ask you first")),
         c.rules.length ? h("ol.rules", {}, c.rules.map((r, i) => h("li", {},
@@ -125,10 +125,10 @@ export async function renderCharacter(root, id, ctx) {
       h("section.st-card", { "aria-label": "Made with" },
         h("div.st-card-head", {}, h("h2", {}, "Made with"), h("span", {}, "Checkpoints")),
         c.models.length ? h("ol.bars.ckpt", {}, c.models.map((m) => h("li", {}, h("button.bar-row", { type: "button", onclick: () => ctx.open([{ key: "character", value: c.name }, { key: "model", value: m.name }]) },
-          h("span.bar-label", {}, m.name), h("span.bar-n", {}, m.n.toLocaleString()),
-          h("span.bar-track", { "aria-hidden": "true" }, h("span.bar-fill", { style: { width: `${(m.n / c.models[0].n) * 100}%` } }))))))
+          h("span.bar-label", {}, m.family ? h("span.fam", { style: { color: m.color, borderColor: m.color + "88" } }, m.family.toUpperCase()) : null, m.name), h("span.bar-n", {}, m.n.toLocaleString()),
+          h("span.bar-track", { "aria-hidden": "true" }, h("span.bar-fill", { style: { width: `${(m.n / c.models[0].n) * 100}%`, background: m.color || null } }))))))
           : h("p.st-none", {}, "No checkpoint recorded in its files."),
-        c.timeline.length > 1 ? h("div.c-months", { "aria-label": "Files per month" }, months(c.timeline)) : null)),
+        c.timeline.length > 1 ? h("div.c-months", { "aria-label": "Files per month" }, months(c.timeline)) : null)]),
     queue.items.length ? h("section.st-card", { "aria-label": "To review" },
       h("div.st-card-head", {}, h("h2", {}, `To review (${queue.items.length.toLocaleString()})`), h("span", {}, `Is ${c.name} in these? Y for yes, N for no`)),
       reviewGrid(queue.items, ctx, () => renderCharacter(root, id, ctx), { single: true })) : null,
@@ -273,12 +273,12 @@ export async function renderReview(root, ctx) {
         h("p.st-none", {}, "A weak rule (a tag) matched these: is it them?")),
         h("div.row", {},
           h("button.btn.small", { type: "button", onclick: () => decideAll(cid, g, "confirm") }, `All are ${g.name}`),
-          h("button.btn.small", { type: "button", onclick: () => decideAll(cid, g, "reject") }, `None are`))),
+          h("button.btn.small", { type: "button", onclick: () => decideAll(cid, g, "reject") }, `None are ${g.name}`))),
       reviewGrid(g.items, ctx, () => { ctx.refresh(); renderReview(root, ctx); }, { single: true }))),
   ].filter(Boolean));
   async function decideAll(cid, g, verdict) {
     if (!await ask(verdict === "confirm" ? `Are all ${g.items.length} ${g.name}?` : `Are none of these ${g.name}?`,
-      verdict === "confirm" ? `They'll count as ${g.name} from now on.` : `They won't be suggested for ${g.name} again.`, { ok: verdict === "confirm" ? `Yes, all ${g.name}` : "None are" })) return;
+      verdict === "confirm" ? `They'll count as ${g.name} from now on.` : `They won't be suggested for ${g.name} again.`, { ok: verdict === "confirm" ? `Yes, all ${g.name}` : `None are ${g.name}` })) return;
     await api(`/characters/${cid}/review`, { method: "POST", body: { files: g.items.map((i) => i.file_id), verdict } }).catch((e) => toast(e.message, true));
     ctx.refresh();
     renderReview(root, ctx);
@@ -301,12 +301,12 @@ function reviewGrid(items, ctx, after, { single = false } = {}) {
   };
   grid.replaceChildren(...items.map((it) => {
     const card = h("div.r-card", { role: "listitem", tabIndex: 0, "aria-label": `${it.name}: is ${it.character} in it? Y or N` });
-    card.append(
+    card.append(...[
       h("button.r-thumb", { type: "button", title: "Look closer", onclick: () => preview(it) }, thumb(it.file_id, it.name)),
       single ? null : h("div.r-q", {}, h("span.r-who", {}, it.character)),
       h("div.r-acts", {},
-        h("button.btn.small.yes", { type: "button", onclick: () => decide(it, card, "confirm") }, "Yes"),
-        h("button.btn.small.no", { type: "button", onclick: () => decide(it, card, "reject") }, `Not ${it.character}`)));
+        h("button.btn.small.yes", { type: "button", onclick: () => decide(it, card, "confirm") }, h("kbd", {}, "Y"), it.character),
+        h("button.btn.small.no", { type: "button", onclick: () => decide(it, card, "reject") }, h("kbd", {}, "N"), `Not ${it.character}`))].filter(Boolean));
     card.addEventListener("keydown", (e) => {
       const k = e.key.toLowerCase();
       if (k === "y") { e.preventDefault(); decide(it, card, "confirm"); }

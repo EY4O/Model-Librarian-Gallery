@@ -20,6 +20,8 @@ def album_id(c, name: str, create: bool = True) -> int | None:
 
 
 def apply(db, ids, action: str, value=None) -> dict:
+    if isinstance(value, (list, dict)):
+        raise fileops.OpError("The value is a number or a name.")
     ids = [int(i) for i in list(ids)[:MAX]]
     if not ids:
         raise fileops.OpError("Nothing selected.")

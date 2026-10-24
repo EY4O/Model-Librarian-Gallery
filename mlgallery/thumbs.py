@@ -158,7 +158,11 @@ class Thumbnails:
         dest = cache_path(self.dir, row["fp"], size)
         if os.path.isfile(dest):
             return 1
-        full = os.path.join(row["path"], row["rel"])
+        keys = row.keys()
+        rel = row["trash_rel"] if "missing" in keys and row["missing"] == 2 and row["trash_rel"] else row["rel"]
+        full = os.path.join(row["path"], *rel.split("/"))
+        if not os.path.isfile(full):
+            return 0  # moved or put in the Trash meanwhile: made when it's next asked for, not marked failed
         extra = {}
         try:
             if row["kind"] == "video":
@@ -202,7 +206,7 @@ class Thumbnails:
 
     def _row(self, file_id: int):
         with self.db.read() as c:
-            return c.execute("SELECT f.id, f.rel, f.kind, f.fp, f.thumb, d.path FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.id=?",
+            return c.execute("SELECT f.id, f.rel, f.kind, f.fp, f.thumb, f.missing, f.trash_rel, d.path FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.id=?",
                              (file_id,)).fetchone()
 
     def _record(self, results: list[tuple[int, int]]) -> None:

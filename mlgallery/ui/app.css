@@ -609,3 +609,54 @@ kbd {
 }
 .note-input:focus { outline: none; border-color: var(--accent); }
 .note-hint { color: var(--dim); font-size: 11px; min-height: 1em; }
+
+/* ---------------------------------------------------------------- design review 2 */
+/* family colour only where a family is meant: LoRAs are a neutral series */
+:root { --series-lora: #7b8194; }
+/* cards in two stacks, each flowing on its own */
+.st-stacks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.st-stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+@media (max-width: 1000px) {
+  .st-stacks { grid-template-columns: minmax(0, 1fr); }
+  .st-stack { display: contents; }
+}
+/* the app's own selects: no OS chevron next to our buttons */
+select:not(.pick) {
+  appearance: none; padding-right: 28px !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a91a1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 9px center;
+}
+select:not(.pick):hover { border-color: var(--line-3); }
+select:not(.pick):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+select option { background: #1b1d24; color: var(--text); }
+/* the count doesn't push the search box about as it changes */
+#count { display: inline-block; min-width: 10ch; }
+/* selection boxes read the same on light and dark pictures */
+.tile .t-pick { background: rgba(10, 11, 14, .55); border-color: rgba(255, 255, 255, .85); }
+.selbar .link { color: var(--accent-text); }
+.selbar .link:hover { color: #fff; }
+/* the viewer: the prompt quieter than the picture, Copy in its corner */
+.prompt { color: var(--text-2); }
+.prompt-wrap { position: relative; }
+.prompt-wrap .prompt { padding-right: 38px; }
+.prompt-wrap .p-copy { position: absolute; top: 6px; right: 6px; opacity: .7; }
+.prompt-wrap:hover .p-copy, .prompt-wrap .p-copy:focus-visible { opacity: 1; }
+/* To review: the key on the button */
+.r-acts .btn kbd { min-width: 16px; padding: 0 4px; font-size: 11px; line-height: 15px; margin-right: 2px; }
+.r-acts .btn { gap: 6px; }
+/* a character's Delete, apart and destructive */
+.c-head .c-del { margin-left: 8px; }
+
+/* ---------------------------------------------------------------- QA pass */
+.v-media:focus { outline: none; }
+.v-broken { display: flex; flex-direction: column; align-items: center; gap: 4px; color: var(--text-2); text-align: center; }
+.v-broken p { margin: 0; }
+/* narrow windows: paths wrap at separators, the selection bar scrolls instead of cutting off Delete */
+@media (max-width: 1000px) {
+  .set-folders li { grid-template-columns: minmax(0, 1fr) auto; }
+  .set-folders li code { grid-column: 1 / -1; }
+  .selbar { overflow-x: auto; scrollbar-width: none; }
+  .selbar > * { flex: none; }
+  .v-panel select, .v-panel .pick { max-width: 100%; }
+  .d-row, .set-row { flex-wrap: wrap; }
+}

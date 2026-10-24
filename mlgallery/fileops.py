@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import time
 
 from . import scan
@@ -36,15 +37,37 @@ def _full(root: str, rel: str) -> str:
     return os.path.join(root, *rel.split("/"))
 
 
-def _free_name(dest_dir: str, name: str, taken: set[str]) -> str:
-    """name, or "name (2).ext" ... if that's already there (on disk or planned)."""
+def _free_name(dest_dir: str, name: str, taken: set[str], held=None) -> str:
+    """name, or "name (2).ext" ... if that's already there (on disk, planned, or held by a file the index has: held(name))."""
     stem, ext = os.path.splitext(name)
     cand, n = name, 1
-    while os.path.exists(os.path.join(dest_dir, cand)) or os.path.normcase(os.path.join(dest_dir, cand)) in taken:
+    while (os.path.exists(os.path.join(dest_dir, cand)) or os.path.normcase(os.path.join(dest_dir, cand)) in taken
+           or (held is not None and held(cand))):
         n += 1
         cand = f"{stem} ({n}){ext}"
     taken.add(os.path.normcase(os.path.join(dest_dir, cand)))
     return cand
+
+
+def _held(c, folder_id: int, sub: str):
+    """held(name): is sub/name a file the index already has in that folder (in the Trash or missing included)?"""
+    def held(name: str) -> bool:
+        rel = f"{sub}/{name}" if sub else name
+        return c.execute("SELECT 1 FROM files WHERE folder_id=? AND rel=? COLLATE NOCASE", (folder_id, rel)).fetchone() is not None
+    return held
+
+
+def _real_sub(root: str, sub: str) -> str:
+    """sub with the case of the folders already on disk: Windows doesn't care, but the index (and a rescan) does."""
+    out, cur = [], root
+    for p in sub.split("/") if sub else []:
+        try:
+            p = next((n for n in os.listdir(cur) if n.casefold() == p.casefold() and os.path.isdir(os.path.join(cur, n))), p)
+        except OSError:
+            pass
+        out.append(p)
+        cur = os.path.join(cur, p)
+    return "/".join(out)
 
 
 def _same_drive(a: str, b: str) -> bool:
@@ -69,7 +92,24 @@ def _move_file(src: str, dst: str) -> None:
         os.remove(tmp)
         raise OpError(f"the copy of {os.path.basename(src)} didn't match: the original was left where it is")
     os.replace(tmp, dst)
-    os.remove(src)
+    try:
+        os.remove(src)
+    except OSError:
+        os.remove(dst)  # the original couldn't go (in use?): don't leave two of it
+        raise
+
+
+def _relocate(db, fid: int, folder: int, rel: str) -> bool:
+    """The index follows a file to folder/rel; False (and nothing changed) if another record holds that name."""
+    from .metadata import refresh_search
+    name = rel.split("/")[-1]
+    try:
+        with db.write() as c:
+            c.execute("UPDATE files SET folder_id=?, rel=?, name=?, ext=? WHERE id=?", (folder, rel, name, os.path.splitext(name)[1].lower(), fid))
+            refresh_search(c, fid)
+    except sqlite3.IntegrityError:
+        return False
+    return True
 
 
 def record(c, kind: str, summary: str, data) -> int:
@@ -86,26 +126,27 @@ def plan_move(db, ids: list[int], dest_folder: int, sub: str = "") -> dict:
             raise OpError("That folder isn't in the library.")
         if not d["online"] or not os.path.isdir(d["path"]):
             raise OpError("That folder isn't reachable right now (a drive that isn't plugged in?).")
+        sub = _real_sub(d["path"], sub)
         dest_dir = os.path.join(d["path"], *sub.split("/")) if sub else d["path"]
-        rows = [_row(c, int(i)) for i in ids[:MAX_ITEMS]]
-    rows = [r for r in rows if r]
-    out = {"count": 0, "size": 0, "renamed": 0, "already": 0, "unavailable": 0, "copies": 0, "dest": dest_dir, "items": []}
-    taken: set[str] = set()
-    for r in rows:
-        src = _full(r["root"], r["rel"])
-        if r["missing"] or not r["online"] or not os.path.isfile(src):
-            out["unavailable"] += 1
-            continue
-        if os.path.normcase(os.path.dirname(src)) == os.path.normcase(dest_dir):
-            out["already"] += 1
-            continue
-        name = _free_name(dest_dir, r["name"], taken)
-        out["renamed"] += name != r["name"]
-        out["copies"] += not _same_drive(src, d["path"])
-        out["count"] += 1
-        out["size"] += r["size"] or 0
-        rel = (f"{sub}/{name}" if sub else name)
-        out["items"].append({"id": r["id"], "from_folder": r["folder_id"], "from_rel": r["rel"], "to_folder": d["id"], "to_rel": rel})
+        rows = [r for r in (_row(c, int(i)) for i in ids[:MAX_ITEMS]) if r]
+        out = {"count": 0, "size": 0, "renamed": 0, "already": 0, "unavailable": 0, "copies": 0, "dest": dest_dir, "items": []}
+        taken: set[str] = set()
+        held = _held(c, d["id"], sub)
+        for r in rows:
+            src = _full(r["root"], r["rel"])
+            if r["missing"] or not r["online"] or not os.path.isfile(src):
+                out["unavailable"] += 1
+                continue
+            if os.path.normcase(os.path.dirname(src)) == os.path.normcase(dest_dir):
+                out["already"] += 1
+                continue
+            name = _free_name(dest_dir, r["name"], taken, held)
+            out["renamed"] += name != r["name"]
+            out["copies"] += not _same_drive(src, d["path"])
+            out["count"] += 1
+            out["size"] += r["size"] or 0
+            rel = (f"{sub}/{name}" if sub else name)
+            out["items"].append({"id": r["id"], "from_folder": r["folder_id"], "from_rel": r["rel"], "to_folder": d["id"], "to_rel": rel})
     return out
 
 
@@ -114,7 +155,8 @@ def _clean_sub(sub: str) -> str:
     for p in parts:
         if p in ("..",) or ":" in p or p.startswith("."):
             raise OpError("A folder name can't go up (..), name a drive, or start with a dot.")
-    return "/".join(p for p in parts if p)
+    # Windows drops trailing dots and spaces from folder names: the index must store what the disk has
+    return "/".join(q for q in (p.rstrip(". ") for p in parts) if q)
 
 
 def move(db, ids, dest_folder: int, sub: str = "") -> dict:
@@ -131,12 +173,10 @@ def move(db, ids, dest_folder: int, sub: str = "") -> dict:
         except (OSError, OpError) as ex:
             failed.append({"id": it["id"], "error": str(ex)})
             continue
-        with db.write() as c:
-            name = it["to_rel"].split("/")[-1]
-            c.execute("UPDATE files SET folder_id=?, rel=?, name=?, ext=? WHERE id=?",
-                      (it["to_folder"], it["to_rel"], name, os.path.splitext(name)[1].lower(), it["id"]))
-            from .metadata import refresh_search
-            refresh_search(c, it["id"])
+        if not _relocate(db, it["id"], it["to_folder"], it["to_rel"]):
+            _move_file(dst, src)  # the index has that name already (it changed meanwhile): put the file back
+            failed.append({"id": it["id"], "error": "that name was taken meanwhile"})
+            continue
         done.append(it)
     op = None
     if done:
@@ -166,15 +206,33 @@ def trash(db, ids) -> dict:
         except OSError as ex:
             failed.append({"id": r["id"], "error": str(ex)})
             continue
-        with db.write() as c:
-            c.execute("UPDATE files SET missing=2, trashed=?, trash_rel=? WHERE id=?", (time.time(), trash_rel, r["id"]))
         done.append({"id": r["id"], "folder": r["folder_id"], "rel": r["rel"], "trash_rel": trash_rel})
+        if len(done) % 200 == 0:  # the index in batches: one write per file made thousands slow
+            _mark_trashed(db, done[-200:])
+    _mark_trashed(db, done[len(done) - len(done) % 200:])
     op = None
     if done:
         with db.write() as c:
             op = record(c, "trash", f"Moved {len(done)} file{'s' if len(done) != 1 else ''} to the Trash", done)
             _recount(c)
     return {"op": op, "trashed": len(done), "failed": failed}
+
+
+def _mark_trashed(db, items: list[dict]) -> None:
+    if items:
+        with db.write() as c:
+            c.executemany("UPDATE files SET missing=2, trashed=?, trash_rel=? WHERE id=?", [(time.time(), it["trash_rel"], it["id"]) for it in items])
+
+
+def _mark_restored(db, items: list[dict]) -> None:
+    from .metadata import refresh_search
+    if items:
+        with db.write() as c:
+            # a thumbnail that failed while it was away gets another go
+            c.executemany("UPDATE files SET missing=0, trashed=NULL, trash_rel=NULL, rel=?, name=?, thumb=CASE WHEN thumb=-1 THEN 0 ELSE thumb END WHERE id=?",
+                          [(it["rel"], it["rel"].split("/")[-1], it["id"]) for it in items])
+            for it in items:
+                refresh_search(c, it["id"])
 
 
 def restore(db, ids, *, as_op: bool = True) -> dict:
@@ -186,21 +244,26 @@ def restore(db, ids, *, as_op: bool = True) -> dict:
         src = _full(r["root"], r["trash_rel"])
         rel = r["rel"]
         dst = _full(r["root"], rel)
-        if os.path.exists(dst):
-            folder = os.path.dirname(dst)
-            name = _free_name(folder, os.path.basename(dst), set())
-            rel = "/".join(rel.split("/")[:-1] + [name])
-            dst = os.path.join(folder, name)
+        parent = "/".join(rel.split("/")[:-1])
+        with db.read() as c:
+            held = _held(c, r["folder_id"], parent)
+            others = lambda n: n.casefold() != rel.split("/")[-1].casefold() and held(n)  # noqa: E731 - its own record doesn't count
+            if os.path.exists(dst) or c.execute("SELECT 1 FROM files WHERE folder_id=? AND rel=? COLLATE NOCASE AND id<>?", (r["folder_id"], rel, r["id"])).fetchone():
+                folder = os.path.dirname(dst)
+                name = _free_name(folder, os.path.basename(dst), set(), others)
+                rel = "/".join(rel.split("/")[:-1] + [name])
+                dst = os.path.join(folder, name)
         try:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             os.rename(src, dst)
         except OSError as ex:
             failed.append({"id": r["id"], "error": str(ex)})
             continue
-        with db.write() as c:
-            c.execute("UPDATE files SET missing=0, trashed=NULL, trash_rel=NULL, rel=?, name=? WHERE id=?", (rel, rel.split("/")[-1], r["id"]))
         done.append({"id": r["id"], "folder": r["folder_id"], "rel": rel, "trash_rel": r["trash_rel"]})
         _tidy_trash(r["root"], r["trash_rel"])
+        if len(done) % 200 == 0:
+            _mark_restored(db, done[-200:])
+    _mark_restored(db, done[len(done) - len(done) % 200:])
     op = None
     if done:
         with db.write() as c:
@@ -273,6 +336,9 @@ def undo(db, op_id: int) -> dict:
             cur = None
             with db.read() as c:
                 cur = c.execute("SELECT folder_id, rel FROM files WHERE id=?", (it["id"],)).fetchone()
+            if cur and cur["folder_id"] == it["from_folder"] and cur["rel"] == it["from_rel"]:
+                back += 1  # back already (an earlier try that undid part of it)
+                continue
             if not cur or cur["folder_id"] != it["to_folder"] or cur["rel"] != it["to_rel"]:
                 failed.append(it["id"])  # moved again since, or gone: left alone
                 continue
@@ -282,14 +348,23 @@ def undo(db, op_id: int) -> dict:
             except (OSError, OpError):
                 failed.append(it["id"])
                 continue
-            with db.write() as c:
-                name = it["from_rel"].split("/")[-1]
-                c.execute("UPDATE files SET folder_id=?, rel=?, name=?, ext=? WHERE id=?", (it["from_folder"], it["from_rel"], name, os.path.splitext(name)[1].lower(), it["id"]))
+            if not _relocate(db, it["id"], it["from_folder"], it["from_rel"]):
+                _move_file(dst, src)
+                failed.append(it["id"])
+                continue
             back += 1
         result = {"undone": back, "failed": failed}
     elif kind == "trash":
-        r = restore(db, [it["id"] for it in data], as_op=False)
-        result = {"undone": r["restored"], "failed": [f["id"] for f in r["failed"]]}
+        ids = [it["id"] for it in data]
+        with db.read() as c:
+            states = {r[0]: r[1] for r in c.execute(f"SELECT id, missing FROM files WHERE id IN ({','.join('?' * len(ids))})", ids)} if ids else {}
+        r = restore(db, ids, as_op=False)
+        back = sum(1 for i in ids if states.get(i) == 0)  # put back already
+        result = {"undone": r["restored"] + back, "failed": [f["id"] for f in r["failed"]], "gone": [i for i in ids if i not in states]}
+        if not result["undone"] and not result["failed"]:
+            with db.write() as c:
+                c.execute("UPDATE ops SET undone=? WHERE id=?", (time.time(), op["id"]))
+            raise OpError("Those files were emptied from the Trash since: they're in the Windows Recycle Bin.")
     elif kind == "restore":
         r = trash(db, [it["id"] for it in data])
         with db.write() as c:
@@ -305,8 +380,11 @@ def undo(db, op_id: int) -> dict:
     else:
         raise OpError("Emptying the Trash can't be undone here: the files are in the Windows Recycle Bin.")
     with db.write() as c:
-        c.execute("UPDATE ops SET undone=? WHERE id=?", (time.time(), op["id"]))
+        if not result.get("failed"):  # a part that failed can be tried again
+            c.execute("UPDATE ops SET undone=? WHERE id=?", (time.time(), op["id"]))
         _recount(c)
+    if result.get("failed") and not result.get("undone"):
+        raise OpError("Nothing could be undone: the files changed since (moved again, or something else took their place).")
     return result
 
 

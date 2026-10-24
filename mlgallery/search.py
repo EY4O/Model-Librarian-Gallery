@@ -9,9 +9,10 @@
     is:fav  is:video  is:image  has:prompt  has:workflow  no:prompt
     sampler:euler  scheduler:karras  (exactly; sampler:dpmpp* for every name starting so)
     seed:1234  steps:8  steps:20-30  cfg:7  size:1024x1024  neg:blurry (words in the negative prompt)
-    after:2026-10-01  before:2026-10-23  on:2026-10-23  (by when the file was made, your local time)
+    after:2026-10-01  before:2026-10-23  on:2026-10-23  (by when the file was made, your local time; after:yesterday, on:2026-10 too)
     date:today  date:yesterday  date:7d  date:30d  date:2026-10  date:2026-10-23
     lora:aurelia@0.6-0.8  lora:aurelia@>=0.7  strength:0.7   (a LoRA used at that strength; strength: any LoRA)
+    -fog  -tag:dusk  -lora:aurelia   (a minus leaves out what follows it: words and filters alike)
 
 Unknown keys are treated as text. Every value is passed as a parameter, never pasted into the SQL.
 """
@@ -27,7 +28,8 @@ KEYS = {"model", "lora", "tag", "rating", "is", "has", "no", "sampler", "schedul
 
 
 def tokens(q: str) -> list[tuple[str | None, str]]:
-    """[(key or None, value)] in order. A key the search doesn't know stays part of the text."""
+    """[(key or None, value)] in order; a left-out filter (-tag:x) has its key as "-tag". A key the search
+    doesn't know stays part of the text."""
     out = []
     for m in TOKEN.finditer(q or ""):
         neg, key, quoted, bare = m.groups()
@@ -37,38 +39,34 @@ def tokens(q: str) -> list[tuple[str | None, str]]:
             value, key = f"{key}:{value}", None
         if neg and not key:
             value = "-" + value
+        elif neg:
+            key = "-" + key
         if value or key:
             out.append((key, value))
     return out
 
 
-def _fts(words: list[str], column: str = "{name prompt models tags}") -> str:
-    """An FTS5 query: each word or phrase quoted (so nothing in it is FTS syntax), words as prefixes."""
-    parts = []
+def _terms(words: list[str]) -> tuple[list[str], list[str]]:
+    """FTS5 terms, (wanted, left out): each word or phrase quoted (so nothing in it is FTS syntax), words as prefixes."""
+    want, out = [], []
     for w in words:
         neg = w.startswith("-") and len(w) > 1
-        w = w[1:] if neg else w
-        w = w.replace('"', "").strip()
-        if not w:
-            continue
-        term = f'"{w}"' + ("" if " " in w else "*")
-        parts.append(("NOT " if neg else "") + term)
-    if not parts:
-        return ""
-    if parts[0].startswith("NOT "):  # FTS5 needs something to subtract from
-        return ""
-    return f"{column} : ({' '.join(parts)})"
+        w = (w[1:] if neg else w).replace('"', "").strip()
+        if w:
+            (out if neg else want).append(f'"{w}"' + ("" if " " in w else "*"))
+    return want, out
 
 
 def _range(v: str):
     v = v.strip()
+    big = 2 ** 63 - 1
     m = re.fullmatch(r"(\d+)\s*-\s*(\d+)", v)
     if m:
-        return ">= ? AND {col} <=", [int(m.group(1)), int(m.group(2))]
+        return ">= ? AND {col} <=", [min(int(m.group(1)), big), min(int(m.group(2)), big)]
     m = re.fullmatch(r"(>=|<=|>|<|=)?\s*(\d+)", v)
     if not m:
         return None
-    return (m.group(1) or "="), [int(m.group(2))]
+    return (m.group(1) or "="), [min(int(m.group(2)), big)]
 
 
 def _names(db, kinds: tuple) -> list[str]:
@@ -93,6 +91,11 @@ def _characters(db, name: str) -> list[int]:
     return out
 
 
+def _loose(name: str) -> str:
+    """A model name to compare: lower case, with spaces, underscores and dashes alike."""
+    return re.sub(r"[\s_\-]+", " ", name.lower()).strip()
+
+
 def _in(values: list) -> str:
     return ",".join("?" * len(values))
 
@@ -103,6 +106,14 @@ def build(q: str, db=None) -> tuple[list[str], list]:
     grammar) names aren't resolved and matching uses LIKE."""
     where, args, words, neg_words = [], [], [], []
     for key, v in tokens(q):
+        if key and not v.strip():
+            continue  # "lora:" being typed: no filter yet
+        if key and key.startswith("-"):  # -tag:x: everything but what tag:x picks
+            w, a = build(f'{key[1:]}:"{v}"' if " " in v else f"{key[1:]}:{v}", db)
+            if w:
+                where.append(f"NOT ({' AND '.join(w)})")
+                args += a
+            continue
         if key is None:
             words.append(v)
         elif key in ("model", "lora", "vae"):
@@ -119,8 +130,8 @@ def build(q: str, db=None) -> tuple[list[str], list]:
                 where.append(f"f.id IN (SELECT file_id FROM uses WHERE kind IN ({_in(kinds)}) AND name LIKE ? ESCAPE '\\'{strength})")
                 args += [*kinds, f"%{_like(v)}%", *(r if strength else [])]
                 continue
-            low = v.lower()
-            hits = [n for n in _names(db, kinds) if low in n.lower()]
+            low = _loose(v)
+            hits = [n for n in _names(db, kinds) if low in _loose(n)]
             if not hits:
                 where.append("0")
                 continue
@@ -170,6 +181,8 @@ def build(q: str, db=None) -> tuple[list[str], list]:
                 else:
                     where.append(f"f.id IN (SELECT file_id FROM marks WHERE rating {op} ?)")
                 args += vals
+            else:
+                where.append("0")
         elif key == "is":
             v = v.lower()
             if v in ("fav", "favorite", "favourite"):
@@ -181,6 +194,8 @@ def build(q: str, db=None) -> tuple[list[str], list]:
                 where.append("f.id IN (SELECT file_id FROM marks WHERE rating > 0)")
             elif v == "review":
                 where.append("f.id IN (SELECT file_id FROM file_characters WHERE state = 'review')")
+            else:
+                where.append("0")  # is:something it doesn't know: nothing, rather than everything
         elif key in ("has", "no"):
             v = v.lower()
             cond = {"prompt": "f.id IN (SELECT file_id FROM generations WHERE COALESCE(positive, '') <> '')",
@@ -190,6 +205,8 @@ def build(q: str, db=None) -> tuple[list[str], list]:
                     "lora": "f.id IN (SELECT file_id FROM uses WHERE kind = 'lora')"}.get(v)
             if cond:
                 where.append(cond if key == "has" else f"NOT ({cond})")
+            else:
+                where.append("0")
         elif key in ("sampler", "scheduler"):
             if v.endswith("*"):
                 where.append(f"f.id IN (SELECT file_id FROM generations WHERE {key} LIKE ? ESCAPE '\\')")
@@ -209,22 +226,22 @@ def build(q: str, db=None) -> tuple[list[str], list]:
             m = re.fullmatch(r"(\d+)\s*[x×*]\s*(\d+)", v.strip().lower())
             if m:
                 where.append("f.width = ? AND f.height = ?")
-                args += [int(m.group(1)), int(m.group(2))]
+                args += [min(int(m.group(1)), 2 ** 31), min(int(m.group(2)), 2 ** 31)]
             else:
                 where.append("0")
-        elif key in ("after", "before", "on"):
-            day = _day(v)
-            if day is None:
+        elif key in ("after", "before", "on"):  # a day, or anything date: takes (yesterday, 7d, 2026-10)
+            span = _date_span(v)
+            if span is None:
                 where.append("0")
             elif key == "after":
                 where.append("f.mtime >= ?")
-                args.append(day)
+                args.append(span[0])
             elif key == "before":
                 where.append("f.mtime < ?")
-                args.append(day)
+                args.append(span[0])
             else:
                 where.append("f.mtime >= ? AND f.mtime < ?")
-                args += [day, _day(v, 1)]
+                args += span
         elif key in ("seed", "steps"):
             r = _range(v)
             if r:
@@ -232,18 +249,23 @@ def build(q: str, db=None) -> tuple[list[str], list]:
                 sql = f"{key} >= ? AND {key} <= ?" if len(vals) == 2 else f"{key} {op} ?"
                 where.append(f"f.id IN (SELECT file_id FROM generations WHERE {sql})")
                 args += vals
+            else:
+                where.append("0")
         elif key == "neg":
             neg_words.append(v)
         elif key == "ext":
             where.append("f.ext = ?")
             args.append("." + v.lower().lstrip("."))
     for words_, col in ((words, "{name prompt models tags}"), (neg_words, "negative")):
-        match = _fts(words_, col)
-        if match:
+        want, out = _terms(words_)
+        if want:
             where.append("f.id IN (SELECT rowid FROM search WHERE search MATCH ?)")
-            args.append(match)
+            args.append(f"{col} : ({' '.join(want)})")
         elif any(not w.startswith("-") for w in words_):
             where.append("0")  # only punctuation: nothing matches, rather than everything
+        if out:  # -fog: whatever has none of these
+            where.append("f.id NOT IN (SELECT rowid FROM search WHERE search MATCH ?)")
+            args.append(f"{col} : ({' OR '.join(out)})")
     return where, args
 
 
@@ -264,7 +286,13 @@ def _frange(v: str):
 
 def _date_span(v: str):
     """date:today / yesterday / 7d / 30d / 2026-10 / 2026-10-23 -> [start, end) as timestamps, in local time."""
-    v = v.strip().lower()
+    try:
+        return _span(v.strip().lower())
+    except (OverflowError, ValueError):  # date:0000-01, date:9999-12, date:99999d: no such days
+        return None
+
+
+def _span(v: str):
     today = datetime.date.today()
     start = lambda d: time.mktime((d.year, d.month, d.day, 0, 0, 0, 0, 0, -1))  # noqa: E731
     if v == "today":

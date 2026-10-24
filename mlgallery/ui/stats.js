@@ -1,7 +1,7 @@
 // Model Librarian Gallery: the Statistics screen. One request (/api/stats) per range; every bar and row
 // opens the library filtered to the files behind it.
 
-import { api, baseName, dayLabel, fmtNum, fmtSize, h, plural, store, toast } from "./util.js";
+import { api, baseName, dayLabel, fmtNum, fmtSize, h, plural, stacks, store, toast } from "./util.js";
 
 const RANGES = [["7", "7 days"], ["30", "30 days"], ["90", "90 days"], ["365", "1 year"], ["all", "All time"]];
 const KIND = { checkpoint: "CKPT", unet: "UNET", lora: "LORA" };
@@ -36,7 +36,7 @@ export async function renderStats(root, { open }) {
     data.totals.n ? null : h("p.st-empty", {}, range === "all" ? "Nothing indexed yet: add a folder to see statistics." : "Nothing made in this time range."),
     kpis(data),
     data.totals.n && data.made_with.series.length ? timeline(data, go) : null,
-    data.totals.n ? h("div.st-grid", {},
+    data.totals.n ? stacks([
       card("Checkpoints", "Most used", bars(data.checkpoints, { kind: "ckpt", label: (r) => [r.family ? h("span.fam", { style: { color: r.color, borderColor: r.color + "88" } }, r.family.toUpperCase()) : null, r.name],
         fill: (r) => r.color, onclick: (r) => go({ key: "model", value: r.name }),
         empty: "No checkpoint recorded in these files." })),
@@ -49,7 +49,7 @@ export async function renderStats(root, { open }) {
       settingsCard(data, go),
       storageCard(data, go),
       libraryCard(data, go),
-    ) : null,
+    ]) : null,
   ].filter(Boolean));
 }
 

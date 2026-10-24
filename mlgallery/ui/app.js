@@ -3,7 +3,7 @@
 // scrolls the same at 200 files or 250,000. Day headings come from a per-day count (one small request),
 // so every tile's place is known without fetching the pages above it.
 
-import { $, TOKEN, api, ask, askText, baseName, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, media, menu, plural, stars, store, toast } from "./util.js";
+import { $, TOKEN, api, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, media, menu, plural, stars, store, toast } from "./util.js";
 import { renderStats } from "./stats.js";
 import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
 import * as org from "./organize.js";
@@ -23,7 +23,7 @@ const state = {
   folders: [], view: "all", folder: null, seed: 1 + Math.floor(Math.random() * 1e9),
   sort: store.get("sort", "newest"), kind: store.get("kind", ""), tile: store.get("tile", 176),
   chips: [], text: "",                     // the search: filter chips, and the words typed
-  total: 0, groups: [], pages: new Map(), loading: new Set(), gen: 0, focus: -1,
+  total: 0, groups: [], pages: new Map(), loading: new Map(), gen: 0, focus: -1, maxId: 0, selUpto: 0, stale: false,
 };
 
 // ---------------------------------------------------------------- the search
@@ -235,6 +235,7 @@ const isPage = () => PAGES.has(state.view);
 const pageCtx = { open: (chips) => openFromStats(chips), show: (view, id) => selectView(view, id), refresh: () => loadCharacters() };
 
 function selectView(view, arg = null) {
+  closeMenu();
   if (view === "random" && state.view === "random") state.seed = 1 + Math.floor(Math.random() * 1e9); // Random again: a new shuffle
   state.view = view;
   state.folder = view === "folder" ? arg : null;
@@ -320,6 +321,7 @@ async function addFolder() {
     const { folder } = await api("/folders", { method: "POST", body: { path } });
     toast(`Added ${baseName(folder.path)}: indexing it now.`);
     await loadFolders();
+    reload(false);
     pollSoon();
   } catch (e) {
     toast(e.message, true);
@@ -385,20 +387,27 @@ function query(path, offset) {
 // the search, plus what the view itself filters by (an album)
 const viewQuery = () => [state.view === "album" ? `album:${quote(state.album)}` : "", queryString()].filter(Boolean).join(" ");
 
-async function loadPage(p) {
-  if (state.pages.has(p) || state.loading.has(p)) return;
+function loadPage(p) {
+  if (state.pages.has(p)) return Promise.resolve();
+  if (state.loading.has(p)) return state.loading.get(p);
+  const run = fetchPage(p);
+  state.loading.set(p, run);
+  return run;
+}
+
+async function fetchPage(p) {
   const gen = state.gen;
-  state.loading.add(p);
   try {
     const res = await api(query("/files", p * PAGE));
     if (gen !== state.gen) return; // the view changed while this was on its way
     state.pages.set(p, res.items);
+    state.maxId = Math.max(state.maxId, res.max_id || 0);
     if (res.total !== state.total) { state.total = res.total; showCount(); if (state.groups.length) loadDays(); }
     draw();
   } catch (e) {
     toast(e.message, true);
   } finally {
-    state.loading.delete(p);
+    if (gen === state.gen) state.loading.delete(p);
   }
 }
 
@@ -418,7 +427,8 @@ async function loadDays() {
   }
 }
 
-const itemAt = (i) => state.pages.get(Math.floor(i / PAGE))?.[i % PAGE];
+// during a refresh the pages on screen still answer (a click on a tile opens that tile), until the new ones are in
+const itemAt = (i) => (state.pages.get(Math.floor(i / PAGE)) ?? state.shownPages?.get(Math.floor(i / PAGE)))?.[i % PAGE];
 
 function tileFor(item) {
   const el = h("button.tile" + (isSelected(item) ? ".picked" : ""), { type: "button", onclick: (e) => tileClick(e, item.__i), onfocus: () => { state.focus = item.__i; },
@@ -449,7 +459,7 @@ const tileKey = (item) => `${item.id}:${item.thumb}:${item.rating}:${item.favori
 // ---------------------------------------------------------------- the selection
 const isSelected = (item) => state.selAll || state.sel.has(item.id);
 const selCount = () => (state.selAll ? state.total : state.sel.size);
-const selection = () => (state.selAll ? { view: { sort: sortFor(), folder: state.folder, kind: state.kind, q: viewQuery(), seed: state.seed } } : [...state.sel]);
+const selection = () => (state.selAll ? { view: { sort: sortFor(), folder: state.folder, kind: state.kind, q: viewQuery(), seed: state.seed, upto: state.selUpto || undefined } } : [...state.sel]);
 
 function tileClick(e, i) {
   if (e.shiftKey && state.anchor >= 0) return rangeSel(state.anchor, i);
@@ -457,12 +467,15 @@ function tileClick(e, i) {
   openViewer(i);
 }
 
-function toggleSel(i) {
+async function toggleSel(i) {
   const item = itemAt(i);
   if (!item) return;
-  if (state.selAll) { // from "everything" to everything but this one: only what's loaded can be listed
-    state.selAll = false;
-    for (const items of state.pages.values()) for (const it of items) state.sel.add(it.id);
+  if (state.selAll) { // from "everything" to everything but this one: the whole list, from the Gallery
+    try {
+      const { ids } = await api("/select", { method: "POST", body: { selection: selection() } });
+      state.selAll = false;
+      for (const id of ids) state.sel.add(id);
+    } catch (e) { return toast(e.message, true); }
   }
   if (state.sel.has(item.id)) state.sel.delete(item.id);
   else state.sel.add(item.id);
@@ -478,6 +491,7 @@ async function rangeSel(a, b) {
 }
 
 function selectAll() {
+  state.selUpto = state.maxId; // files that arrive later aren't in it
   state.selAll = true;
   state.sel.clear();
   selChanged();
@@ -506,7 +520,7 @@ function selChanged() {
       onclick: () => bulk("rate", r) }, stars(r, { size: 12 }), h("kbd", {}, String(r))) })),
     null, { label: "Clear the rating", icon: "remove", hint: "0", onclick: () => bulk("rate", 0) }]) }, icon("star"), "Rate");
   const moreBtn = h("button.icon-btn", { type: "button", "aria-haspopup": "menu", "aria-label": "More", title: "More", onclick: (e) => menu(e.currentTarget, [
-    { label: "Move…", icon: "move", onclick: () => org.moveDialog(sel, n, state.folders) },
+    { label: "Move…", icon: "move", onclick: () => org.moveDialog(sel, n, state.folders, { at: state.folder, after: clearSel }) },
     { label: "Send to Eagle…", icon: "send", onclick: () => org.sendToEagle(sel, n) },
     null,
     { label: "Not favourites", icon: "heart", onclick: () => bulk("favorite", false) },
@@ -535,7 +549,7 @@ function selChanged() {
 async function bulk(action, value) {
   try {
     const r = await api("/ops/bulk", { method: "POST", body: { selection: selection(), action, value } });
-    org.done(r, action === "rate" ? (value ? `Rated ${plural(r.count, "file")} ${value}.` : `Cleared ${plural(r.count, "rating")}.`) : `${plural(r.count, "file")} marked as favourite${r.count === 1 ? "" : "s"}.`);
+    org.done(r, action === "rate" ? (value ? `Rated ${plural(r.count, "file")} ${value}.` : `Cleared ${plural(r.count, "rating")}.`) : value ? `${plural(r.count, "file")} marked as favourite${r.count === 1 ? "" : "s"}.` : `${plural(r.count, "file")} taken out of the favourites.`);
   } catch (e) { toast(e.message, true); }
 }
 
@@ -619,16 +633,22 @@ function clearGrid() {
 }
 
 function reload(toTop = false) {
+  if (toTop) clearSel(); // a new view, search, sort or kind: the bar never acts on files the grid no longer shows
   const hadFocus = !toTop && document.activeElement?.classList.contains("tile");
   state.gen++;
-  state.pages.clear();
+  state.shownPages = toTop ? null : state.pages;
+  state.pages = new Map();
   state.loading.clear();
   if (toTop) { clearGrid(); scroller.scrollTop = 0; state.focus = -1; }
   renderToolbar();
-  Promise.all([loadPage(0), loadDays()]).then(() => {
+  state.stale = false;
+  const gen = state.gen;
+  return Promise.all([loadPage(0), loadDays()]).then(() => {
+    if (gen === state.gen) state.shownPages = null;
     // a refresh keeps the tiles on screen until the new list is in (no blank flash); draw swaps the ones that changed
     for (const el of heads.values()) el.remove();
     heads.clear();
+    showCount();
     draw();
     if (hadFocus && state.focus >= 0) focusTile(Math.min(state.focus, state.total - 1)); // a refresh doesn't lose your place
   });
@@ -764,12 +784,14 @@ function renderMarks(item) {
 }
 
 // ---------------------------------------------------------------- the viewer
-let viewing = -1, viewedTimer = null, infoGen = 0;
+let viewing = -1, viewedTimer = null, infoGen = 0, shown = null, deleting = false;
 
 function openViewer(i) {
   const item = itemAt(i);
   if (!item) return;
+  closeMenu();
   viewing = i;
+  shown = item;
   state.focus = i;
   const v = $("viewer");
   const wasHidden = v.hidden;
@@ -782,15 +804,16 @@ function openViewer(i) {
   $("v-prev").disabled = i <= 0;
   $("v-next").disabled = i >= state.total - 1;
   const src = media("file", item.id);
-  $("v-media").replaceChildren(item.kind === "video"
-    ? h("video", { src, controls: true, autoplay: true, loop: true })
-    : h("img", { src, alt: item.name }));
+  const el = item.kind === "video" ? h("video", { src, controls: true, autoplay: true, loop: true }) : h("img", { src, alt: item.name });
+  el.addEventListener("error", () => $("v-media").replaceChildren(h("div.v-broken", {}, h("p", {}, `This ${item.kind === "video" ? "video" : "picture"} can't be shown.`),
+    h("p.note", {}, item.size ? "It may be damaged, or only partly saved." : "The file is empty (0 bytes)."))));
+  $("v-media").replaceChildren(el);
   renderMarks(item);
   loadDetails(item);
   clearTimeout(viewedTimer);
   viewedTimer = setTimeout(() => api(`/file/${item.id}/viewed`, { method: "POST" }).catch(() => {}), 800);
   if (!itemAt(i + 1) && i + 1 < state.total) loadPage(Math.floor((i + 1) / PAGE));
-  if (wasHidden) $("v-close").focus({ focusVisible: false });
+  if (wasHidden) $("v-media").focus({ preventScroll: true });
 }
 
 const folderOf = (item) => state.folders.find((f) => f.id === item.folder_id);
@@ -823,9 +846,8 @@ function promptBlock(text, cls = "") {
   const long = text.length > 420;
   const body = h("div.prompt" + cls + (long ? ".clamp" : ""), {}, text);
   return h("div.prompt-wrap", {}, body,
-    h("div.row.tight", {},
-      h("button.btn.small", { type: "button", onclick: () => copyText(text, "Prompt copied") }, icon("copy"), "Copy"),
-      long ? h("button.btn.small", { type: "button", onclick: (e) => { body.classList.toggle("clamp"); e.currentTarget.textContent = body.classList.contains("clamp") ? "Show all" : "Show less"; } }, "Show all") : null));
+    h("button.icon-btn.small.p-copy", { type: "button", "aria-label": "Copy", title: "Copy", onclick: () => copyText(text, cls ? "Negative prompt copied" : "Prompt copied") }, icon("copy")),
+    long ? h("div.row.tight", {}, h("button.btn.small", { type: "button", onclick: (e) => { body.classList.toggle("clamp"); e.currentTarget.textContent = body.classList.contains("clamp") ? "Show all" : "Show less"; } }, "Show all")) : null);
 }
 
 function renderDetails(info) {
@@ -848,7 +870,9 @@ function renderDetails(info) {
         u.kind === "lora" && u.strength != null ? h("span.strength", { title: u.clip != null && u.clip !== u.strength ? `model ${fmtNum(u.strength)} · clip ${fmtNum(u.clip)}` : `strength ${fmtNum(u.strength)}` },
           h("span.bar", {}, h("span", { style: { width: `${Math.max(4, Math.min(100, Math.abs(u.strength) * 100))}%` } })), fmtNum(u.strength)) : null)))));
     }
-    if (g.has_workflow) {
+    if (g.has_workflow && state.view === "trash") {
+      parts.push(section("Workflow", h("p.note", {}, "Put it back from the Trash to open its workflow in ComfyUI or save it as a recipe.")));
+    } else if (g.has_workflow) {
       parts.push(section("Workflow", h("p.note", {}, `${g.source === "comfyui" ? "ComfyUI" : g.source}${g.nodes ? ` · ${plural(g.nodes, "node")}` : ""}`),
         h("div.row", {},
           h("button.btn.primary", { type: "button", title: "Opens it in a new tab in ComfyUI (with Model Librarian)", onclick: (e) => openInComfy(info, e.currentTarget) }, icon("play"), "Open in ComfyUI"),
@@ -887,7 +911,7 @@ function renderDetails(info) {
       h("button.btn", { type: "button", onclick: () => reveal(info) }, icon("explorer"), "Show in Explorer"),
       h("button.btn", { type: "button", onclick: () => copyText(info.path, "Path copied") }, icon("copy"), "Copy path"),
       state.view === "trash" ? h("button.btn", { type: "button", onclick: () => org.restoreFiles([info.id]) }, icon("restore"), "Put back")
-        : h("button.btn", { type: "button", onclick: () => org.moveDialog([info.id], 1, state.folders) }, icon("move"), "Move…"),
+        : h("button.btn", { type: "button", onclick: () => org.moveDialog([info.id], 1, state.folders, { at: info.folder_id }) }, icon("move"), "Move…"),
       state.view === "trash" ? null : h("button.btn", { type: "button", title: "Move to the Trash (Delete)", onclick: () => deleteViewing() }, icon("trash"), "Delete"))));
   $("v-panel").replaceChildren(...parts);
 }
@@ -991,17 +1015,21 @@ function noteEditor(info) {
 
 // the file in the viewer to the Trash; the next one takes its place
 async function deleteViewing() {
-  const item = itemAt(viewing);
-  if (!item) return;
-  const at = viewing;
-  const r = await org.trashFiles([item.id]);
-  if (!r || !r.trashed) return;
-  state.pages.clear();
-  state.total = Math.max(0, state.total - 1);
-  if (!state.total) return closeViewer();
-  const i = Math.min(at, state.total - 1);
-  await loadPage(Math.floor(i / PAGE));
-  openViewer(i);
+  const item = shown;
+  if (!item || deleting) return;
+  deleting = true; // a second Delete before the next file is up would trash one you haven't seen
+  try {
+    const at = viewing;
+    const r = await org.trashFiles([item.id]);
+    if (!r || !r.trashed) return;
+    await reload(false);
+    if (!state.total) return closeViewer();
+    const i = Math.min(at, state.total - 1);
+    await loadPage(Math.floor(i / PAGE));
+    openViewer(i);
+  } finally {
+    deleting = false;
+  }
 }
 
 async function refreshViewer() {
@@ -1055,7 +1083,8 @@ function closeViewer() {
   $("v-media").replaceChildren();
   const i = viewing;
   viewing = -1;
-  if (state.view === "recent") reload(false); // what you just opened moved to the top
+  shown = null;
+  if (state.view === "recent" || state.stale) reload(false); // what you just opened moved to the top; or files came meanwhile
   else if (i >= 0) focusTile(i);
 }
 
@@ -1067,7 +1096,7 @@ function step(d) {
 }
 
 // ---------------------------------------------------------------- status
-let lastStatus = null, pollTimer = null, lastFiles = -1, lastMeta = -1;
+let lastStatus = null, pollTimer = null, lastFiles = -1, lastMeta = -1, lastOffline = 0;
 
 async function poll() {
   clearTimeout(pollTimer);
@@ -1083,13 +1112,16 @@ async function poll() {
       : st.files ? `Up to date · ${plural(st.files, "file")}` : "Up to date";
     $("status-right").textContent = st.thumbs_failed ? `${plural(st.thumbs_failed, "file")} without a thumbnail` : "";
     const searching = !!queryString();
+    if (st.offline !== lastOffline) { lastOffline = st.offline; loadFolders(); } // a folder went (or came back)
     if (st.files !== lastFiles || (searching && st.meta_pending !== lastMeta)) {
       lastFiles = st.files;
       await loadFolders();
       if ($("viewer").hidden && !isPage()) reload(false); // never pull the list from under an open file
+      else state.stale = true; // ...but bring it up to date once it's closed
     } else if (st.thumbs_pending && $("viewer").hidden && !isPage()) {
       // thumbnails made meanwhile: tiles waiting for one pick it up when their page is fetched again
-      for (const p of [...state.pages.keys()]) state.pages.delete(p);
+      state.shownPages = state.pages; // (still answering for the tiles on screen meanwhile)
+      state.pages = new Map();
       draw();
     }
     lastMeta = st.meta_pending;
@@ -1165,7 +1197,7 @@ $("q").addEventListener("keydown", (e) => {
   } else if (e.key === "Escape") {
     if (!$("suggest").hidden) $("suggest").hidden = true;
     else if (input.value || state.chips.length) clearSearch();
-    else input.blur();
+    else { input.blur(); clearSel(); }
   }
   e.stopPropagation();
 });
@@ -1245,6 +1277,10 @@ document.addEventListener("keydown", (e) => {
   else if (e.key.toLowerCase() === "i") setDetails($("viewer").classList.contains("no-details"));
   else if (/^[0-5]$/.test(e.key)) rate(itemAt(viewing), Number(e.key));
   else if (e.key.toLowerCase() === "f") favourite(itemAt(viewing));
+  else if (e.key === " ") { // a video plays or pauses
+    const vid = $("v-media").querySelector("video");
+    if (vid && e.target.tagName !== "VIDEO") { e.preventDefault(); if (vid.paused) vid.play(); else vid.pause(); }
+  }
 });
 
 setSide(store.get("sideHidden", false));

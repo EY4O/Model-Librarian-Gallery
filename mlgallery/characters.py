@@ -190,24 +190,36 @@ def _learn(c, character_id: int) -> None:
         files = rule_files(c, r)
         if not files:
             continue
-        marks = c.execute(f"SELECT state, COUNT(*) FROM file_characters WHERE character_id=? AND file_id IN ({','.join('?' * len(files))})"
-                          " GROUP BY state", (character_id, *files)).fetchall()
-        n = dict(marks)
+        n = _states(c, character_id, files)
         no, yes = n.get("rejected", 0), n.get("confirmed", 0)
         if no >= MUTE_AFTER and no >= 3 * yes:
             c.execute("UPDATE character_rules SET muted=1 WHERE id=?", (r["id"],))
-            c.execute(f"DELETE FROM file_characters WHERE character_id=? AND state='review' AND file_id IN ({','.join('?' * len(files))})",
-                      (character_id, *files))
+            for part in _chunks(files):
+                c.execute(f"DELETE FROM file_characters WHERE character_id=? AND state='review' AND file_id IN ({','.join('?' * len(part))})",
+                          (character_id, *part))
+
+
+def _chunks(ids, size: int = 30000):
+    """ids in parts an IN (...) list can take (SQLite stops at 32,766 parameters)."""
+    ids = list(ids)
+    return [ids[i:i + size] for i in range(0, len(ids), size)]
+
+
+def _states(c, character_id: int, files) -> dict:
+    """{state: count} of this character's marks on these files."""
+    n: dict = {}
+    for part in _chunks(files):
+        for state, k in c.execute(f"SELECT state, COUNT(*) FROM file_characters WHERE character_id=? AND file_id IN ({','.join('?' * len(part))})"
+                                  " GROUP BY state", (character_id, *part)):
+            n[state] = n.get(state, 0) + k
+    return n
 
 
 def rule_stats(c, character_id: int) -> list[dict]:
     out = []
     for r in _rules(c, character_id):
         files = rule_files(c, r)
-        counts = {}
-        if files:
-            counts = dict(c.execute(f"SELECT state, COUNT(*) FROM file_characters WHERE character_id=? AND file_id IN ({','.join('?' * len(files))})"
-                                    " GROUP BY state", (character_id, *files)).fetchall())
+        counts = _states(c, character_id, files)
         out.append({"id": r["id"], "kind": r["kind"], "value": r["value"], "strength": r["strength"], "muted": bool(r["muted"]),
                     "matches": len(files), "confirmed": counts.get("confirmed", 0), "rejected": counts.get("rejected", 0)})
     return out

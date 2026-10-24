@@ -56,7 +56,7 @@ def test_date_size_and_cfg_filters(lib, media):
     recent = q(lib, f"after:{week_ago}")
     older = q(lib, f"before:{week_ago}")
     assert recent and older and not set(recent) & set(older) and len(recent) + len(older) == 12
-    assert q(lib, "after:yesterday") == [] and q(lib, "on:2026-13-45") == []
+    assert "g00.png" in q(lib, "after:yesterday") and q(lib, "on:2026-13-45") == []  # date: words work in after: / before: / on: too
     assert set(q(lib, "size:256x192")) == {f"g{i:02d}{'.jpg' if i % 4 == 3 else '.png'}" for i in range(1, 12, 2)}
     assert q(lib, "size:1x1") == [] and q(lib, "size:big") == []
     assert q(lib, "cfg:5.5") and set(q(lib, "cfg:5.5")) <= set(q(lib, "has:prompt")) and q(lib, "cfg:x") == []

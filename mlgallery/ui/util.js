@@ -3,6 +3,13 @@
 export const TOKEN = document.querySelector('meta[name="mlg-token"]').content;
 export const $ = (id) => document.getElementById(id);
 
+// append, prepend and replaceChildren skip a child that's left out (null or false), as h() does, instead of
+// writing "null" on the screen
+for (const m of ["append", "prepend", "replaceChildren"]) {
+  const real = Element.prototype[m];
+  Element.prototype[m] = function (...kids) { return real.apply(this, kids.filter((k) => k != null && k !== false)); };
+}
+
 // h("div.cls", {props}, ...children): text is always set as text, never as HTML
 export function h(tag, props, ...kids) {
   const [name, ...classes] = tag.split(".");
@@ -75,7 +82,7 @@ export function toast(text, err = false) {
   toastTimer = setTimeout(() => t.remove(), err ? 7000 : 3500);
 }
 
-export const fmtSize = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
+export const fmtSize = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n > 0 ? `${Math.max(1, Math.round(n / 1e3))} KB` : "0 KB");
 export const fmtDur = (s) => (s == null ? "" : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`);
 export const fmtDate = (t) => new Date(t * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 export const fmtNum = (v) => (v == null ? "—" : Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100));
@@ -148,10 +155,14 @@ export function menu(anchor, items) {
     box.remove();
     document.removeEventListener("mousedown", out, true);
     document.removeEventListener("keydown", key, true);
+    document.removeEventListener("scroll", moved, true);
+    window.removeEventListener("resize", close);
+    window.removeEventListener("blur", close);
     anchor.setAttribute("aria-expanded", "false");
     if (anchor.isConnected) anchor.focus();
   };
   const out = (e) => { if (!box.contains(e.target) && e.target !== anchor) close(); };
+  const moved = (e) => { if (!box.contains(e.target)) close(); }; // it's placed under its button: scrolling away leaves it behind
   const key = (e) => {
     const all = [...box.querySelectorAll("button")];
     const i = all.indexOf(document.activeElement);
@@ -173,6 +184,9 @@ export function menu(anchor, items) {
   anchor.setAttribute("aria-expanded", "true");
   document.addEventListener("mousedown", out, true);
   document.addEventListener("keydown", key, true);
+  document.addEventListener("scroll", moved, true);
+  window.addEventListener("resize", close);
+  window.addEventListener("blur", close);
   box.querySelector("button, input")?.focus();
   return box;
 }
@@ -185,4 +199,13 @@ export function stars(n, { max = 5, size = 12 } = {}) {
     s.setAttribute("height", size);
     return s;
   }));
+}
+
+export const closeMenu = () => document.querySelector(".menu")?._close();
+
+// cards in two stacks that each flow on their own (no row-aligned holes); 1st, 3rd… on the left. Narrow: one column, in order
+export function stacks(cards) {
+  const all = cards.filter(Boolean);
+  all.forEach((c, i) => { c.style.order = String(i); });
+  return h("div.st-stacks", {}, h("div.st-stack", {}, all.filter((_, i) => i % 2 === 0)), h("div.st-stack", {}, all.filter((_, i) => i % 2 === 1)));
 }

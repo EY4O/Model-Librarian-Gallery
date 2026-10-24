@@ -95,9 +95,9 @@ export async function albumDialog(selection, count, { remove = null } = {}) {
 }
 
 // ---------------------------------------------------------------- move
-export async function moveDialog(selection, count, folders) {
+export async function moveDialog(selection, count, folders, { at = null, after = null } = {}) {
   if (!folders.length) return toast("Add a folder to the library first: files move into your library folders.", true);
-  const folder = h("select", { "aria-label": "Folder" }, folders.filter((f) => f.online).map((f) => h("option", { value: f.id }, `${baseName(f.path)}  —  ${f.path}`)));
+  const folder = h("select", { "aria-label": "Folder" }, folders.filter((f) => f.online).map((f) => h("option", { value: f.id, selected: f.id === at }, `${baseName(f.path)}  —  ${f.path}`)));
   const sub = h("input", { type: "text", placeholder: "Optional: a folder inside it, e.g. sorted/coast", "aria-label": "Folder inside", spellcheck: false });
   const plan = h("div.plan", { "aria-live": "polite" });
   let timer = null, last = null;
@@ -132,6 +132,7 @@ export async function moveDialog(selection, count, folders) {
       if (!last || !last.count) return false;
       const r = await api("/ops/move", { method: "POST", body: { selection, folder: Number(folder.value), sub: sub.value } });
       done(r, `Moved ${plural(r.moved, "file")}${r.failed.length ? `; ${r.failed.length} couldn't be: ${r.failed[0].error}` : ""}.`);
+      if (r.moved && after) after();
     },
   });
   go.disabled = true;
@@ -143,7 +144,9 @@ export async function moveDialog(selection, count, folders) {
 export async function trashFiles(selection) {
   try {
     const r = await api("/ops/trash", { method: "POST", body: { selection } });
-    done(r, `${plural(r.trashed, "file")} moved to the Trash${r.failed.length ? ` (${r.failed.length} couldn't be)` : ""}.`);
+    const why = r.failed.length ? (r.failed[0].error === "not reachable" ? "its folder isn't reachable right now" : r.failed[0].error) : "";
+    done(r, r.trashed ? `${plural(r.trashed, "file")} moved to the Trash${r.failed.length ? ` (${r.failed.length} couldn't be: ${why})` : ""}.`
+      : `Nothing moved to the Trash: ${why}.`);
     return r;
   } catch (e) { toast(e.message, true); return null; }
 }
