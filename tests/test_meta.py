@@ -12,8 +12,7 @@ from mlgallery import metadata, scan, search
 from sample_media import generation, make_image, make_video
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ML_CANDIDATES = [os.environ.get("MLG_ML_REPO") or "", os.path.join(HERE, "..", "..", "..", "..", "comfyui-sm-model-fetcher"),
-                 os.path.join(HERE, "..", "..", "ComfyUI-Model-Librarian")]
+ML_CANDIDATES = [os.environ.get("MLG_ML_REPO") or "", os.path.join(HERE, "..", "..", "ComfyUI-Model-Librarian")]  # beside it in the suite folder
 
 
 # ---------------------------------------------------------------- the shared readers
