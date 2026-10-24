@@ -3,7 +3,7 @@
 // scrolls the same at 200 files or 250,000. Day headings come from a per-day count (one small request),
 // so every tile's place is known without fetching the pages above it.
 
-import { $, TOKEN, api, baseName, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, media, plural, store, toast } from "./util.js";
+import { $, TOKEN, api, ask, askText, baseName, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, media, menu, plural, stars, store, toast } from "./util.js";
 import { renderStats } from "./stats.js";
 import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
 import * as org from "./organize.js";
@@ -12,6 +12,9 @@ import { renderSettings } from "./settings.js";
 const PAGE = 300;
 const HEAD = 40;      // a day heading's height
 const GROUP_GAP = 14; // space under a day's last row
+
+const SORT_NAMES = { newest: "Newest first", oldest: "Oldest first", name: "Name", largest: "Largest" };
+const KIND_NAMES = { "": "Images and videos", image: "Images only", video: "Videos only" };
 
 // ---------------------------------------------------------------- state
 const state = {
@@ -24,14 +27,16 @@ const state = {
 };
 
 // ---------------------------------------------------------------- the search
-const FIELDS = ["model", "lora", "tag", "sampler", "scheduler", "seed", "steps", "rating", "is", "has", "no", "neg", "vae", "ext"];
+const FIELDS = ["model", "lora", "tag", "sampler", "scheduler", "seed", "steps", "rating", "is", "has", "no", "neg", "vae", "ext",
+  "cfg", "size", "after", "before", "on", "date", "strength", "character", "review", "album"];
 const SUGGESTED = new Set(["model", "lora", "tag", "sampler", "scheduler", "vae"]);
 const quote = (v) => (/[\s"]/.test(v) ? `"${v.replaceAll('"', "")}"` : v);
 const chipText = (c) => `${c.key}:${quote(c.value)}`;
 const queryString = () => [...state.chips.map(chipText), state.text.trim()].filter(Boolean).join(" ");
 const HINTS = [
   ["model:", "a checkpoint or diffusion model"], ["lora:", "a LoRA"], ["tag:", "one of your tags"],
-  ["sampler:", "a sampler"], ["seed:", "an exact seed"], ["rating:4", "rated 4 or more"],
+  ["lora:name@0.6-0.8", "a LoRA used at that strength"], ["date:7d", "made in the last 7 days (or today, yesterday, 2026-10)"],
+  ["sampler:", "a sampler"], ["seed:", "an exact seed"], ["rating:4", "rated 4 or more"], ["character:", "a character"],
   ["is:fav", "your favourites"], ["has:workflow", "a ComfyUI workflow is saved"], ["no:prompt", "no generation data"],
   ["neg:", "words in the negative prompt"],
 ];
@@ -195,7 +200,7 @@ async function loadAlbums() {
 }
 
 async function newAlbum() {
-  const name = (prompt("A name for the new album:") || "").trim();
+  const name = await askText("New album", "Name", "", { ok: "Create" });
   if (!name) return;
   try {
     await api("/albums", { method: "POST", body: { name } });
@@ -205,7 +210,7 @@ async function newAlbum() {
 }
 
 async function renameAlbum(a) {
-  const name = (prompt(`Rename the album ${a.name} to:`, a.name) || "").trim();
+  const name = await askText(`Rename ${a.name}`, "Name", a.name, { ok: "Rename" });
   if (!name || name === a.name) return;
   try {
     await api(`/albums/${a.id}`, { method: "POST", body: { name } });
@@ -216,7 +221,7 @@ async function renameAlbum(a) {
 }
 
 async function deleteAlbum(a) {
-  if (!confirm(`Delete the album ${a.name}?\n\nOnly the album goes: its ${a.n.toLocaleString()} files stay exactly where they are.`)) return;
+  if (!await ask(`Delete the album ${a.name}?`, `Only the album goes: its ${plural(a.n, "file")} stay exactly where they are.`, { ok: "Delete the album", danger: true })) return;
   await api(`/albums/${a.id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
   loadAlbums();
 }
@@ -286,13 +291,13 @@ function renderToolbar() {
   const f = state.folders.find((x) => x.id === state.folder);
   $("view-title").textContent = { random: "Random", recent: "Recently viewed", trash: "Trash" }[state.view] || (state.view === "album" ? state.album : f ? baseName(f.path) : "All");
   $("view-title").title = f ? f.path : "";
-  $("sort-wrap").hidden = ["random", "recent", "trash"].includes(state.view);
   $("empty-trash").hidden = state.view !== "trash" || !state.total;
   $("shuffle").hidden = state.view !== "random";
-  for (const b of $("kind").querySelectorAll("button")) {
-    b.classList.toggle("on", b.dataset.kind === state.kind);
-    b.setAttribute("aria-pressed", String(b.dataset.kind === state.kind));
-  }
+  // the View button says what's not the default, so a filter is never hidden in a menu
+  const sorted = ["random", "recent", "trash"].includes(state.view) || state.sort === "newest" ? "" : SORT_NAMES[state.sort];
+  const kind = state.kind ? KIND_NAMES[state.kind] : "";
+  $("view-label").textContent = [kind, sorted].filter(Boolean).join(" · ") || "View";
+  $("view-btn").classList.toggle("set", !!(kind || sorted));
 }
 
 function setSide(hidden) {
@@ -308,7 +313,7 @@ async function addFolder() {
     path = (await api("/folders/pick", { method: "POST" })).path;
   } catch (e) {
     if (e.status !== 501) return toast(e.message, true);
-    path = prompt("The folder to add (its full path):") || "";
+    path = (await askText("Add a folder", "Its full path", "", { ok: "Add", placeholder: "D:\\ComfyUI\\output" })) || "";
   }
   if (!path) return;
   try {
@@ -327,7 +332,7 @@ async function rescan(f) {
 }
 
 async function removeFolder(f) {
-  if (!confirm(`Remove ${f.path} from the library?\n\nOnly the Gallery's index of it goes: the folder and its files stay exactly where they are.`)) return;
+  if (!await ask(`Remove ${baseName(f.path)} from the library?`, `Only the Gallery's index of it goes (and its ratings, tags and albums): the folder and its files stay exactly where they are.`, { ok: "Remove", danger: true })) return;
   await api(`/folders/${f.id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
   await loadFolders();
   reload(true);
@@ -404,7 +409,7 @@ async function loadDays() {
     const { days } = await api(query("/days"));
     if (gen !== state.gen) return;
     let start = 0;
-    state.groups = days.map((d) => { const g = { label: dayLabel(d.day), n: d.n, start }; start += d.n; return g; });
+    state.groups = days.map((d) => { const g = { label: dayLabel(d.day), day: d.day, n: d.n, start }; start += d.n; return g; });
     for (const el of heads.values()) el.remove(); // headings are new; tiles just move (draw places them)
     heads.clear();
     draw();
@@ -431,8 +436,10 @@ function tileFor(item) {
   }
   if (item.kind === "video") el.append(h("span.badge", {}, icon("play"), fmtDur(item.duration)));
   if (item.favorite) el.append(h("span.t-fav", { title: "Favourite" }, icon("heart")));
-  if (item.rating) el.append(h("span.t-rating", { title: `Rated ${item.rating}` }, "★".repeat(item.rating)));
-  el.append(h("span.name", {}, item.name));
+  if (item.rating) el.append(h("span.t-rating", { title: `Rated ${item.rating}` }, stars(item.rating, { size: 10 })));
+  if (item.color) el.append(h("span.t-fam", { style: { background: item.color }, title: item.family || "" }));
+  const made = [item.model, item.lora ? `${item.lora}${item.lora_strength != null ? ` ${fmtNum(item.lora_strength)}` : ""}${item.loras > 1 ? ` +${item.loras - 1}` : ""}` : null].filter(Boolean);
+  el.append(h("span.name", {}, h("span.n1", {}, item.name), made.length ? h("span.n2", {}, made.join(" · ")) : null));
   el.title = `${item.name}\n${item.width && item.height ? `${item.width} × ${item.height} · ` : ""}${fmtSize(item.size)} · ${fmtDate(item.mtime)}`;
   return el;
 }
@@ -494,8 +501,17 @@ function selChanged() {
   if (!n) return;
   const sel = selection();
   const trash = state.view === "trash";
-  const stars = h("div.stars.small", { role: "group", "aria-label": "Rate them" }, [1, 2, 3, 4, 5].map((r) => h("button.star", { type: "button", title: `Rate ${r}`, "aria-label": `Rate ${r}`,
-    onclick: () => bulk("rate", r) }, "★")), h("button.btn.small", { type: "button", title: "Clear the rating", onclick: () => bulk("rate", 0) }, "0"));
+  const rateBtn = h("button.btn", { type: "button", "aria-haspopup": "menu", onclick: (e) => menu(e.currentTarget, [
+    ...[5, 4, 3, 2, 1].map((r) => ({ node: h("button.menu-item", { type: "button", role: "menuitem", "aria-label": `Rate ${r}`,
+      onclick: () => bulk("rate", r) }, stars(r, { size: 12 }), h("kbd", {}, String(r))) })),
+    null, { label: "Clear the rating", icon: "remove", hint: "0", onclick: () => bulk("rate", 0) }]) }, icon("star"), "Rate");
+  const moreBtn = h("button.icon-btn", { type: "button", "aria-haspopup": "menu", "aria-label": "More", title: "More", onclick: (e) => menu(e.currentTarget, [
+    { label: "Move…", icon: "move", onclick: () => org.moveDialog(sel, n, state.folders) },
+    { label: "Send to Eagle…", icon: "send", onclick: () => org.sendToEagle(sel, n) },
+    null,
+    { label: "Not favourites", icon: "heart", onclick: () => bulk("favorite", false) },
+    state.view === "album" ? null : { label: "Take out of an album…", icon: "album", onclick: () => org.albumDialog(sel, n, { remove: "" }) },
+  ].filter((x, i, a) => x !== null || (i > 0 && a[i - 1] !== null))) }, icon("more"));
   bar.replaceChildren(
     h("span.sel-n", {}, state.selAll ? `All ${n.toLocaleString()} selected` : `${n.toLocaleString()} selected`),
     !state.selAll && n < state.total ? h("button.link", { type: "button", onclick: selectAll }, `Select all ${state.total.toLocaleString()}`) : null,
@@ -504,13 +520,14 @@ function selChanged() {
       h("button.btn", { type: "button", onclick: async () => { await org.restoreFiles(sel); clearSel(); } }, icon("restore"), "Put back"),
       h("button.btn.danger", { type: "button", onclick: async () => { await org.emptyTrash(sel, n); clearSel(); } }, icon("trash"), "Empty these"),
     ] : [
-      stars,
-      h("button.btn", { type: "button", onclick: () => bulk("favorite", true), title: "Favourite (Ctrl+click the heart: unfavourite)" }, icon("heart"), "Favourite"),
+      rateBtn,
+      h("button.btn", { type: "button", onclick: () => bulk("favorite", true), title: "Favourite (F)" }, icon("heart"), "Favourite"),
       h("button.btn", { type: "button", onclick: () => org.tagDialog(sel, n) }, icon("tag"), "Tag…"),
       state.view === "album" ? h("button.btn", { type: "button", onclick: () => bulkAlbumOut() }, icon("album"), "Take out")
         : h("button.btn", { type: "button", onclick: () => org.albumDialog(sel, n) }, icon("album"), "Album…"),
-      h("button.btn", { type: "button", onclick: () => org.moveDialog(sel, n, state.folders) }, icon("move"), "Move…"),
-      h("button.btn", { type: "button", onclick: async () => { if (await org.trashFiles(sel, n)) clearSel(); } }, icon("trash"), "Delete"),
+      moreBtn,
+      h("span.bar-sep", { "aria-hidden": "true" }),
+      h("button.btn.danger", { type: "button", title: "Move to the Trash (Delete); Ctrl+Z undoes it", onclick: async () => { if (await org.trashFiles(sel)) clearSel(); } }, icon("trash"), "Delete"),
     ]),
     h("button.icon-btn", { type: "button", "aria-label": "Clear the selection", title: "Clear the selection (Esc)", onclick: clearSel }, icon("remove")));
 }
@@ -552,7 +569,9 @@ function draw() {
     if (g.label) {
       wantHeads.add(gi);
       if (!heads.has(gi)) {
-        const el = h("div.day", { role: "heading", "aria-level": 2 }, g.label, h("span.n", {}, g.n.toLocaleString()));
+        const el = h("div.day", { role: "heading", "aria-level": 2 },
+          h("button.day-link", { type: "button", title: `Only ${g.label.toLowerCase() === "today" || g.label.toLowerCase() === "yesterday" ? g.label.toLowerCase() : g.label}`,
+            onclick: () => addChip("on", g.day, { replace: true }) }, g.label), h("span.n", {}, g.n.toLocaleString()));
         sizer.append(el);
         heads.set(gi, el);
       }
@@ -604,10 +623,12 @@ function reload(toTop = false) {
   state.gen++;
   state.pages.clear();
   state.loading.clear();
-  clearGrid();
-  if (toTop) { scroller.scrollTop = 0; state.focus = -1; }
+  if (toTop) { clearGrid(); scroller.scrollTop = 0; state.focus = -1; }
   renderToolbar();
   Promise.all([loadPage(0), loadDays()]).then(() => {
+    // a refresh keeps the tiles on screen until the new list is in (no blank flash); draw swaps the ones that changed
+    for (const el of heads.values()) el.remove();
+    heads.clear();
     draw();
     if (hadFocus && state.focus >= 0) focusTile(Math.min(state.focus, state.total - 1)); // a refresh doesn't lose your place
   });
@@ -657,7 +678,9 @@ function gridKey(e) {
 }
 
 function showCount() {
-  $("count").textContent = state.total ? plural(state.total, "item") : "";
+  const searching = !!queryString();
+  $("count").textContent = !state.total ? (searching ? "no matches" : "") : searching ? plural(state.total, "match", "matches") : plural(state.total, "item");
+  $("empty-trash").hidden = state.view !== "trash" || !state.total; // the count of this view, not the one before it
 }
 
 function showEmpty() {
@@ -734,8 +757,8 @@ async function favourite(item) {
 
 function renderMarks(item) {
   $("v-stars").replaceChildren(...[1, 2, 3, 4, 5].map((n) => h("button.star" + (n <= item.rating ? ".on" : ""),
-    { type: "button", "aria-label": `${n} star${n > 1 ? "s" : ""}`, "aria-pressed": String(n <= item.rating), title: `${n} (press ${n})`,
-      onclick: () => rate(item, n) }, "★")));
+    { type: "button", "aria-label": `${n} star${n > 1 ? "s" : ""}`, "aria-pressed": String(n <= item.rating), title: `${n} (press ${n}; again clears it)`,
+      onclick: () => rate(item, n) }, icon("star"))));
   $("v-fav").setAttribute("aria-pressed", String(!!item.favorite));
   $("v-fav").classList.toggle("on", !!item.favorite);
 }
@@ -847,6 +870,7 @@ function renderDetails(info) {
         gi.note ? h("p.note", {}, gi.note) : null));
     }
   }
+  parts.push(section("Note", noteEditor(info)));
   parts.push(section("Characters", characterEditor(info)));
   parts.push(section("Albums", albumEditor(info)));
   parts.push(section("Tags", tagEditor(info)));
@@ -901,12 +925,12 @@ function characterEditor(info) {
     const pick = h("select.pick", { "aria-label": "Add a character" }, h("option", { value: "" }, "+ Character"),
       others.map((c) => h("option", { value: c.id }, c.name)));
     pick.onchange = () => { if (pick.value) change(Number(pick.value), "confirm"); };
-    wrap.replaceChildren(...list.map((c) => h("span.chip.tag.char." + c.state, { title: `${STATE_TIP[c.state] || ""}${c.source === "workflow" ? " (by the workflow's Gallery Info node)" : ""}` },
+    wrap.replaceChildren(...[...list.map((c) => h("span.chip.tag.char." + c.state, { title: `${STATE_TIP[c.state] || ""}${c.source === "workflow" ? " (by the workflow's Gallery Info node)" : ""}` },
       filterLink("character", c.name),
       c.state === "review" ? h("button.x", { type: "button", "aria-label": `Yes, ${c.name} is in it`, title: "Yes", onclick: () => change(c.id, "confirm") }, icon("check")) : null,
       h("button.x", { type: "button", "aria-label": `${c.name} isn't in it`, title: `Not ${c.name}`, onclick: () => change(c.id, "reject") }, icon("remove")))),
       others.length ? pick : null,
-      !list.length && !others.length ? h("button.link.dim", { type: "button", onclick: () => editCharacter(null, pageCtx) }, "New character…") : null);
+      !list.length && !others.length ? h("button.link.dim", { type: "button", onclick: () => editCharacter(null, pageCtx) }, "New character…") : null].filter(Boolean));
   };
   const change = async (cid, verdict) => {
     try {
@@ -928,7 +952,7 @@ function albumEditor(info) {
       others.map((a) => h("option", { value: a.name }, a.name)), h("option", { value: "\u0000new" }, "New album…"));
     pick.onchange = async () => {
       let name = pick.value;
-      if (name === "\u0000new") name = (prompt("A name for the new album:") || "").trim();
+      if (name === "\u0000new") name = (await askText("New album", "Name", "", { ok: "Create" })) || "";
       if (name) change("album", name);
       else pick.value = "";
     };
@@ -947,12 +971,30 @@ function albumEditor(info) {
   return wrap;
 }
 
+function noteEditor(info) {
+  const box = h("textarea.note-input", { rows: 2, placeholder: "A note of your own", "aria-label": "Note", value: info.note?.note || "", spellcheck: true });
+  let saved = box.value;
+  const save = async () => {
+    if (box.value.trim() === saved.trim()) return;
+    try {
+      await api(`/file/${info.id}/note`, { method: "POST", body: { note: box.value } });
+      saved = box.value;
+      hint.textContent = "Saved";
+      setTimeout(() => { hint.textContent = ""; }, 1500);
+    } catch (e) { toast(e.message, true); }
+  };
+  box.addEventListener("blur", save);
+  box.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); box.blur(); } });
+  const hint = h("span.note-hint", { "aria-live": "polite" }, info.note?.source === "eagle" ? "From Eagle" : "");
+  return h("div.note-wrap", {}, box, hint);
+}
+
 // the file in the viewer to the Trash; the next one takes its place
 async function deleteViewing() {
   const item = itemAt(viewing);
   if (!item) return;
   const at = viewing;
-  const r = await org.trashFiles([item.id], 1, { ask: false });
+  const r = await org.trashFiles([item.id]);
   if (!r || !r.trashed) return;
   state.pages.clear();
   state.total = Math.max(0, state.total - 1);
@@ -1077,13 +1119,20 @@ $("view-review").onclick = () => selectView("review");
 $("shuffle").onclick = () => selectView("random");
 $("side-hide").onclick = () => setSide(true);
 $("side-show").onclick = () => setSide(false);
-$("sort").value = state.sort;
-$("tile").value = state.tile;
-$("sort").onchange = (e) => { state.sort = e.target.value; store.set("sort", state.sort); reload(true); };
-for (const b of $("kind").querySelectorAll("button")) {
-  b.onclick = () => { state.kind = b.dataset.kind; store.set("kind", state.kind); reload(true); };
+function viewMenu(anchor) {
+  const slider = h("input", { type: "range", min: 120, max: 300, step: 4, value: state.tile, "aria-label": "Tile size",
+    oninput: (e) => { state.tile = Number(e.target.value); store.set("tile", state.tile); draw(); } });
+  const pick = (label, on, fn) => h("button.menu-item" + (on ? ".on" : ""), { type: "button", role: "menuitemradio", "aria-checked": String(on),
+    onclick: () => { fn(); renderToolbar(); } }, on ? icon("check") : h("span.menu-gap"), h("span", {}, label));
+  const sorts = ["random", "recent", "trash"].includes(state.view) ? [] : [h("div.menu-label", {}, "Sort"),
+    ...Object.entries(SORT_NAMES).map(([k, v]) => pick(v, state.sort === k, () => { state.sort = k; store.set("sort", k); reload(true); }))];
+  menu(anchor, [...sorts.map((node) => ({ node })), ...(sorts.length ? [null] : []),
+    { node: h("div.menu-label", {}, "Show") },
+    ...Object.entries(KIND_NAMES).map(([k, v]) => ({ node: pick(v, state.kind === k, () => { state.kind = k; store.set("kind", k); reload(true); }) })),
+    null, { node: h("div.menu-label", {}, "Tile size") }, { node: h("div.menu-range", {}, icon("grid"), slider) }]);
 }
-$("tile").oninput = (e) => { state.tile = Number(e.target.value); store.set("tile", state.tile); draw(); };
+$("view-btn").onclick = (e) => viewMenu(e.currentTarget);
+$("help-btn").onclick = () => showHelp();
 $("f-fav").onclick = () => {
   if (state.chips.some((c) => c.key === "is" && c.value === "fav")) removeChips((c) => c.key === "is" && c.value === "fav");
   else addChip("is", "fav");
@@ -1129,9 +1178,34 @@ $("v-prev").onclick = () => step(-1);
 $("v-next").onclick = () => step(1);
 $("v-fav").onclick = () => favourite(itemAt(viewing));
 $("v-details").onclick = () => setDetails($("viewer").classList.contains("no-details"));
+function showHelp() {
+  if (document.querySelector("dialog.help")) return;
+  const keys = [["Grid", [["← → ↑ ↓", "move between files"], ["Enter or Space", "open"], ["Ctrl+click, Shift+click", "select"], ["Ctrl+A", "select everything in view"],
+    ["Delete", "move to the Trash"], ["Ctrl+Z", "undo the last change"], ["/ or Ctrl+F", "search"], ["Ctrl+B", "hide or show the sidebar"]]],
+    ["Viewer", [["← →", "previous, next"], ["1 – 5, 0", "rate (again: clear)"], ["F", "favourite"], ["I", "details panel"], ["Delete", "move to the Trash"], ["Esc", "back"]]],
+    ["To review", [["Y / N", "yes, it's them / no"], ["← →", "next card"]]]];
+  const words = [["lighthouse dusk", "words in the prompt, name, models or tags"], ['"paper cut"', "a phrase"], ["model:  lora:  vae:", "a model by (part of) its name"],
+    ["lora:aurelia@0.6-0.8", "a LoRA at that strength (strength: any LoRA)"], ["tag:  album:  character:", "your tags, albums, characters"],
+    ["rating:4  rating:2-4  rating:0", "rated 4 or more, 2 to 4, unrated"], ["is:fav  is:video  is:review", "favourites, videos, waiting for review"],
+    ["date:today  date:7d  date:2026-10", "when it was made (also after: before: on:)"], ["seed:  steps:  cfg:  sampler:  size:1024x1024", "settings"],
+    ["has:workflow  no:prompt  neg:blurry", "what's saved in it; words in the negative prompt"]];
+  const table = (rows) => h("dl.help-list", {}, rows.map(([k, v]) => [h("dt", {}, h("kbd", {}, k)), h("dd", {}, v)]));
+  const dlg = h("dialog.dialog.wide.help", { "aria-label": "Shortcuts and search" },
+    h("div.help-body", {},
+      h("h2", {}, "Shortcuts and search"),
+      h("div.help-cols", {},
+        h("div", {}, keys.map(([t, rows]) => [h("h3", {}, t), table(rows)])),
+        h("div", {}, h("h3", {}, "Search"), table(words))),
+      h("div.row.end", {}, h("button.btn.primary", { type: "button", onclick: () => dlg.close() }, "Done"))));
+  dlg.addEventListener("close", () => dlg.remove());
+  document.body.append(dlg);
+  dlg.showModal();
+}
+
 document.addEventListener("keydown", (e) => {
   const inField = e.target.closest?.("input, select, textarea");
-  if (document.querySelector("dialog[open], .preview")) return;
+  if (e.key === "?" && !inField && !document.querySelector("dialog[open]")) { e.preventDefault(); showHelp(); return; }
+  if (document.querySelector("dialog[open], .preview, .menu")) return;
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z" && !inField) {
     e.preventDefault();
     org.undoLast();
@@ -1142,8 +1216,8 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && selCount()) { e.preventDefault(); clearSel(); return; }
     if (e.key === "Delete" && state.view !== "trash") {
       const one = !selCount() && e.target.classList?.contains("tile") ? itemAt(Number(e.target.dataset.i)) : null;
-      if (selCount()) { e.preventDefault(); org.trashFiles(selection(), selCount()).then((r) => r && clearSel()); return; }
-      if (one) { e.preventDefault(); org.trashFiles([one.id], 1, { ask: false }); return; }
+      if (selCount()) { e.preventDefault(); org.trashFiles(selection()).then((r) => r && clearSel()); return; }
+      if (one) { e.preventDefault(); org.trashFiles([one.id]); return; }
     }
   }
   if (!$("viewer").hidden && !inField && e.key === "Delete" && state.view !== "trash") { e.preventDefault(); deleteViewing(); return; }

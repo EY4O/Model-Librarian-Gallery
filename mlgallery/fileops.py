@@ -299,6 +299,9 @@ def undo(db, op_id: int) -> dict:
     elif kind in ("marks", "tags", "albums"):
         from . import bulk
         result = bulk.undo(db, kind, data)
+    elif kind == "eagle":
+        from . import eagle
+        result = eagle.undo_import(db, data)
     else:
         raise OpError("Emptying the Trash can't be undone here: the files are in the Windows Recycle Bin.")
     with db.write() as c:

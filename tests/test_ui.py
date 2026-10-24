@@ -95,13 +95,19 @@ def test_grid_viewer_and_controls(server):
             assert await e.js("getComputedStyle(document.getElementById('side')).display") != "none"
 
             # Images only, then Random (no day headings, no Sort)
-            await e.click('#kind button[data-kind="image"]')
+            await e.click("#view-btn")
+            await e.js("[...document.querySelectorAll('.menu .menu-item')].find(b => b.textContent === 'Images only').click(); true")
             await e.wait(f"document.getElementById('count').textContent === '{api('/files?kind=image')['total']} items'")
-            await e.click('#kind button[data-kind=""]')
+            assert await e.js("document.getElementById('view-label').textContent") == "Images only"  # the filter shows on the button
+            await e.click("#view-btn")
+            await e.js("[...document.querySelectorAll('.menu .menu-item')].find(b => b.textContent === 'Images and videos').click(); true")
             await e.click("#view-random")
             await e.wait("document.getElementById('view-title').textContent === 'Random' && document.querySelector('.tile')")
             assert await e.js("document.querySelectorAll('.day').length") == 0
-            assert await e.js("document.getElementById('sort-wrap').hidden")
+            await e.click("#view-btn")
+            assert "Sort" not in await e.js("document.querySelector('.menu').textContent")  # a shuffle has no sort
+            await e.key("Escape")
+            await e.js("document.querySelector('.menu')?.remove(); true")
             first = await e.js("document.querySelector('.tile').getAttribute('aria-label')")
             await e.click("#shuffle")
             await asyncio.sleep(0.8)
@@ -113,7 +119,9 @@ def test_grid_viewer_and_controls(server):
             await e.click("#view-all")
             await e.wait("document.querySelector('.tile')")
             small = await e.js("document.querySelector('.tile').getBoundingClientRect().width")
-            await e.js("const t = document.getElementById('tile'); t.value = 300; t.dispatchEvent(new Event('input')); true")
+            await e.click("#view-btn")
+            await e.js("const t = document.querySelector('.menu input[type=range]'); t.value = 300; t.dispatchEvent(new Event('input')); true")
+            await e.js("document.querySelector('.menu')?.remove(); true")
             big = await e.js("document.querySelector('.tile').getBoundingClientRect().width")
             assert big > small * 1.4
             errors = await e.js("window.__errors || []")
@@ -130,7 +138,8 @@ def test_videos_have_posters_and_play(server):
     async def go():
         async with page(url) as e:
             await e.wait("document.querySelector('.tile')")
-            await e.click('#kind button[data-kind="video"]')
+            await e.click("#view-btn")
+            await e.js("[...document.querySelectorAll('.menu .menu-item')].find(b => b.textContent === 'Videos only').click(); true")
             await e.wait("document.querySelector('.tile .badge') && document.getElementById('count').textContent.startsWith('" + str(len(videos)) + "')")
             await e.click(".tile")
             await e.wait("document.querySelector('#v-media video')?.readyState >= 2", timeout=20)
@@ -163,7 +172,7 @@ def test_search_marks_tags_and_details(server):
             await e.js("const q = document.getElementById('q'); q.focus(); q.value = 'lora:aurelia '; q.dispatchEvent(new Event('input')); true")
             await e.wait("document.querySelector('#chips .chip .v')?.textContent === 'aurelia'")
             want = api("/files?q=lora:aurelia")["total"]
-            await e.wait(f"document.getElementById('count').textContent === '{want} items'")
+            await e.wait(f"document.getElementById('count').textContent === '{want} matches'")
             # suggestions for a field
             await e.js("const q = document.getElementById('q'); q.value = 'model:dre'; q.dispatchEvent(new Event('input')); true")
             await e.wait("!document.getElementById('suggest').hidden && document.getElementById('suggest').textContent.includes('dreamy_mix_v3')")
@@ -171,7 +180,7 @@ def test_search_marks_tags_and_details(server):
             await e.js("document.querySelector('.s-item').dispatchEvent(new MouseEvent('mousedown', {bubbles: true})); true")
             await e.wait("document.querySelectorAll('#chips .chip').length === 2")
             both = api("/files?q=" + "lora:aurelia%20model:dreamy_mix_v3")["total"]
-            await e.wait(f"document.getElementById('count').textContent.startsWith('{both} item')")
+            await e.wait(f"document.getElementById('count').textContent.startsWith('{both} match')")
             # Backspace in the empty box removes the last chip; the clear button removes the rest
             await e.js("const q = document.getElementById('q'); q.value = ''; q.dispatchEvent(new KeyboardEvent('keydown', {key: 'Backspace', bubbles: true})); true")
             await e.wait("document.querySelectorAll('#chips .chip').length === 1")
@@ -186,7 +195,7 @@ def test_search_marks_tags_and_details(server):
             # the details of a ComfyUI image: prompt, settings, models, workflow, tags
             first = next(i for i in api("/files?q=has:workflow")["items"])
             await e.js(f"const q = document.getElementById('q'); q.value = {json.dumps(first['name'].split('.')[0].replace('_', ' '))}; q.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', bubbles: true}})); true")
-            await e.wait("document.getElementById('count').textContent === '1 item'")
+            await e.wait("document.getElementById('count').textContent === '1 match'")
             await e.wait("document.querySelector('.tile')")
             await e.click(".tile")
             await e.wait("document.querySelector('.v-panel .models')")
@@ -204,6 +213,10 @@ def test_search_marks_tags_and_details(server):
             await e.js("const t = document.querySelector('input.tag-input'); t.value = 'ui-test'; t.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true})); true")
             await e.wait("[...document.querySelectorAll('.tags .chip')].some(c => c.textContent.includes('ui-test'))")
             assert "ui-test" in {t["name"] for t in api(f"/file/{first['id']}/info")["tags"]}
+            # a note of your own, saved with Ctrl+Enter (or when the box loses focus)
+            await e.js("const n = document.querySelector('textarea.note-input'); n.value = 'keep for the poster'; n.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', ctrlKey: true, bubbles: true})); true")
+            await e.wait("document.querySelector('.note-hint').textContent === 'Saved'")
+            assert api(f"/file/{first['id']}/info")["note"]["note"] == "keep for the poster"
             # clicking a model filters by it
             await e.js("document.querySelector('.model .link').click(); true")
             await e.wait("document.getElementById('viewer').hidden && document.querySelector('#chips .chip')")
@@ -212,7 +225,7 @@ def test_search_marks_tags_and_details(server):
             await e.wait("!document.querySelector('#chips .chip')")
             # the favourites filter
             await e.click("#f-fav")
-            await e.wait("document.getElementById('count').textContent === '1 item'")
+            await e.wait("document.getElementById('count').textContent === '1 match'")
             await e.wait("document.querySelector('.tile .t-fav')")
             await e.click("#f-fav")
             # Recently viewed has what was opened
@@ -231,6 +244,14 @@ def test_search_marks_tags_and_details(server):
             await e.wait("!document.getElementById('viewer').hidden")
             assert (await e.js("document.getElementById('v-name').textContent")) == second
             await e.key("Escape")
+            # ? lists the keys and the search words
+            await e.wait("document.getElementById('viewer').hidden")
+            await e.key("?")
+            await e.wait("document.querySelector('dialog.help[open]')")
+            text = await e.js("document.querySelector('dialog.help').textContent")
+            assert "Ctrl+Z" in text and "lora:" in text
+            await e.js("document.querySelector('dialog.help').close(); true")
+            await e.wait("!document.querySelector('dialog.help[open]')")
             assert not await e.js("window.__errors.length")
     asyncio.run(go())
 
@@ -255,7 +276,7 @@ def test_statistics_screen(server):
             await e.js("document.querySelector('.bars.ckpt .bar-row').click(); true")
             await e.wait("!document.getElementById('scroll').hidden && document.querySelector('#chips .chip')")
             assert await e.js("document.querySelector('#chips .chip .k').textContent") == "model"
-            await e.wait(f"document.getElementById('count').textContent === '{top['n']} item{'' if top['n'] == 1 else 's'}'")
+            await e.wait(f"document.getElementById('count').textContent === '{top['n']} match{'' if top['n'] == 1 else 'es'}'")
             # a setting tab
             await e.click("#view-stats")
             await e.wait("document.querySelector('.st-grid')")
@@ -302,7 +323,7 @@ def test_characters_screens(server):
             # the details panel shows the character, and "Not Aurelia" takes it off that file
             await e.click("#view-all")
             await e.js("const q = document.getElementById('q'); q.value = 'character:aurelia '; q.dispatchEvent(new Event('input')); true")
-            await e.wait(f"document.getElementById('count').textContent.startsWith('{api('/characters')['characters'][0]['n']} item')")
+            await e.wait(f"document.getElementById('count').textContent.startsWith('{api('/characters')['characters'][0]['n']} match')")
             await e.click(".tile")
             await e.wait("document.querySelector('.chip.char')")
             await e.js("document.querySelector('.chip.char button.x[title^=Not]').click(); true")
@@ -324,7 +345,9 @@ def test_organising(server):
             await e.wait("!document.getElementById('selbar').hidden && document.querySelector('.sel-n').textContent.startsWith('2 selected')")
             ids = await e.js("[...document.querySelectorAll('.tile.picked')].map(t => t.getAttribute('aria-label'))")
             assert len(ids) == 2
-            await e.js("document.querySelector('#selbar .star[aria-label=\"Rate 3\"]').click(); true")
+            await e.js("[...document.querySelectorAll('#selbar .btn')].find(b => b.textContent === 'Rate').click(); true")
+            await e.wait("document.querySelector('.menu')")
+            await e.js("document.querySelector('.menu [aria-label=\"Rate 3\"]').click(); true")
             await e.wait("document.querySelector('.toast')?.textContent.includes('Rated 2 files 3')")
             assert api("/files?q=rating:3")["total"] >= 2
             # into an album, from the dialog

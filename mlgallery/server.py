@@ -87,6 +87,12 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None) -> web
     r.add_post("/api/backup", backup_now)
     r.add_post("/api/open-data", open_data)
     r.add_post("/api/shortcut", make_shortcut)
+    r.add_post("/api/file/{id}/note", file_note)
+    r.add_post("/api/eagle/read", eagle_read)
+    r.add_get("/api/eagle/read", eagle_read_status)
+    r.add_post("/api/eagle/apply", eagle_apply)
+    r.add_get("/api/eagle/folders", eagle_folders)
+    r.add_post("/api/eagle/send", eagle_send)
     r.add_get("/api/settings", settings_get)
     r.add_post("/api/settings", settings_set)
     r.add_get("/api/thumb/{id}", thumb)
@@ -519,6 +525,112 @@ async def make_shortcut(request):
         return web.json_response({"path": await asyncio.to_thread(shortcut.make)})
     except (OSError, subprocess.SubprocessError) as ex:
         return _err(f"The shortcut wasn't made: {ex}", 500)
+
+
+async def file_note(request):
+    fid, b = _fid(request), await _body(request)
+    note = str(b.get("note") or "").strip()[:4000]
+    lib = _lib(request)
+    if not fid or not await asyncio.to_thread(lib.info, fid):
+        return _err("not found", 404)
+
+    def save():
+        with lib.db.write() as c:
+            if note:
+                c.execute("INSERT INTO file_notes (file_id, note, source) VALUES (?, ?, 'user') ON CONFLICT (file_id) DO UPDATE SET note=excluded.note, source='user'", (fid, note))
+            else:
+                c.execute("DELETE FROM file_notes WHERE file_id=?", (fid,))
+    await asyncio.to_thread(save)
+    return web.json_response({"note": note})
+
+
+# ---------------------------------------------------------------- the Eagle bridge
+_EAGLE: dict = {}  # the library being read, and what reading it found (one at a time)
+
+
+async def eagle_read(request):
+    """Start reading an Eagle library (only reading: nothing in it is changed)."""
+    from . import eagle
+    b = await _body(request)
+    try:
+        lib_path = eagle.library_root(b.get("path"))
+    except eagle.EagleError as ex:
+        return _err(str(ex), 422)
+    if _EAGLE.get("state") == "reading":
+        return _err("Another Eagle library is being read.", 409)
+    lib = _lib(request)
+    _EAGLE.clear()
+    _EAGLE.update(state="reading", path=lib_path, done=0)
+
+    def run():
+        try:
+            plan = eagle.plan_import(lib.db, lib_path, progress=lambda n: _EAGLE.update(done=n))
+            _EAGLE.update(state="ready", plan=plan, summary=eagle.summary(plan))
+        except Exception as ex:
+            _EAGLE.update(state="failed", error=str(ex))
+    import threading
+    threading.Thread(target=run, name="eagle", daemon=True).start()
+    return web.json_response({"state": "reading", "path": lib_path})
+
+
+async def eagle_read_status(request):
+    return web.json_response({k: v for k, v in _EAGLE.items() if k != "plan"} or {"state": "idle"})
+
+
+async def eagle_apply(request):
+    """Bring the read library's tags, albums, ratings and notes in (copying in what the Gallery doesn't have, if asked)."""
+    from . import eagle
+    b = await _body(request)
+    plan = _EAGLE.get("plan")
+    if _EAGLE.get("state") != "ready" or not plan:
+        return _err("Read an Eagle library first.", 409)
+    lib = _lib(request)
+    try:
+        copied = 0
+        if b.get("copy_to") and plan["missing"]:
+            copied = await asyncio.to_thread(eagle.copy_in, lib.db, plan, int(b["copy_to"]), b.get("sub") or "")
+        r = await asyncio.to_thread(eagle.apply_import, lib.db, plan)
+    except (eagle.EagleError, ValueError) as ex:
+        return _err(str(ex), 422)
+    _EAGLE.clear()
+    lib.thumbs.nudge()
+    lib.meta.nudge()
+    return web.json_response({**r, "copied": copied})
+
+
+async def eagle_folders(request):
+    from . import eagle
+    lib = _lib(request)
+    try:
+        return web.json_response({"folders": await eagle.eagle_folders(lib.settings.get("eagle_url"), lib.settings.get("eagle_token"))})
+    except eagle.EagleError as ex:
+        return _err(str(ex), 502)
+
+
+async def eagle_send(request):
+    """Add files to Eagle (through its own API: Eagle copies them into its library), with tags and the prompt as the note."""
+    from . import eagle
+    b = await _body(request)
+    lib = _lib(request)
+    ids = (await _ids(request, b))[:5000]
+
+    def gather():
+        out = []
+        for fid in ids:
+            info = lib.info(fid)
+            path = lib.file_path(fid)
+            if info and path and os.path.isfile(path):
+                tags = [t["name"] for t in info["tags"]] + [ch["name"] for ch in info.get("characters") or [] if ch["state"] in ("auto", "confirmed")]
+                out.append({"path": path, "name": info["name"], "tags": tags, "note": eagle.note_for(info)})
+        return out
+    files = await asyncio.to_thread(gather)
+    if not files:
+        return _err("None of those files are reachable.", 422)
+    try:
+        r = await eagle.send(lib.settings.get("eagle_url"), lib.settings.get("eagle_token"), files, b.get("folder") or None)
+    except eagle.EagleError as ex:
+        return _err(str(ex), 502)
+    return web.json_response(r)
 
 
 async def stats_view(request):

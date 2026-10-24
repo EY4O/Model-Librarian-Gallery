@@ -173,6 +173,14 @@ MIGRATIONS = [
     CREATE INDEX files_fp_size ON files (fp, size);
     ANALYZE;
     """,
+    # 7: a note per file (yours, or brought in from Eagle)
+    """
+    CREATE TABLE file_notes (
+        file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+        note TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'user'   -- or 'eagle'
+    );
+    """,
 ]
 CACHE = 256  # cached query results kept (each tied to the index as it was)
 

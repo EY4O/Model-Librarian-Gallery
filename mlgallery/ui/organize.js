@@ -1,7 +1,7 @@
 // Model Librarian Gallery: organising - the dialogs for tags, albums and moves, the Duplicates and History
 // pages, and Undo. A selection is a list of file ids, or a whole view ({view: {...}}).
 
-import { api, baseName, fmtDate, fmtSize, h, icon, media, plural, toast } from "./util.js";
+import { api, ask, baseName, fmtDate, fmtSize, h, icon, media, plural, stars, toast } from "./util.js";
 import { preview } from "./characters.js";
 
 let refreshAll = () => {};
@@ -139,8 +139,8 @@ export async function moveDialog(selection, count, folders) {
 }
 
 // ---------------------------------------------------------------- the Trash
-export async function trashFiles(selection, count, { ask = count > 1 } = {}) {
-  if (ask && !confirm(`Move ${what(count)} to the Trash?\n\nThey stay in the Trash until you empty it, and can be put back any time.`)) return null;
+// to the Trash straight away: it's undone from the toast (or Ctrl+Z, or History), so no "are you sure"
+export async function trashFiles(selection) {
   try {
     const r = await api("/ops/trash", { method: "POST", body: { selection } });
     done(r, `${plural(r.trashed, "file")} moved to the Trash${r.failed.length ? ` (${r.failed.length} couldn't be)` : ""}.`);
@@ -156,11 +156,28 @@ export async function restoreFiles(selection) {
 }
 
 export async function emptyTrash(selection, count) {
-  if (!confirm(`Empty ${selection ? what(count) : "the Trash"}?\n\nThe files go to the Windows Recycle Bin: restore them from there if you need them again.`)) return;
+  if (!await ask(`Empty ${selection ? what(count) : "the Trash"}?`, "The files go to the Windows Recycle Bin. The Gallery can't undo this: you'd restore them from the Recycle Bin.",
+    { ok: selection ? "Empty these" : "Empty the Trash", danger: true })) return;
   try {
     const r = await api("/ops/empty", { method: "POST", body: selection ? { selection } : {} });
     done(null, `${plural(r.emptied, "file")} sent to the Recycle Bin.`);
   } catch (e) { toast(e.message, true); }
+}
+
+// ---------------------------------------------------------------- Send to Eagle
+export async function sendToEagle(selection, count) {
+  let folders;
+  try { ({ folders } = await api("/eagle/folders")); } catch (e) { return toast(e.message, true); }
+  const folder = h("select", { "aria-label": "Eagle folder" }, h("option", { value: "" }, "No folder (Eagle's All)"), folders.map((f) => h("option", { value: f.id }, f.name)));
+  dialog(`Send ${what(count)} to Eagle`, h("div", {},
+    h("label.field-row", {}, h("span", {}, "Into"), folder),
+    h("p.note", {}, "Eagle adds a copy of each to its own library, with the Gallery's tags and characters, and the prompt and settings as its note. The Gallery's files stay where they are.")), {
+    submitLabel: "Send",
+    submit: async () => {
+      const r = await api("/eagle/send", { method: "POST", body: { selection, folder: folder.value || null } });
+      toast(`Sent ${plural(r.sent, "file")} to Eagle.`);
+    },
+  });
 }
 
 // ---------------------------------------------------------------- Duplicates
@@ -174,11 +191,12 @@ export async function renderDuplicates(root) {
   root.replaceChildren(...[
     h("header.st-head", {}, h("h1", {}, "Duplicates"),
       all.length ? h("button.btn", { type: "button", onclick: async () => {
-        if (await trashFiles(all, all.length, { ask: true })) renderDuplicates(root);
+        if (await trashFiles(all)) renderDuplicates(root);
       } }, `Keep one of each, Trash the other ${all.length.toLocaleString()}`) : null),
-    h("p.st-none", {}, d.groups.length
-      ? `${plural(d.groups.length, "group")}; ${fmtSize(d.wasted)} would be freed. In each, the one kept is the first: rated or favourite, with its generation data, the biggest, the oldest. Click one to keep it instead.`
-      : "No duplicates: no file is a copy of another, and no picture is saved twice."),
+    d.groups.length ? h("div.st-lede", {},
+      h("p", {}, `${plural(d.groups.length, "group")}, ${fmtSize(d.wasted)} to free.`),
+      h("p.st-none", {}, "Each keeps its first file: the rated or favourite one, then the one with generation data, then the biggest. Pick another to keep it instead; the rest go to the Trash."))
+      : h("p.st-none", {}, "No duplicates: no file is a copy of another, and no picture is saved twice."),
     ...d.groups.map((g) => {
       let keep = 0;
       const files = h("div.d-files");
@@ -186,14 +204,15 @@ export async function renderDuplicates(root) {
         h("button.d-thumb", { type: "button", title: "Look closer", onclick: () => preview(f) }, h("img", { src: media("thumb", f.id), alt: "", loading: "lazy" })),
         h("div.d-meta", {},
           h("span.d-name", { title: `${f.folder_path}\\${f.rel}` }, f.name),
-          h("span.d-sub", {}, [baseName(f.folder_path), f.width ? `${f.width} × ${f.height}` : "", fmtSize(f.size), f.meta === 1 ? "generation data" : "", f.rating ? "★".repeat(f.rating) : ""].filter(Boolean).join(" · ")),
+          h("span.d-sub", {}, [baseName(f.folder_path), f.width ? `${f.width} × ${f.height}` : "", fmtSize(f.size), f.meta === 1 ? "generation data" : ""].filter(Boolean).join(" · "),
+            f.rating ? stars(f.rating, { size: 10 }) : null),
           i === keep ? h("span.d-keep", {}, "Kept") : h("button.link", { type: "button", onclick: () => { keep = i; draw(); } }, "Keep this one instead")))));
       draw();
       return h("section.st-card", { "aria-label": `${g.kind} group` },
         h("div.st-card-head", {}, h("h2", {}, g.kind === "copies" ? "Copies of one file" : "The same picture, saved more than once"),
           h("button.btn.small", { type: "button", onclick: async () => {
             const others = g.files.filter((_, i) => i !== keep).map((f) => f.id);
-            if (await trashFiles(others, others.length, { ask: false })) renderDuplicates(root);
+            if (await trashFiles(others)) renderDuplicates(root);
           } }, `Trash the other ${g.files.length - 1}`)),
         files);
     }),

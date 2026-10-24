@@ -75,7 +75,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
           <span class="label">Settings</span>
         </button>
-        <p>The Gallery only reads your folders (it moves or deletes only when you ask). Eagle libraries are left out.<br><span class="ver">{{APP}} {{VERSION}}</span></p>
+        <button type="button" class="nav-item" id="help-btn" title="Shortcuts and search (?)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.1-2.4 3.6M12 17h.01"/></svg>
+          <span class="label">Shortcuts and search</span><kbd>?</kbd>
+        </button>
       </div>
     </nav>
 
@@ -105,31 +108,18 @@
         <label class="select" title="Show only files rated at least this">
           <select id="f-rating" aria-label="Rating">
             <option value="">Any rating</option>
-            <option value="1">★ 1 or more</option>
-            <option value="2">★ 2 or more</option>
-            <option value="3">★ 3 or more</option>
-            <option value="4">★ 4 or more</option>
-            <option value="5">★ 5</option>
+            <option value="1">1 star or more</option>
+            <option value="2">2 stars or more</option>
+            <option value="3">3 stars or more</option>
+            <option value="4">4 stars or more</option>
+            <option value="5">5 stars</option>
             <option value="0">Unrated</option>
           </select>
         </label>
-        <div class="seg" role="group" aria-label="Show" id="kind">
-          <button type="button" data-kind="">All</button>
-          <button type="button" data-kind="image">Images</button>
-          <button type="button" data-kind="video">Videos</button>
-        </div>
-        <label class="select" id="sort-wrap">
-          <select id="sort" aria-label="Sort">
-            <option value="newest">Newest first</option>
-            <option value="oldest">Oldest first</option>
-            <option value="name">Name</option>
-            <option value="largest">Largest</option>
-          </select>
-        </label>
-        <label class="slider" title="Tile size">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/></svg>
-          <input id="tile" type="range" min="120" max="300" step="4" value="176" aria-label="Tile size">
-        </label>
+        <button type="button" class="btn" id="view-btn" aria-haspopup="menu" title="Sort, what to show, tile size">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+          <span id="view-label">View</span>
+        </button>
       </header>
       <div class="grid-scroll" id="scroll" tabindex="-1">
         <div class="grid-sizer" id="sizer" role="grid" aria-label="Files"></div>

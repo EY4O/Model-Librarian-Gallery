@@ -64,8 +64,8 @@ function kpis(d) {
   return h("div.kpis", {},
     tile("Made", t.n.toLocaleString(), `${plural(t.images, "image")} · ${plural(t.videos, "video")}`),
     tile("With generation data", `${pct}%`, `${t.with_data.toLocaleString()} of ${t.n.toLocaleString()}`),
-    tile("Checkpoints used", d.models_used.toLocaleString()),
-    tile("LoRAs used", d.loras_used.toLocaleString()),
+    tile("Checkpoints used", d.models_used.toLocaleString(), d.checkpoints[0] ? `most: ${d.checkpoints[0].name}` : null),
+    tile("LoRAs used", d.loras_used.toLocaleString(), d.loras[0] ? `most: ${d.loras[0].name}` : null),
     tile("On disk", fmtSize(t.size || 0), d.drives.length ? `all folders: ${d.drives.map((x) => `${x.drive} ${fmtSize(x.size)}`).join(" · ")}` : null));
 }
 

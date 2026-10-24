@@ -9,3 +9,4 @@ Thumbs.db
 .pytest_cache/
 tests/out/
 dist/
+.impeccable/live/

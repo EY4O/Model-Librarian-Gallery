@@ -1,6 +1,6 @@
 // Model Librarian Gallery: characters - the list, one character's page, the editor, and To review.
 
-import { api, fmtNum, h, icon, media, plural, toast } from "./util.js";
+import { api, ask, fmtNum, h, icon, media, plural, toast } from "./util.js";
 
 const KIND = { lora: "LORA", word: "WORD", tag: "TAG" };
 const KIND_HELP = {
@@ -10,10 +10,12 @@ const KIND_HELP = {
 };
 
 // ---------------------------------------------------------------- shared bits
+// a picture, or (no confirmed file yet) the name's first letter on a quiet tint
 function thumb(id, alt = "") {
-  if (!id) return h("div.c-thumb.none", { "aria-hidden": "true" }, icon("person"));
+  const none = () => h("div.c-thumb.none", { "aria-hidden": "true" }, h("span.c-initial", {}, (alt || "?").trim().charAt(0).toUpperCase() || "?"));
+  if (!id) return none();
   const img = h("img", { src: media("thumb", id), alt, loading: "lazy", decoding: "async" });
-  img.onerror = () => img.replaceWith(h("div.c-thumb.none", { "aria-hidden": "true" }, icon("person")));
+  img.onerror = () => img.replaceWith(none());
   return h("div.c-thumb", {}, img);
 }
 
@@ -42,7 +44,7 @@ export async function renderCharacters(root, ctx) {
   let data;
   try { data = await api("/characters"); } catch (e) { toast(e.message, true); return; } finally { root.removeAttribute("aria-busy"); }
   const cards = data.characters.map((c) => h("button.c-card", { type: "button", onclick: () => ctx.show("character", c.id) },
-    thumb(c.cover, ""),
+    thumb(c.cover, c.name),
     h("span.c-name", {}, c.name),
     h("span.c-n", {}, plural(c.n, "file")),
     c.review ? h("span.c-review", { title: "Waiting for a yes or no" }, `${c.review} to review`) : null));
@@ -95,7 +97,7 @@ export async function renderCharacter(root, id, ctx) {
           h("button.btn.primary", { type: "button", onclick: filter, disabled: !c.n }, icon("grid"), "Show all files"),
           h("button.btn", { type: "button", onclick: () => editCharacter(c, ctx) }, "Edit"),
           h("button.btn", { type: "button", onclick: async () => {
-            if (!confirm(`Delete the character ${c.name}?\n\nIts rules and your confirmations go; the files themselves are untouched.`)) return;
+            if (!await ask(`Delete the character ${c.name}?`, "Its rules and your yes and no answers go; the files themselves are untouched.", { ok: "Delete the character", danger: true })) return;
             await api(`/characters/${id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
             ctx.refresh();
             ctx.show("characters");
@@ -264,17 +266,19 @@ export async function renderReview(root, ctx) {
     groups.get(it.character_id).items.push(it);
   }
   root.replaceChildren(...[
-    h("header.st-head", {}, h("h1", {}, "To review"), h("span.st-none", {}, "Files a weak rule matched. Y: yes, it's them · N: no · arrows move")),
+    h("header.st-head", {}, h("h1", {}, "To review"), h("div.keys", {}, h("kbd", {}, "Y"), " it's them ", h("kbd", {}, "N"), " it isn't ", h("kbd", {}, "← →"), " next")),
     queue.items.length ? null : h("div.c-empty", {}, h("h2", {}, "Nothing to review"), h("p", {}, "When a weak rule (a tag) matches a file, it waits here for a yes or no.")),
     ...[...groups.entries()].map(([cid, g]) => h("section.st-card", { "aria-label": g.name },
-      h("div.st-card-head", {}, h("h2", {}, h("button.link", { type: "button", onclick: () => ctx.show("character", cid) }, g.name), ` · ${g.items.length.toLocaleString()}`),
+      h("div.st-card-head", {}, h("div", {}, h("h2", {}, h("button.link", { type: "button", onclick: () => ctx.show("character", cid) }, g.name), ` · ${g.items.length.toLocaleString()}`),
+        h("p.st-none", {}, "A weak rule (a tag) matched these: is it them?")),
         h("div.row", {},
           h("button.btn.small", { type: "button", onclick: () => decideAll(cid, g, "confirm") }, `All are ${g.name}`),
           h("button.btn.small", { type: "button", onclick: () => decideAll(cid, g, "reject") }, `None are`))),
       reviewGrid(g.items, ctx, () => { ctx.refresh(); renderReview(root, ctx); }, { single: true }))),
   ].filter(Boolean));
   async function decideAll(cid, g, verdict) {
-    if (!confirm(`${verdict === "confirm" ? "Confirm" : "Reject"} all ${g.items.length} for ${g.name}?`)) return;
+    if (!await ask(verdict === "confirm" ? `Are all ${g.items.length} ${g.name}?` : `Are none of these ${g.name}?`,
+      verdict === "confirm" ? `They'll count as ${g.name} from now on.` : `They won't be suggested for ${g.name} again.`, { ok: verdict === "confirm" ? `Yes, all ${g.name}` : "None are" })) return;
     await api(`/characters/${cid}/review`, { method: "POST", body: { files: g.items.map((i) => i.file_id), verdict } }).catch((e) => toast(e.message, true));
     ctx.refresh();
     renderReview(root, ctx);
@@ -299,7 +303,7 @@ function reviewGrid(items, ctx, after, { single = false } = {}) {
     const card = h("div.r-card", { role: "listitem", tabIndex: 0, "aria-label": `${it.name}: is ${it.character} in it? Y or N` });
     card.append(
       h("button.r-thumb", { type: "button", title: "Look closer", onclick: () => preview(it) }, thumb(it.file_id, it.name)),
-      h("div.r-q", {}, single ? null : h("span.r-who", {}, it.character), h("span.r-why", {}, `matched by a ${it.source === "tag" ? "tag" : it.source} rule`)),
+      single ? null : h("div.r-q", {}, h("span.r-who", {}, it.character)),
       h("div.r-acts", {},
         h("button.btn.small.yes", { type: "button", onclick: () => decide(it, card, "confirm") }, "Yes"),
         h("button.btn.small.no", { type: "button", onclick: () => decide(it, card, "reject") }, `Not ${it.character}`)));

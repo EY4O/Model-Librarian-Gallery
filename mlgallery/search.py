@@ -10,6 +10,8 @@
     sampler:euler  scheduler:karras  (exactly; sampler:dpmpp* for every name starting so)
     seed:1234  steps:8  steps:20-30  cfg:7  size:1024x1024  neg:blurry (words in the negative prompt)
     after:2026-10-01  before:2026-10-23  on:2026-10-23  (by when the file was made, your local time)
+    date:today  date:yesterday  date:7d  date:30d  date:2026-10  date:2026-10-23
+    lora:aurelia@0.6-0.8  lora:aurelia@>=0.7  strength:0.7   (a LoRA used at that strength; strength: any LoRA)
 
 Unknown keys are treated as text. Every value is passed as a parameter, never pasted into the SQL.
 """
@@ -21,7 +23,7 @@ import time
 
 TOKEN = re.compile(r'(-?)(?:(\w+):)?(?:"([^"]*)"?|(\S+))')
 KEYS = {"model", "lora", "tag", "rating", "is", "has", "no", "sampler", "scheduler", "seed", "steps", "neg", "vae", "ext",
-        "cfg", "size", "after", "before", "on", "character", "review", "album"}
+        "cfg", "size", "after", "before", "on", "character", "review", "album", "date", "strength"}
 
 
 def tokens(q: str) -> list[tuple[str | None, str]]:
@@ -105,17 +107,39 @@ def build(q: str, db=None) -> tuple[list[str], list]:
             words.append(v)
         elif key in ("model", "lora", "vae"):
             kinds = {"model": ("checkpoint", "unet"), "lora": ("lora",), "vae": ("vae",)}[key]
+            strength = ""
+            if key == "lora" and "@" in v:  # lora:name@0.6-0.8: used at that strength
+                v, _, sv = v.rpartition("@")
+                r = _frange(sv)
+                if not r:
+                    where.append("0")
+                    continue
+                strength = " AND strength BETWEEN ? AND ?"
             if db is None:
-                where.append(f"f.id IN (SELECT file_id FROM uses WHERE kind IN ({_in(kinds)}) AND name LIKE ? ESCAPE '\\')")
-                args += [*kinds, f"%{_like(v)}%"]
+                where.append(f"f.id IN (SELECT file_id FROM uses WHERE kind IN ({_in(kinds)}) AND name LIKE ? ESCAPE '\\'{strength})")
+                args += [*kinds, f"%{_like(v)}%", *(r if strength else [])]
                 continue
             low = v.lower()
             hits = [n for n in _names(db, kinds) if low in n.lower()]
             if not hits:
                 where.append("0")
                 continue
-            where.append(f"f.id IN (SELECT file_id FROM uses WHERE kind IN ({_in(kinds)}) AND name IN ({_in(hits)}))")
-            args += [*kinds, *hits]
+            where.append(f"f.id IN (SELECT file_id FROM uses WHERE kind IN ({_in(kinds)}) AND name IN ({_in(hits)}){strength})")
+            args += [*kinds, *hits, *(r if strength else [])]
+        elif key == "strength":  # any LoRA at that strength
+            r = _frange(v)
+            if not r:
+                where.append("0")
+                continue
+            where.append("f.id IN (SELECT file_id FROM uses WHERE kind = 'lora' AND strength BETWEEN ? AND ?)")
+            args += r
+        elif key == "date":
+            span = _date_span(v)
+            if not span:
+                where.append("0")
+                continue
+            where.append("f.mtime >= ? AND f.mtime < ?")
+            args += span
         elif key in ("character", "review"):
             states = ("auto", "confirmed") if key == "character" else ("review",)
             ids = _characters(db, v) if db is not None else None
@@ -221,6 +245,44 @@ def build(q: str, db=None) -> tuple[list[str], list]:
         elif any(not w.startswith("-") for w in words_):
             where.append("0")  # only punctuation: nothing matches, rather than everything
     return where, args
+
+
+def _frange(v: str):
+    """'0.6-0.8', '>=0.7', '<0.5', '0.7' (give or take 0.005) -> [low, high]."""
+    v = v.strip().replace(" ", "")
+    num = r"-?\d+(?:\.\d+)?"
+    m = re.fullmatch(f"({num})-({num})", v)
+    if m:
+        lo, hi = sorted((float(m.group(1)), float(m.group(2))))
+        return [lo - 1e-9, hi + 1e-9]
+    m = re.fullmatch(f"(>=|<=|>|<|=)?({num})", v)
+    if not m:
+        return None
+    x, op = float(m.group(2)), m.group(1) or "="
+    return {"=": [x - 0.005, x + 0.005], ">=": [x - 1e-9, 1e9], ">": [x + 1e-9, 1e9], "<=": [-1e9, x + 1e-9], "<": [-1e9, x - 1e-9]}[op]
+
+
+def _date_span(v: str):
+    """date:today / yesterday / 7d / 30d / 2026-10 / 2026-10-23 -> [start, end) as timestamps, in local time."""
+    v = v.strip().lower()
+    today = datetime.date.today()
+    start = lambda d: time.mktime((d.year, d.month, d.day, 0, 0, 0, 0, 0, -1))  # noqa: E731
+    if v == "today":
+        return [start(today), start(today + datetime.timedelta(days=1))]
+    if v == "yesterday":
+        return [start(today - datetime.timedelta(days=1)), start(today)]
+    m = re.fullmatch(r"(\d{1,4})d", v)
+    if m:  # the last N days, today included
+        return [start(today - datetime.timedelta(days=int(m.group(1)) - 1)), start(today + datetime.timedelta(days=1))]
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})", v)
+    if m:
+        y, mo = int(m.group(1)), int(m.group(2))
+        if not 1 <= mo <= 12:
+            return None
+        nxt = datetime.date(y + (mo == 12), mo % 12 + 1, 1)
+        return [start(datetime.date(y, mo, 1)), start(nxt)]
+    d = _day(v)
+    return [d, _day(v, 1)] if d is not None else None
 
 
 def _day(v: str, plus: int = 0) -> float | None:

@@ -11,7 +11,7 @@ import time
 
 import json
 
-from . import bulk, fileops
+from . import bulk, families, fileops
 from . import characters as chars
 from . import metadata
 from . import scan as scanner
@@ -226,8 +226,23 @@ class Library:
             # the page's ids straight from the index, then their details (the marks for those few only)
             ids = [r[0] for r in c.execute(f"SELECT f.id FROM {frm} ORDER BY {SORTS[sort]} LIMIT ? OFFSET ?",
                                            [*args, *order_args, limit, max(0, int(offset))])]
-            rows = c.execute(f"SELECT {ITEM} FROM files f LEFT JOIN marks m ON m.file_id=f.id WHERE f.id IN ({','.join('?' * len(ids))})", ids).fetchall() if ids else []
+            marks = ",".join("?" * len(ids))
+            rows = c.execute(f"SELECT {ITEM} FROM files f LEFT JOIN marks m ON m.file_id=f.id WHERE f.id IN ({marks})", ids).fetchall() if ids else []
+            # what made each one, for the tile: its model (and that model's family colour) and main LoRA
+            models = dict(c.execute(f"SELECT file_id, model FROM generations WHERE file_id IN ({marks})", ids).fetchall()) if ids else {}
+            loras: dict[int, list] = {}
+            for r in (c.execute(f"SELECT file_id, name, strength FROM uses WHERE kind='lora' AND file_id IN ({marks}) ORDER BY rowid", ids) if ids else []):
+                loras.setdefault(r[0], []).append((r[1], r[2]))
         at = {r["id"]: dict(r) for r in rows}
+        resolve = self.db.cached(("family-resolver",), lambda: families.Resolver(self.models))
+        for i, it in at.items():
+            m = models.get(i)
+            if m:
+                fam = resolve.family(m)
+                it.update(model=m, family=fam, color=families.color(fam) if fam else None)
+            if loras.get(i):
+                (name, strength), n = loras[i][0], len(loras[i])
+                it.update(lora=name, lora_strength=strength, loras=n)
         return {"total": total, "offset": offset, "items": [at[i] for i in ids if i in at]}
 
     def days(self, sort: str = "newest", folder: int | None = None, kind: str | None = None, q: str = "") -> list[dict]:
@@ -265,6 +280,8 @@ class Library:
             gen["info"] = json.loads(gen["info"]) if gen["info"] else None
             gen["has_workflow"] = bool(gen["has_workflow"])
         with self.db.read() as c:
+            n = c.execute("SELECT note, source FROM file_notes WHERE file_id=?", (fid,)).fetchone()
+            out["note"] = dict(n) if n else None
             out["albums"] = [dict(r) for r in c.execute(
                 "SELECT al.id, al.name, af.source FROM album_files af JOIN albums al ON al.id=af.album_id WHERE af.file_id=? AND af.removed=0"
                 " ORDER BY al.name COLLATE NOCASE", (fid,))]

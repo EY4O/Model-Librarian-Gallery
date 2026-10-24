@@ -20,6 +20,12 @@ export function h(tag, props, ...kids) {
 }
 
 export const SVG = {
+  star: '<path d="M12 3.2l2.6 5.5 6 .8-4.4 4.2 1.1 6-5.3-2.9-5.3 2.9 1.1-6L3.4 9.5l6-.8Z"/>',
+  more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+  view: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.1-2.4 3.6M12 17h.01"/>',
+  send: '<path d="M4 12 20 4l-6 16-3-7Z"/><path d="m11 13 9-9"/>',
+  note: '<path d="M5 4h10l4 4v12H5Z"/><path d="M15 4v4h4M8 12h8M8 16h5"/>',
   person: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
@@ -93,4 +99,90 @@ export function dayLabel(day) {
   if (ago === 1) return "Yesterday";
   if (ago > 1 && ago < 7) return date.toLocaleDateString(undefined, { weekday: "long" });
   return date.toLocaleDateString(undefined, { day: "numeric", month: "long", ...(y !== today.getFullYear() ? { year: "numeric" } : {}) });
+}
+
+// ---------------------------------------------------------------- in-app dialogs (never the browser's grey boxes)
+function modal(title, body, { ok = "OK", danger = false, cancel = "Cancel", onok } = {}) {
+  return new Promise((resolve) => {
+    let result = null;
+    const err = h("p.form-err", { role: "alert" });
+    const dlg = h("dialog.dialog", { "aria-label": title },
+      h("form", { method: "dialog", onsubmit: async (e) => {
+        e.preventDefault();
+        try {
+          result = onok ? await onok() : true;
+          if (result === false) return;
+          dlg.close();
+        } catch (ex) { err.textContent = ex.message; }
+      } },
+        h("h2", {}, title), body, err,
+        h("div.row.end", {}, h("button.btn", { type: "button", onclick: () => dlg.close() }, cancel),
+          h("button.btn.primary" + (danger ? ".danger" : ""), { type: "submit" }, ok))));
+    dlg.addEventListener("keydown", (e) => { if (e.key !== "Escape") e.stopPropagation(); });
+    dlg.addEventListener("close", () => { dlg.remove(); resolve(result); });
+    document.body.append(dlg);
+    dlg.showModal();
+    (dlg.querySelector("input, textarea, select") || dlg.querySelector("button[type=submit]")).focus();
+  });
+}
+
+// ask(title, text, {ok, danger}) -> true when confirmed
+export async function ask(title, text, opts = {}) {
+  return !!(await modal(title, h("p.dialog-text", {}, text), opts));
+}
+
+// askText(title, label, value) -> the text typed, or null
+export async function askText(title, label, value = "", { ok = "OK", placeholder = "" } = {}) {
+  const input = h("input", { type: "text", value, placeholder, "aria-label": label, spellcheck: false });
+  const got = await modal(title, h("label.field-row", {}, h("span", {}, label), input), { ok, onok: () => input.value.trim() || false });
+  return got || null;
+}
+
+// a small menu under a button: items are {label, icon?, onclick, danger?} (or null for a divider)
+export function menu(anchor, items) {
+  document.querySelector(".menu")?._close();
+  let open = true;
+  const close = () => {
+    if (!open) return;
+    open = false;
+    box.remove();
+    document.removeEventListener("mousedown", out, true);
+    document.removeEventListener("keydown", key, true);
+    anchor.setAttribute("aria-expanded", "false");
+    if (anchor.isConnected) anchor.focus();
+  };
+  const out = (e) => { if (!box.contains(e.target) && e.target !== anchor) close(); };
+  const key = (e) => {
+    const all = [...box.querySelectorAll("button")];
+    const i = all.indexOf(document.activeElement);
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); all[(i + 1) % all.length]?.focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); all[(i - 1 + all.length) % all.length]?.focus(); }
+  };
+  const box = h("div.menu", { role: "menu" }, items.map((it) => it === null ? h("div.menu-sep", { role: "separator" })
+    : it.node ? it.node
+    : h("button.menu-item" + (it.danger ? ".danger" : ""), { type: "button", role: "menuitem", onclick: () => { close(); it.onclick(); } },
+      it.icon ? icon(it.icon) : h("span.menu-gap"), h("span", {}, it.label), it.hint ? h("kbd", {}, it.hint) : null)));
+  box.addEventListener("click", (e) => { if (e.target.closest(".menu-item")) close(); }, true); // any item, its own handler runs after
+  box._close = close;
+  document.body.append(box);
+  const r = anchor.getBoundingClientRect();
+  const w = box.offsetWidth, ht = box.offsetHeight;
+  box.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w))}px`;
+  box.style.top = `${r.bottom + 6 + ht > window.innerHeight ? Math.max(8, r.top - ht - 6) : r.bottom + 6}px`;
+  anchor.setAttribute("aria-expanded", "true");
+  document.addEventListener("mousedown", out, true);
+  document.addEventListener("keydown", key, true);
+  box.querySelector("button, input")?.focus();
+  return box;
+}
+
+// drawn stars for a rating (filled up to n of 5), never the ★ character
+export function stars(n, { max = 5, size = 12 } = {}) {
+  return h("span.stars-ro", { "aria-label": `Rated ${n} of ${max}`, role: "img" }, Array.from({ length: n }, () => {
+    const s = icon("star");
+    s.setAttribute("width", size);
+    s.setAttribute("height", size);
+    return s;
+  }));
 }

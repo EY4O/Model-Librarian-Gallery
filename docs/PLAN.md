@@ -142,7 +142,15 @@ Each one is usable on its own and tested before the next starts. Tests use gener
 | **M2 — Statistics** ✅ | Model and LoRA usage over time, prompt tags, settings, storage; Model Librarian's library linked (never-used models) | Statistics computed on a known sample set |
 | **M3 — Characters** ✅ | Characters, rules, automatic matching, review list, character pages and statistics | Matching tests (LoRA, trigger word, tag, rejections) |
 | **M4 — Organize** ✅ | Albums, bulk actions, move and delete with preview and undo, duplicates, daily backups | Move and undo tests on throwaway folders, including an offline drive |
-| **M5 — Polish** | Portable package with its own Python and ffmpeg, Start menu shortcut, first-run setup, Open in ComfyUI, Save as recipe, performance at 250k | A 250k-file synthetic library for timing |
+| **M5 — Polish** ✅ | Portable package with its own Python and ffmpeg, Start menu shortcut, first-run setup, Open in ComfyUI, Save as recipe, performance at 250k | A 250k-file synthetic library for timing |
+
+## Eagle bridge
+
+The Gallery indexes your folders where they are; Eagle keeps its own copy of each file in a library folder. They meet through a bridge instead of a shared format:
+
+- **Bring in an Eagle library** (Settings, Eagle) only reads its `metadata.json` files. Items whose bytes match a file the Gallery already has get its tags, its folders as albums ("Characters / Aurelia" for a nested one), its star ratings and its notes. Your own ratings and notes win. Items the Gallery doesn't have can be copied into one of your folders; the library is never changed. It's one step in History, so Undo takes it all back.
+- **Send to Eagle** (the selection's More menu) asks a running Eagle to add copies through its own API (`/api/item/addFromPaths`), into a folder you pick, with the Gallery's tags and characters, and the prompt and settings as the note. An API token is only needed if your Eagle asks for one.
+- Eagle libraries (`*.library`) are still never indexed as folders.
 
 ## Decisions
 
