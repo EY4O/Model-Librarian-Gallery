@@ -16,6 +16,7 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 VIDEO_EXTS = {".mp4", ".webm", ".mov", ".mkv", ".m4v"}
 CHUNK = 64 * 1024
 BATCH = 400  # files written per transaction
+APP_EXE = "Model Librarian Gallery.exe"  # a folder holding it is the Gallery itself (its own icons aren't media)
 
 
 def kind_of(name: str) -> str | None:
@@ -67,7 +68,7 @@ def walk(root: str, skip_eagle: bool = True):
             rel = f"{rel_dir}/{e.name}" if rel_dir else e.name
             try:
                 if e.is_dir(follow_symlinks=False):
-                    if not skip_dir(e.name, skip_eagle):
+                    if not skip_dir(e.name, skip_eagle) and not os.path.isfile(os.path.join(e.path, APP_EXE)):  # the portable Gallery kept in a library
                         stack.append(rel)
                 elif e.is_file(follow_symlinks=False) and kind_of(e.name):
                     yield e.path, rel, e

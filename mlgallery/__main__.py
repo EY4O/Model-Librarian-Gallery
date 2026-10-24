@@ -1,6 +1,9 @@
-"""Start the Gallery: python -m mlgallery [--data DIR] [--browser | --server] [--port N]
+"""Start the Gallery: python -m mlgallery [--library DIR | --local | --data DIR] [--browser | --server] [--port N]
 
-  (default)   its own window (Edge WebView2, part of Windows)
+  (default)   its own window (Edge WebView2, part of Windows), with the library opened last
+  --library   open this library (a folder with a .mlgallery folder in it; see libraries.py)
+  --local     open this PC's library (the index in %LOCALAPPDATA%)
+  --data      a data folder of its own, settings included (a throwaway, the tests)
   --browser   in your web browser instead
   --server    the server only: prints its address (tests, or another device's browser via a tunnel of your own)
 """
@@ -9,36 +12,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import subprocess
 import sys
 import threading
 import webbrowser
 
-from . import APP_NAME, VERSION
-from .config import default_data_dir
+from . import APP_NAME, VERSION, libraries, update
 from .library import Library
 from .server import serve
 
-
-class _Instance:
-    """One Gallery per data folder: a second start would fight the first over the index."""
-
-    def __init__(self, data_dir: str):
-        self.path = os.path.join(data_dir, "gallery.lock")
-        self.f = None
-
-    def acquire(self) -> bool:
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        self.f = open(self.path, "a+")
-        try:
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(self.f.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(self.f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
-        except OSError:
-            return False
+_Instance = libraries.Lock  # one Gallery per data folder
 
 
 def _message(text: str) -> None:
@@ -88,20 +71,43 @@ def _set_window_icon(hwnd=None) -> None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="mlgallery", description=f"{APP_NAME} {VERSION}")
-    ap.add_argument("--data", default=default_data_dir(), help="where the index, thumbnails and settings live")
+    which = ap.add_mutually_exclusive_group()
+    which.add_argument("--library", help="open this library (a folder with a .mlgallery folder in it)")
+    which.add_argument("--local", action="store_true", help="open this PC's library")
+    which.add_argument("--data", help="a data folder of its own: index, thumbnails and settings (a throwaway, the tests)")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--browser", action="store_true", help="open in your web browser instead of its own window")
     mode.add_argument("--server", action="store_true", help="run the server only and print its address")
     ap.add_argument("--port", type=int, default=0, help="port on 127.0.0.1 (default: any free one)")
     args = ap.parse_args(argv)
 
-    lock = _Instance(args.data)
-    if not lock.acquire():
-        _message(f"{APP_NAME} is already open (data folder: {args.data}).")
+    pkg = update.portable_root()
+    try:
+        pick = libraries.choose(args.library, args.data, pkg, args.local)
+    except ValueError as ex:
+        _message(str(ex))
         return 1
+    data, root = pick["data"], pick["root"]
+    lock = _Instance(data)
+    if not lock.acquire():
+        _message(f"{APP_NAME} is already open with {'the library ' + root if root else 'this library'}.")
+        return 1
+    running = None
+    if pkg:  # while this is open, the launcher won't swap a downloaded update into this portable folder
+        try:
+            running = open(os.path.join(pkg, "running.lock"), "a+")
+        except OSError:
+            pass
 
-    lib = Library(args.data)
+    lib = Library(data, pick["home"], root)
+    lib.note = pick["note"]
+    libraries.prepare(lib)  # opened from another drive letter or place: its folders follow it
+    if pick["remember"]:
+        libraries.remember(root)
+    # how to open this same library again (Restart now, after an update)
+    lib.reopen = ["--library", root] if root else ["--data", data] if args.data or os.environ.get("MLG_DATA") else ["--local"]
     window = {"w": None}
+    stop = threading.Event()
 
     def pick_folder():
         w = window["w"]
@@ -112,17 +118,30 @@ def main(argv=None) -> int:
         chosen = w.create_file_dialog(kind)
         return chosen[0] if chosen else None
 
-    def quit_window():
+    def quit_app():
         if window["w"]:
             window["w"].destroy()
+        else:
+            stop.set()
+
+    def relaunch(target: list[str]) -> None:
+        """Start a Gallery with `target` (another library, or this one after an update); quit_app() follows."""
+        cmd, cwd = libraries.launch_command(target, browser=args.browser)
+        subprocess.Popen(cmd, cwd=cwd, close_fds=True,
+                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
 
     loop = asyncio.new_event_loop()
     ready = threading.Event()
     info = {}
+    hooks = {}  # the server alone has no window to close, so it can't switch libraries or restart
+    if not args.server:
+        hooks.update(quit=quit_app, relaunch=relaunch)
+    if not (args.browser or args.server):
+        hooks.update(pick_folder=pick_folder)
 
     def run_server():
         asyncio.set_event_loop(loop)
-        runner, port, token = loop.run_until_complete(serve(lib, args.port, **({} if args.browser or args.server else {"pick_folder": pick_folder, "quit": quit_window})))
+        runner, port, token = loop.run_until_complete(serve(lib, args.port, **hooks))
         info.update(runner=runner, port=port, token=token)
         ready.set()
         loop.run_forever()
@@ -132,6 +151,8 @@ def main(argv=None) -> int:
     t.start()
     ready.wait(30)
     lib.start()
+    if root:
+        threading.Thread(target=libraries.bring_when_scanned, args=(lib, root), name="bring-marks", daemon=True).start()
     url = f"http://127.0.0.1:{info['port']}/?t={info['token']}"
     try:
         if args.server:
@@ -140,7 +161,7 @@ def main(argv=None) -> int:
         elif args.browser:
             webbrowser.open(url)
             print(f"{APP_NAME} is open in your browser. Close this window to quit.", flush=True)
-            threading.Event().wait()
+            stop.wait()
         else:
             import webview
             _own_taskbar_entry()
@@ -153,13 +174,16 @@ def main(argv=None) -> int:
                     hwnd = None
                 _set_window_icon(hwnd)
             window["w"].events.shown += shown
-            webview.start(private_mode=False, storage_path=os.path.join(args.data, "webview"))
+            webview.start(private_mode=False, storage_path=os.path.join(pick["home"], "webview"))
     except KeyboardInterrupt:
         pass
     finally:
         lib.stop()
         loop.call_soon_threadsafe(loop.stop)
         t.join(5)
+        lock.release()
+        if running:
+            running.close()
     return 0
 
 

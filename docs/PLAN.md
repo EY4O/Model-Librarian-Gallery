@@ -152,6 +152,16 @@ The Gallery indexes your folders where they are; Eagle keeps its own copy of eac
 - **Send to Eagle** (the selection's More menu) asks a running Eagle to add copies through its own API (`/api/item/addFromPaths`), into a folder you pick, with the Gallery's tags and characters, and the prompt and settings as the note. An API token is only needed if your Eagle asks for one.
 - Eagle libraries (`*.library`) are still never indexed as folders.
 
+## Libraries you can take anywhere
+
+A library is a folder that carries its own index, so it can live on an external drive and open on any PC (a way to leave a container like Eagle's behind without one: the files stay ordinary files).
+
+- **What's in it:** your files, as they are, and a hidden `.mlgallery` folder: `library.db`, `thumbs\`, `backups\` and `library.json` (its name, and where it was last opened). Settings, the update check, the window's browser data and the recent libraries belong to the PC and stay in `%LOCALAPPDATA%\Model Librarian Gallery`, with this PC's own library.
+- **Moving it:** folder paths are stored in full. When a library opens somewhere new (another drive letter, another folder), the folders inside it are re-anchored to where it is now. Files, marks and History refer to folders by number, so nothing else changes. Folders added from outside the library keep their full path.
+- **Opening one:** `--library DIR`, Settings (New library, Open library, the recent ones), or the portable Gallery kept inside a library's folder (the launcher passes its parent). Otherwise the last library opens, or this PC's library when that one isn't reachable. Switching closes the window and starts the Gallery again with the other library.
+- **Bringing marks:** a new library can take the ratings, favourites, tags, albums (with their icons), characters (with their rules and your decisions), notes and folder looks of the library it was made from, for the same files by fingerprint, once its folder is indexed. One step in History.
+- **Phases still to come:** leaving Eagle (an Eagle library's items copied out into a library as plain files, with their folders, tags, ratings, notes and dates), then gathering outside folders in and XMP sidecars.
+
 ## Updates
 
 The portable folder can bring itself up to date from the repository's GitHub Releases. The switch is off by default (it's network use), and **Check now** works without it.

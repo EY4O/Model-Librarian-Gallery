@@ -1,4 +1,4 @@
-// Model Librarian Gallery: Settings - folders, thumbnails, videos, Model Librarian, ComfyUI, the data folder, updates.
+// Model Librarian Gallery: Settings - the library, folders, thumbnails, videos, Model Librarian, ComfyUI, the data folder, updates.
 
 import { api, askText, baseName, fmtDate, fmtSize, h, plural, toast } from "./util.js";
 import { done } from "./organize.js";
@@ -6,9 +6,9 @@ import { done } from "./organize.js";
 const field = (label, control, note) => h("div.set-row", {}, h("label.set-label", {}, label), h("div.set-control", {}, control, note ? h("p.note", {}, note) : null));
 
 export async function renderSettings(root, ctx) {
-  let s, folders;
+  let s, folders, lb;
   try {
-    [s, { folders }] = await Promise.all([api("/settings"), api("/folders")]);
+    [s, { folders }, lb] = await Promise.all([api("/settings"), api("/folders"), api("/libraries")]);
   } catch (e) { toast(e.message, true); return; }
   const save = async (patch, what) => {
     try {
@@ -33,6 +33,7 @@ export async function renderSettings(root, ctx) {
   const comfyNote = h("p.note", {}, "Open in ComfyUI sends a file's workflow there; Model Librarian (1.23 or newer) opens it in a new tab.");
   root.replaceChildren(
     h("header.st-head", {}, h("h1", {}, "Settings"), h("span.st-none", {}, `Model Librarian Gallery ${s.version}`)),
+    libraries(lb, () => renderSettings(root, ctx)),
     h("section.st-card.set", { "aria-label": "Folders" },
       h("div.st-card-head", {}, h("h2", {}, "Folders"), h("button.btn.small", { type: "button", onclick: ctx.addFolder }, "Add a folder")),
       folders.length ? h("ol.set-folders", {}, folders.map((f) => h("li", {},
@@ -163,6 +164,86 @@ async function eagleImport(folders) {
     h("p.note", {}, "Your own ratings and notes stay as they are. Eagle's library isn't changed: copied files are copies. It's one step in History: Undo takes the tags, albums, ratings and notes off again, and moves the copies to the Gallery's Trash."),
     err,
     h("div.row.end", {}, h("button.btn", { type: "button", onclick: () => box.close() }, "Cancel"), go)));
+  box.addEventListener("keydown", (e) => { if (e.key !== "Escape") e.stopPropagation(); });
+  box.addEventListener("close", () => box.remove());
+  document.body.append(box);
+  box.showModal();
+}
+
+// ---------------------------------------------------------------- libraries: a folder that carries its own index
+async function pickFolder(title, ok) {
+  try {
+    return (await api("/folders/pick", { method: "POST" })).path || "";
+  } catch (e) {
+    if (e.status !== 501) { toast(e.message, true); return ""; }
+    return (await askText(title, "Its folder", "", { ok, placeholder: "E:\\My Generations" })) || "";
+  }
+}
+
+function libraries(lb, again) {
+  const cur = lb.current;
+  const open = async (body, what) => {
+    try {
+      await api("/libraries/open", { method: "POST", body });
+      toast(`Opening ${what}…`);
+    } catch (e) { toast(e.message, true); }
+  };
+  const btn = (label, onclick, disabled = false) => h("button.btn.small", { type: "button", disabled, onclick }, label);
+  const openOther = async () => {
+    const path = await pickFolder("Open a library", "Open");
+    if (path) open({ path }, baseName(path));
+  };
+  const others = lb.recent.filter((r) => !r.open);
+  const rows = [
+    cur.root ? h("li", {}, h("span.sf-name", {}, "This PC's library"), h("span.st-none", {}, "Its index is kept on this PC"), h("span.st-none", {}, ""),
+      h("div.row", {}, btn("Open", () => open({ local: true }, "this PC's library"), !lb.can_switch))) : null,
+    ...others.map((r) => h("li", {}, h("span.sf-name", {}, r.name), h("code", {}, r.root),
+      h("span.st-none", {}, r.reachable ? "" : "not reachable right now"),
+      h("div.row", {}, btn("Open", () => open({ path: r.root }, r.name), !lb.can_switch || !r.reachable),
+        btn("Forget", async () => { await api("/libraries/forget", { method: "POST", body: { path: r.root } }).catch((e) => toast(e.message, true)); again(); })))),
+  ].filter(Boolean);
+  const b = cur.brought;
+  const brought = cur.bringing ? h("p.note", { role: "status" }, `Bringing ratings, tags, albums, characters and notes from ${cur.bringing} for the same files…`)
+    : b && b.error ? h("p.note", {}, `Bringing marks from ${b.name} didn't work: ${b.error}`)
+    : b ? h("p.note", {}, `From ${b.name}: ${plural(b.files, "file")} matched; ${plural(b.ratings, "rating")}, ${plural(b.tags, "tag")}, ${plural(b.albums, "album place")}, `
+      + `${plural(b.notes, "note")}, ${plural(b.characters, "character")} and ${plural(b.decisions, "character decision")} came in. It's one step in History.`) : null;
+  return h("section.st-card.set", { "aria-label": "Library" },
+    h("div.st-card-head", {}, h("h2", {}, "Library"),
+      h("div.row", {}, btn("New library…", () => newLibrary(lb, cur, again)), btn("Open library…", openOther, !lb.can_switch))),
+    lb.note ? h("p.note.set-lede", { role: "status" }, lb.note) : null,
+    field("Open now", h("div", {}, h("div", {}, cur.root ? cur.name : "This PC's library"), cur.root ? h("code", {}, cur.root) : null, brought),
+      cur.root ? "Its index, thumbnails and backups are in the hidden .mlgallery folder inside it. Copy or move the whole folder to another drive or PC and open it there: its files keep their ratings, tags and albums."
+        : "Its index is kept on this PC. A library of your own keeps its index inside its folder instead, so you can take it anywhere, on an external drive for example: New library."),
+    field("Other libraries", rows.length ? h("ol.set-folders", {}, rows) : h("p.st-none", {}, "None yet."),
+      lb.can_switch ? "Opening one closes this window and opens the Gallery again with it." : "This Gallery runs as a server only, so it can't switch: start it with --library and the library's folder."));
+}
+
+async function newLibrary(lb, cur, again) {
+  const path = await pickFolder("New library", "Next");
+  if (!path) return;
+  const name = h("input", { type: "text", value: baseName(path), "aria-label": "Name", spellcheck: false });
+  const bring = h("input", { type: "checkbox", id: "lib-bring", checked: true });
+  const from = cur.root ? cur.name : "this PC's library";
+  const err = h("p.form-err", { role: "alert" });
+  const go = h("button.btn.primary", { type: "submit" }, lb.can_switch ? "Make it and open it" : "Make it");
+  const box = h("dialog.dialog", { "aria-label": "New library" }, h("form", { method: "dialog", onsubmit: async (e) => {
+    e.preventDefault();
+    go.disabled = true;
+    try {
+      const r = await api("/libraries/new", { method: "POST", body: { path, name: name.value.trim(), bring: bring.checked } });
+      box.close();
+      if (r.switched) toast(`Opening ${r.name}…`);
+      else { toast(r.existing ? `${r.name} is a library already.` : `Made ${r.name}. Start the Gallery with --library to open it.`); again(); }
+    } catch (ex) { err.textContent = ex.message; go.disabled = false; }
+  } },
+    h("h2", {}, "New library"),
+    h("p.dialog-text", {}, "Everything in ", h("code", {}, path), " becomes the library. Your files stay where they are, as ordinary files; the Gallery keeps its index, thumbnails and backups in a hidden .mlgallery folder inside it, so the folder can be copied or moved anywhere, other drives included."),
+    h("label.field-row", {}, h("span", {}, "Name"), name),
+    h("label.check", { for: "lib-bring" }, bring, ` Bring the ratings, tags, albums, characters and notes the same files have in ${from}`),
+    h("p.note", {}, "Matched by the files' bytes once they're indexed, so it works wherever they are. It's one step in the new library's History: Undo takes it back."),
+    err,
+    h("div.row.end", {}, h("button.btn", { type: "button", onclick: () => box.close() }, "Cancel"), go)));
+  name.addEventListener("keydown", (e) => e.stopPropagation());
   box.addEventListener("keydown", (e) => { if (e.key !== "Escape") e.stopPropagation(); });
   box.addEventListener("close", () => box.remove());
   document.body.append(box);

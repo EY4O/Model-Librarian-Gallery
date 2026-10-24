@@ -402,6 +402,9 @@ def undo(db, op_id: int) -> dict:
     elif kind == "edit":
         from . import edit
         result = edit.undo(db, data)
+    elif kind == "carry":
+        from . import libraries
+        result = libraries.undo_bring(db, data)
     else:
         raise OpError("Emptying the Trash can't be undone here: the files are in the Windows Recycle Bin.")
     with db.write() as c:

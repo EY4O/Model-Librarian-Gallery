@@ -174,6 +174,33 @@ def test_empty_library_offers_to_add_a_folder(tmp_path):
         p.wait(10)
 
 
+def test_settings_shows_the_library(tmp_path):
+    from mlgallery import libraries
+    root = tmp_path / "My Generations"
+    root.mkdir()
+    libraries.create(str(root))
+    p = subprocess.Popen([sys.executable, "-m", "mlgallery", "--server", "--library", str(root)], cwd=ROOT,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    url = p.stdout.readline().strip()
+    try:
+        async def go():
+            async with page(url, width=1200, height=900) as e:
+                await e.wait("document.querySelector('#folders .nav-item')")  # started: its own folder is listed
+                await e.js("document.getElementById('view-settings').click(); true")
+                await e.wait("document.querySelector('section[aria-label=Library]')")
+                text = await e.js("document.querySelector('section[aria-label=Library]').textContent")
+                assert "My Generations" in text and str(root) in text and "This PC's library" in text
+                # a server alone can't switch: Open library is off, and says how instead
+                assert await e.js("[...document.querySelectorAll('section[aria-label=Library] button')].find(b => b.textContent === 'Open library…').disabled")
+                assert "--library" in text
+                # a new library indexes its own folder
+                assert str(root) in await e.js("document.querySelector('section[aria-label=Folders]').textContent")
+        asyncio.run(go())
+    finally:
+        p.terminate()
+        p.wait(10)
+
+
 def test_search_marks_tags_and_details(server):
     url, api = server
 

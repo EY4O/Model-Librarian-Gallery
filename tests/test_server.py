@@ -72,8 +72,11 @@ def test_index_page_needs_the_token_and_gets_it_filled_in(lib):
 
 def test_ui_files_are_served(lib):
     async def fn(c):
-        for p in ("/ui/app.js", "/ui/app.css", "/ui/icon.png"):
-            assert (await c.get(p)).status == 200, p
+        for p in ("/ui/app.js", "/ui/app.css", "/ui/icon.png", "/ui/settings.js"):
+            r = await c.get(p)
+            assert r.status == 200 and r.headers["Cache-Control"] == "no-cache", p  # checked again: never a stale module after an update
+        r = await c.get("/ui/settings.js", headers={"If-Modified-Since": r.headers["Last-Modified"]})
+        assert r.status == 304  # ...which costs a "not modified" when nothing changed
         assert (await c.get("/ui/../server.py")).status in (403, 404)
     run(lib, fn)
 

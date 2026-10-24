@@ -31,6 +31,7 @@ A Windows app for large libraries of AI generations: it indexes the folders you 
 - 🔗 **Model Librarian and ComfyUI** — **Open in ComfyUI** opens a file's workflow in a new ComfyUI tab, **Save as recipe** puts it in Model Librarian's recipes, and the **Gallery Info** node tags images as they're made.
 - 🦅 **Eagle bridge** — bring an Eagle library's tags, folders, ratings and notes onto your files (it's only read), and send any selection to Eagle.
 - 🔄 **Updates when you want them** — turn on **Updates** in Settings and the portable Gallery asks GitHub once a day for a new version, then installs it at its next start.
+- 💼 **A library you can take anywhere** — make any folder a library and its index, thumbnails and backups live inside it: copy it to an external drive and open it on any PC, whatever drive letter it gets.
 - 🛡️ **Your files stay yours** — indexing only reads; nothing leaves your PC.
 
 ## 📸 Screenshots
@@ -104,8 +105,18 @@ The first start sets up the app's own Python in `.venv`; later starts open strai
 - The Gallery indexes the folders you add where they are. A rescan only looks at files that changed; a folder watcher picks up new generations within seconds.
 - Each file gets a quick fingerprint (its size and first and last 64 KB), so a file you move or rename keeps its ratings, tags and characters. A drive that isn't plugged in keeps its files, shown again when it's back.
 - Thumbnails are small WebP files kept by fingerprint, made in the background, newest first. Videos get a poster frame from ffmpeg.
-- The index is one SQLite file in `%LOCALAPPDATA%\Model Librarian Gallery`, backed up daily (the last 7 kept). It can always be rebuilt from your media.
+- The index is one SQLite file, backed up daily (the last 7 kept). Your files' own data can always be read again from them; your ratings, tags, albums and characters live in the index. This PC's library keeps it in `%LOCALAPPDATA%\Model Librarian Gallery`.
 - Hidden and system folders, and Eagle libraries (`*.library`), are never indexed.
+</details>
+
+<details>
+<summary><b>💼 Libraries you can take anywhere</b></summary>
+
+- **Settings → Library → New library** makes any folder a library: everything in it is indexed, and the Gallery keeps the index, thumbnails and backups in a hidden `.mlgallery` folder inside it. Your files stay ordinary files in ordinary folders.
+- Copy or move the whole folder to an external drive or another PC and open it there (**Open library**): its folders follow it to the new place or drive letter, with their ratings, tags, albums, characters, notes and History.
+- A new library can bring the ratings, tags, albums, characters and notes the same files have in the library you're in, matched by their bytes. It's one step in History, so Undo takes it back.
+- The Gallery opens the library you used last; if its drive isn't plugged in, this PC's library opens instead and says so. The portable Gallery kept inside a library's folder opens that library.
+- Settings such as ComfyUI's address, ffmpeg and Updates belong to each PC and stay on it. Folders added from outside a library keep their full path, so another PC shows them as not reachable.
 </details>
 
 <details>

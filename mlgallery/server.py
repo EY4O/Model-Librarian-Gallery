@@ -32,6 +32,7 @@ TOKEN = web.AppKey("token", str)
 PICK = web.AppKey("pick_folder", object)
 UPDATER = web.AppKey("updater", Updater)
 QUIT = web.AppKey("quit", object)
+RELAUNCH = web.AppKey("relaunch", object)
 DAILY = web.AppKey("daily", object)
 
 
@@ -39,12 +40,13 @@ def _err(msg: str, status: int = 400) -> web.Response:
     return web.json_response({"error": msg}, status=status)
 
 
-def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=None) -> web.Application:
-    """The aiohttp application. `pick_folder()`: the window's folder dialog, when there is one; `quit()` closes the window."""
+def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=None, relaunch=None) -> web.Application:
+    """The aiohttp application. `pick_folder()`: the window's folder dialog, when there is one; `quit()` closes the
+    Gallery and `relaunch(args)` starts another one (switching libraries, Restart now), when it can."""
     token = token or secrets.token_urlsafe(24)
     app = web.Application(middlewares=[_guard], client_max_size=4 * 1024 * 1024)
-    app[LIB], app[TOKEN], app[PICK], app[QUIT] = lib, token, pick_folder, quit
-    app[UPDATER] = Updater(lib.data_dir, lib.settings)
+    app[LIB], app[TOKEN], app[PICK], app[QUIT], app[RELAUNCH] = lib, token, pick_folder, quit, relaunch
+    app[UPDATER] = Updater(lib.home, lib.settings)
     app.on_startup.append(_start_daily)
     app.on_cleanup.append(_stop_daily)
     r = app.router
@@ -110,6 +112,10 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_post("/api/update/check", update_check)
     r.add_post("/api/update/install", update_install)
     r.add_post("/api/update/restart", update_restart)
+    r.add_get("/api/libraries", libraries_get)
+    r.add_post("/api/libraries/new", library_new)
+    r.add_post("/api/libraries/open", library_open)
+    r.add_post("/api/libraries/forget", library_forget)
     r.add_post("/api/settings", settings_set)
     r.add_get("/api/thumb/{id}", thumb)
     r.add_get("/api/file/{id}", original)
@@ -134,6 +140,10 @@ async def _guard(request: web.Request, handler):
         return _err(f"That request doesn't fit: {ex}"[:300], 400)
     if request.method != "GET" and request.path.startswith("/api/") and not request.path.endswith("/viewed") and resp.status < 400:
         request.app[LIB].db.user_change()  # something you did: Statistics and the like count it in straight away
+    if request.path.startswith("/ui/"):
+        # asked again each time (an unchanged file is a quick "not modified"): after an update the window never
+        # mixes a new app.js with the old modules it imports (only app.js and app.css carry the version)
+        resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 
@@ -712,8 +722,12 @@ def _settings_out(lib, updater: Updater, can_restart: bool) -> dict:
             "shortcut": shortcut.exists() if os.name == "nt" else None, "update": dict(updater.info(), can_restart=can_restart)}
 
 
+def _can_relaunch(app) -> bool:
+    return bool(app[QUIT] and app[RELAUNCH])
+
+
 def _settings_view(request) -> dict:
-    return _settings_out(_lib(request), request.app[UPDATER], bool(request.app[QUIT] and request.app[UPDATER].root))
+    return _settings_out(_lib(request), request.app[UPDATER], _can_relaunch(request.app) and bool(request.app[UPDATER].root))
 
 
 async def settings_get(request):
@@ -791,15 +805,79 @@ async def update_install(request):
 
 async def update_restart(request):
     """Close the window and have the launcher start the Gallery again, swapping in the waiting update first."""
-    up, quit = request.app[UPDATER], request.app[QUIT]
-    if not (up.root and up.staged() and quit):
+    up = request.app[UPDATER]
+    if not (up.root and up.staged() and _can_relaunch(request.app)):
         return _err("There's no update waiting, or this Gallery can't restart itself: close it and start it again.", 409)
-    import subprocess
-    exe = os.path.join(up.root, f"{APP_NAME}.exe")
-    subprocess.Popen([exe, "--wait", "--data", _lib(request).data_dir], cwd=up.root, close_fds=True,
-                     creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-    asyncio.get_running_loop().call_later(0.3, quit)  # after this answer has gone
+    request.app[RELAUNCH](_lib(request).reopen)  # the launcher waits for this one to close, then swaps the update in
+    asyncio.get_running_loop().call_later(0.3, request.app[QUIT])  # after this answer has gone
     return web.json_response({"ok": True})
+
+
+# ---------------------------------------------------------------- libraries (see libraries.py)
+def _libraries_out(app) -> dict:
+    from . import libraries
+    lib = app[LIB]
+    cur = {"root": lib.root, "name": lib.name, "data_dir": lib.data_dir, "bringing": lib.bringing}
+    if lib.root:
+        cur["brought"] = libraries.info(lib.root).get("brought")
+    return {"current": cur, "recent": [dict(r, open=bool(lib.root) and libraries.same(r["root"], lib.root)) for r in libraries.recent()],
+            "note": lib.note, "can_switch": _can_relaunch(app)}
+
+
+async def libraries_get(request):
+    return web.json_response(await asyncio.to_thread(_libraries_out, request.app))
+
+
+def _switch(request, target: list[str], data: str):
+    """Start a Gallery on another library and close this one -> an error response, or None."""
+    from . import libraries
+    if not _can_relaunch(request.app):
+        return _err("This Gallery can't switch libraries (it runs as a server only): start it again with --library.", 409)
+    if libraries.same(data, _lib(request).data_dir):
+        return _err("That library is open already.", 409)
+    if libraries.in_use(data):
+        return _err("That library is open in another Gallery window already.", 409)
+    request.app[RELAUNCH](target)
+    asyncio.get_running_loop().call_later(0.3, request.app[QUIT])  # after this answer has gone
+    return None
+
+
+async def library_open(request):
+    from . import libraries
+    from .config import default_data_dir
+    b = await _body(request)
+    if b.get("local"):
+        target, data = ["--local"], default_data_dir()
+    else:
+        root = await asyncio.to_thread(libraries.find, str(b.get("path") or ""))
+        if not root:
+            return _err("That folder isn't a library yet (it has no .mlgallery folder): use New library to make it one.", 422)
+        target, data = ["--library", root], libraries.data_dir(root)
+    bad = _switch(request, target, data)
+    return bad or web.json_response({"ok": True})
+
+
+async def library_new(request):
+    """Make a folder a library (bringing this library's marks for the same files, if asked), then open it."""
+    from . import libraries
+    b = await _body(request)
+    lib = _lib(request)
+    bring = {"data": lib.data_dir, "name": lib.name or "this PC's library"} if b.get("bring") else None
+    try:
+        made = await asyncio.to_thread(libraries.create, str(b.get("path") or ""), b.get("name"), bring)
+    except (ValueError, OSError) as ex:
+        return _err(str(ex), 422)
+    if not _can_relaunch(request.app):
+        return web.json_response(dict(made, switched=False))
+    bad = _switch(request, ["--library", made["root"]], libraries.data_dir(made["root"]))
+    return bad or web.json_response(dict(made, switched=True))
+
+
+async def library_forget(request):
+    from . import libraries
+    b = await _body(request)
+    await asyncio.to_thread(libraries.forget, str(b.get("path") or ""))
+    return web.json_response(await asyncio.to_thread(_libraries_out, request.app))
 
 
 async def reveal_folder(request):
@@ -851,9 +929,9 @@ async def original(request):
     return web.FileResponse(path, headers={"Cache-Control": "no-cache"})  # ranges supported: videos seek
 
 
-async def serve(lib: Library, port: int = 0, token: str | None = None, pick_folder=None, quit=None):
+async def serve(lib: Library, port: int = 0, token: str | None = None, pick_folder=None, quit=None, relaunch=None):
     """Start serving on 127.0.0.1 -> (runner, port, token)."""
-    app = make_app(lib, token, pick_folder=pick_folder, quit=quit)
+    app = make_app(lib, token, pick_folder=pick_folder, quit=quit, relaunch=relaunch)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", port)

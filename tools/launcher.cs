@@ -1,10 +1,13 @@
 // Model Librarian Gallery.exe: starts the portable Gallery (python\pythonw.exe app\start.pyw, side by side with it).
 //
-// Before it starts, it swaps in an update the Gallery downloaded (update\app, with update\ready), but only
-// while no Gallery has the data folder open: the running one would otherwise serve the new interface with
-// the old server. The old app\ is kept as update\app.old until the swap is done, and put back if it fails.
+// Kept inside a library (a folder with a .mlgallery folder in it: this folder's parent), it opens that library.
 //
-//   Model Librarian Gallery.exe [--wait] [--apply-update-only] [the Gallery's own arguments, e.g. --data DIR]
+// Before it starts, it swaps in an update the Gallery downloaded (update\app, with update\ready), but only
+// while no Gallery runs from this folder (running.lock) and none has the library open (gallery.lock): the
+// running one would otherwise serve the new interface with the old server. The old app\ is kept as
+// update\app.old until the swap is done, and put back if it fails.
+//
+//   Model Librarian Gallery.exe [--wait] [--apply-update-only] [the Gallery's own arguments, e.g. --library DIR]
 //     --wait               wait (up to 30 s) for an open Gallery to close first (Restart now in Settings)
 //     --apply-update-only  swap in a waiting update and stop (the tests)
 //
@@ -26,20 +29,30 @@ static class Launcher
     {
         string pkg = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
         var rest = new List<string>();
-        bool wait = false, applyOnly = false;
-        string data = null;
+        bool wait = false, applyOnly = false, chosen = false;
+        string data = null, library = null;
         for (int i = 0; i < argv.Length; i++)
         {
             if (argv[i] == "--wait") { wait = true; continue; }
             if (argv[i] == "--apply-update-only") { applyOnly = true; continue; }
             if (argv[i] == "--data" && i + 1 < argv.Length) data = argv[i + 1];
+            if (argv[i] == "--library" && i + 1 < argv.Length) library = argv[i + 1];
+            if (argv[i] == "--data" || argv[i] == "--library" || argv[i] == "--local") chosen = true;
             rest.Add(argv[i]);
         }
+        string parent = Path.GetDirectoryName(pkg);
+        if (!chosen && parent != null && File.Exists(Path.Combine(parent, ".mlgallery", "library.json")))
+        {
+            library = parent;  // kept inside a library: open that one
+            rest.InsertRange(0, new[] { "--library", parent });
+        }
+        if (library != null)
+            data = Path.Combine(library, ".mlgallery");
         data = data ?? Environment.GetEnvironmentVariable("MLG_DATA");
         if (string.IsNullOrEmpty(data))
             data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppName);
 
-        string applied = ApplyUpdate(pkg, Path.Combine(data, "gallery.lock"), wait);
+        string applied = ApplyUpdate(pkg, new[] { Path.Combine(data, "gallery.lock"), Path.Combine(pkg, "running.lock") }, wait);
         if (applyOnly)
         {
             Console.WriteLine(applied ?? "nothing applied");
@@ -69,12 +82,12 @@ static class Launcher
     }
 
     // The version swapped in, or null: no update waiting, a Gallery still open, or the swap failed (the old one stays).
-    static string ApplyUpdate(string pkg, string lockPath, bool wait)
+    static string ApplyUpdate(string pkg, string[] locks, bool wait)
     {
         string upd = Path.Combine(pkg, "update"), staged = Path.Combine(upd, "app"), ready = Path.Combine(upd, "ready");
         if (!File.Exists(ready) || !File.Exists(Path.Combine(staged, "start.pyw")))
             return null;
-        for (int tries = wait ? 120 : 1; !LockFree(lockPath); )
+        for (int tries = wait ? 120 : 1; !Array.TrueForAll(locks, LockFree); )
         {
             if (--tries <= 0) return null;
             Thread.Sleep(250);
@@ -103,7 +116,7 @@ static class Launcher
         return version;
     }
 
-    // The Gallery keeps gallery.lock open while it runs: a file nobody has open can be opened unshared.
+    // The Gallery keeps gallery.lock and running.lock open while it runs: a file nobody has open can be opened unshared.
     static bool LockFree(string path)
     {
         if (!File.Exists(path)) return true;

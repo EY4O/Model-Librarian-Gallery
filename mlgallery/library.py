@@ -79,10 +79,17 @@ def stem_of(name: str) -> str:
 
 
 class Library:
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str, home: str | None = None, root: str | None = None):
+        """data_dir: the index, thumbnails and backups. home: this PC's own folder (settings), the data folder
+        itself unless the library is one that travels. root: that library's own folder (see libraries.py)."""
         self.data_dir = data_dir
+        self.home = home or data_dir
+        self.root = root
+        self.note = None      # said in Settings, e.g. the last library wasn't reachable
+        self.bringing = None  # the library marks are being brought from, meanwhile
+        self.reopen = ["--library", root] if root else ["--data", data_dir]  # how to start a Gallery on it again
         os.makedirs(data_dir, exist_ok=True)
-        self.settings = Settings(data_dir)
+        self.settings = Settings(self.home)
         self.db = Database(os.path.join(data_dir, "library.db"))
         self.thumbs = Thumbnails(self.db, os.path.join(data_dir, "thumbs"), self.settings)
         self.meta = metadata.MetaReader(self.db)
@@ -94,6 +101,14 @@ class Library:
         self._stop = threading.Event()
         self.scanning: dict | None = None  # {folder, path, seen, added, ...} while a scan runs
         self.last_scan: dict | None = None
+
+    @property
+    def name(self) -> str | None:
+        """A library's own name (None for this PC's library)."""
+        if not self.root:
+            return None
+        from . import libraries
+        return libraries.info(self.root)["name"]
 
     # ---------------------------------------------------------------- lifecycle
     def start(self, rescan: bool = True) -> None:

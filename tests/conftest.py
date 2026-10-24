@@ -1,6 +1,7 @@
 import os
 import shutil
 import sys
+import tempfile
 
 import pytest
 
@@ -44,3 +45,5 @@ def image(path, size=(64, 48), seed=1):
 
 # Model Librarian's real library is never looked at by the tests (a test that wants one makes its own)
 os.environ.setdefault("MLG_ML_DATA", os.path.join(HERE, "no-model-librarian-here"))
+# nor is this PC's own Gallery folder (settings, the recent libraries): the tests get a throwaway one
+os.environ.setdefault("MLG_HOME", tempfile.mkdtemp(prefix="mlg-home-"))

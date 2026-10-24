@@ -21,7 +21,7 @@ uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
 .venv/Scripts/python -m mlgallery --server --data <folder>   # server only, on a throwaway data folder
 ```
 
-Its data (the index, thumbnails, settings) lives in `%LOCALAPPDATA%\Model Librarian Gallery`, or wherever `--data` / `MLG_DATA` points. Try changes on a data folder of your own and generated media (`python tests/sample_media.py <folder>`), not on your real library.
+Its data (the index, thumbnails, settings) lives in `%LOCALAPPDATA%\Model Librarian Gallery`, or wherever `--data` / `MLG_DATA` points; `--library DIR` opens a library (its index in `DIR\.mlgallery`, the settings still on the PC). `MLG_HOME` moves the PC's own folder (settings, recent libraries); the tests point it at a throwaway. Try changes on a data folder of your own and generated media (`python tests/sample_media.py <folder>`), not on your real library.
 
 ## Tests
 
@@ -42,6 +42,7 @@ Python 3.12 with `requirements-dev.txt`. The UI tests need Microsoft Edge; the v
 | `test_eagle` | Reading an Eagle library (nested folders as albums, deleted items skipped), matching by bytes, what bringing it in adds (your own ratings and notes kept), copying in the files it doesn't have, Undo, Send to Eagle against a stand-in for Eagle's API; on made-up libraries only |
 | `test_comfy` | Open in ComfyUI against a stand-in for Model Librarian's route (sent, not open in a browser, too old, not running), Save as recipe into a made-up library, the Start menu shortcut (in a temp folder) |
 | `test_update` | Updates against a stand-in for GitHub's API: a newer release found (or not, or GitHub unreachable), the daily check only with the switch on, installing (SHA-256 from GitHub's digest or a .sha256 file), refusals (a download that doesn't match, other packages, another version, a file outside its folder, not a zip, a checkout), the release zip, the routes; the launcher swapping in the update, and waiting while a Gallery is open (needs the C# compiler that comes with Windows); in made-up portable folders only |
+| `test_libraries` | Libraries: making one (and refusals: inside an Eagle library, inside another library), which library opens (`--library`, `--data`, the Gallery kept inside one, the last one, this PC's when it's unreachable), the recent list, re-anchoring folders after a move or a drive-letter change (with `subst`), marks kept, bringing marks from another library and its Undo, settings kept on the PC, the routes and switching, the launcher inside a library checking its locks; on made-up folders and a throwaway `MLG_HOME` only |
 | `test_edit` | Flip, rotate and crop: ComfyUI's PNG text chunks and A1111's JPEG EXIF kept, the date kept, the result matching what the viewer showed, Save as copy, Undo of each |
 | `test_edges` | The cases a bug hunt and a QA pass found: folder names Windows folds (case, trailing dots), names held by files in the Trash, a new file where a trashed one was, a cross-drive copy whose original can't go, undo that can't finish, words and filters left out of a search, values that can't be read, a character in more files than an IN list takes, requests and settings that make no sense |
 | `test_server` | The token and Host checks, the API the interface uses (files, details, marks, tags, workflows, suggestions), folder add and remove, Show in Explorer |
@@ -69,7 +70,7 @@ Builds a made-up index of 250,000 files (no image files; a few minutes) in a tem
 
 Makes `%LOCALAPPDATA%\Programs\Model Librarian Gallery`: its own Python (copied from a standalone CPython 3.12, `uv python find 3.12`), the packages from `requirements.txt` (through uv's cache), the app (`app\`: `mlgallery\`, `start.pyw` and `requirements.txt`), ffmpeg (copied from the one on PATH, without ffplay), about 270 MB, and `Model Librarian Gallery.exe`. Start it with the exe, or from the Start menu once Settings has added it.
 
-The exe is `tools/launcher.cs`, compiled with the C# compiler that comes with Windows (.NET Framework 4's `csc.exe`; no SDK to install). It starts `python\pythonw.exe app\start.pyw`, after swapping in a downloaded update (`update\app`, marked by `update\ready`) while no Gallery has the data folder open. Its data stays in `%LOCALAPPDATA%\Model Librarian Gallery`, so a new build simply replaces the folder. Don't build into a OneDrive folder: it would sync all of it.
+The exe is `tools/launcher.cs`, compiled with the C# compiler that comes with Windows (.NET Framework 4's `csc.exe`; no SDK to install). It starts `python\pythonw.exe app\start.pyw`, after swapping in a downloaded update (`update\app`, marked by `update\ready`) while no Gallery has the library open and none runs from the folder (`running.lock`). Kept inside a library (the folder's parent has `.mlgallery\library.json`), it opens that library. Launchers from 1.1.4 and earlier know neither: they come with the next full download. Its data stays in `%LOCALAPPDATA%\Model Librarian Gallery`, so a new build simply replaces the folder. Don't build into a OneDrive folder: it would sync all of it.
 
 ## Releasing
 
