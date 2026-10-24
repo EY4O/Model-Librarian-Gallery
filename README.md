@@ -46,7 +46,15 @@ A Windows app for large libraries of AI generations: it indexes the folders you 
 
 ## 📦 Installation
 
-### Option 1: **Portable folder** (Recommended)
+### Option 1: **Download the portable folder** (Recommended)
+
+1. From the [latest release](https://github.com/EY4O/Model-Librarian-Gallery/releases/latest), download **Model-Librarian-Gallery-&lt;version&gt;-portable.zip** (about 100 MB; it brings its own Python and ffmpeg).
+2. Unzip it somewhere outside OneDrive, such as `%LOCALAPPDATA%\Programs`.
+3. Start **Model Librarian Gallery.exe** in the unzipped folder. The program isn't signed, so Windows may ask first: choose **More info → Run anyway**.
+
+Then use **Settings → Add the Gallery to the Start menu**. To keep it up to date, turn on **Settings → Updates**.
+
+### Option 2: **Build the portable folder**
 
 Build it once from a checkout. It copies a standalone Python 3.12 and ffmpeg from your PC; only the app's packages are fetched, if uv doesn't have them yet:
 
@@ -58,7 +66,7 @@ uv run --python 3.12 --no-project tools/build_portable.py
 
 It lands in `%LOCALAPPDATA%\Programs\Model Librarian Gallery`. Start **Model Librarian Gallery.exe** there, then use **Settings → Add the Gallery to the Start menu**. To keep it up to date, turn on **Settings → Updates**.
 
-### Option 2: **Run from the checkout**
+### Option 3: **Run from the checkout**
 
 Needs [uv](https://docs.astral.sh/uv/getting-started/installation/), which fetches the right Python by itself:
 
@@ -73,7 +81,7 @@ The first start sets up the app's own Python in `.venv`; later starts open strai
 <details>
 <summary><b>Optional companions</b></summary>
 
-- **ffmpeg** — for video posters and lengths. The portable folder brings its own; otherwise the one on PATH is used, or set its path in **Settings**.
+- **ffmpeg** — for video posters and lengths. The portable folder (downloaded or built) brings its own; otherwise the one on PATH is used, or set its path in **Settings**.
 - **Model Librarian** — found by itself in your models folder (`.sm_model_fetcher`). It links your files to the models you have (and shows the ones you never use), and receives **Save as recipe**.
 - **ComfyUI with Model Librarian 1.23 or newer** — for **Open in ComfyUI**; set ComfyUI's address in **Settings** if it isn't `http://127.0.0.1:8188`.
 </details>
