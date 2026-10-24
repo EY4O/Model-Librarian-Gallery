@@ -95,6 +95,26 @@ def test_a_broken_file_fails_once_and_is_not_retried(lib, media):
     assert lib.thumbs.get(fid) is None and not calls
 
 
+def test_failed_thumbnails_get_another_try_at_the_next_start(lib, media, monkeypatch):
+    rows = _library_with(lib, media, "syncing.png", "broken.webp")
+    real = thumbs.image_thumb
+
+    def unreadable(path, size):  # like a OneDrive file still downloading
+        raise OSError("The cloud file provider is not running")
+    monkeypatch.setattr(thumbs, "image_thumb", unreadable)
+    assert lib.thumbs.get(rows["syncing.png"]["id"]) is None and lib.thumbs.get(rows["broken.webp"]["id"]) is None
+    assert {r["name"]: r["thumb"] for r in lib.files()["items"]} == {"syncing.png": -1, "broken.webp": -1}
+    monkeypatch.setattr(thumbs, "image_thumb", real)
+    lib.thumbs.start()  # the Gallery starts again
+    try:
+        deadline = time.time() + 30
+        while lib.thumbs.pending() and time.time() < deadline:
+            time.sleep(0.1)
+    finally:
+        lib.thumbs.stop()
+    assert {r["name"]: r["thumb"] for r in lib.files()["items"]} == {"syncing.png": 1, "broken.webp": -1}  # the broken one just fails again
+
+
 def test_background_workers_fill_the_cache_newest_first(lib, media):
     names = [f"{i}.png" for i in range(6)]
     _library_with(lib, media, *names)

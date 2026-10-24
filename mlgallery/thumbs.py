@@ -191,7 +191,7 @@ class Thumbnails:
 
     def get(self, file_id: int, size: int | None = None) -> str | None:
         """The thumbnail file for a file id, made now if it isn't yet. None if it can't be made
-        (one that failed before isn't tried again on every scroll: a rescan of a changed file resets it).
+        (one that failed before isn't tried again on every scroll: the next start, or a rescan of a changed file, tries again).
         A size other than the thumbnail size (sharper tiles, made as they're asked for) leaves the file's state alone."""
         row = self._row(file_id)
         if not row or not row["fp"] or row["thumb"] < 0:
@@ -228,8 +228,11 @@ class Thumbnails:
 
     # ---------------------------------------------------------------- the background
     def start(self) -> None:
-        if find_ffmpeg(self.settings.get("ffmpeg")):  # ffmpeg installed since: the videos waiting for it get their posters
-            with self.db.write() as c:
+        with self.db.write() as c:
+            # one more try for what failed last time: a file still syncing (OneDrive) or locked then is fine now,
+            # and a truly broken one just fails again, once per start
+            c.execute("UPDATE files SET thumb=0 WHERE thumb=-1")
+            if find_ffmpeg(self.settings.get("ffmpeg")):  # ffmpeg installed since: the videos waiting for it get their posters
                 c.execute("UPDATE files SET thumb=0 WHERE thumb=-2")
         n = max(1, int(self.settings.get("thumb_workers")))
         for i in range(n):
