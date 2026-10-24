@@ -73,3 +73,20 @@ def test_what_cant_be_edited(lib, media):
     for kw in ({}, {"rotate": 45}, {"crop": [1, 2]}):
         with pytest.raises(fileops.OpError):
             edit.apply(lib.db, fid, **kw)
+
+
+def test_emptying_the_trash_clears_the_kept_originals(lib, media, monkeypatch):
+    p, fid = one(lib, media, "gen.png")
+    r = edit.apply(lib.db, fid, rotate=90)
+    assert next(o for o in fileops.history(lib.db) if o["id"] == r["op"])["undoable"]
+    sent = []
+    import send2trash
+    monkeypatch.setattr(send2trash, "send2trash", lambda path: (sent.append(path), __import__("shutil").rmtree(path)))  # a stand-in: never your Recycle Bin
+    fileops.empty(lib.db, [])  # emptying chosen files leaves them
+    assert (media / fileops.TRASH / "edits").is_dir() and not sent
+    out = fileops.empty(lib.db)
+    assert out["backups"] == 1 and sent and not (media / fileops.TRASH).exists()
+    assert not next(o for o in fileops.history(lib.db) if o["id"] == r["op"])["undoable"]
+    with pytest.raises(fileops.OpError, match="isn't kept"):
+        fileops.undo(lib.db, r["op"])
+    assert os.path.isfile(p)  # the edited file itself stays

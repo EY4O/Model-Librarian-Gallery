@@ -159,11 +159,13 @@ export async function restoreFiles(selection) {
 }
 
 export async function emptyTrash(selection, count) {
-  if (!await ask(`Empty ${selection ? what(count) : "the Trash"}?`, "The files go to the Windows Recycle Bin. The Gallery can't undo this: you'd restore them from the Recycle Bin.",
+  if (!await ask(`Empty ${selection ? what(count) : "the Trash"}?`, selection
+    ? "The files go to the Windows Recycle Bin. The Gallery can't undo this: you'd restore them from the Recycle Bin."
+    : "The files go to the Windows Recycle Bin, and so do the originals kept for undoing edits (after this, those edits can't be undone here). The Gallery can't undo this: you'd restore them from the Recycle Bin.",
     { ok: selection ? "Empty these" : "Empty the Trash", danger: true })) return;
   try {
     const r = await api("/ops/empty", { method: "POST", body: selection ? { selection } : {} });
-    done(null, `${plural(r.emptied, "file")} sent to the Recycle Bin.`);
+    done(null, `${plural(r.emptied, "file")}${r.backups ? ` and ${plural(r.backups, "kept original")}` : ""} sent to the Recycle Bin.`);
   } catch (e) { toast(e.message, true); }
 }
 

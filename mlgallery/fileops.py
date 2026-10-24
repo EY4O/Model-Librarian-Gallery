@@ -274,7 +274,8 @@ def restore(db, ids, *, as_op: bool = True) -> dict:
 
 
 def empty(db, ids=None) -> dict:
-    """Send Trash files (these, or all of them) to the Windows Recycle Bin. Not undoable here: restore them from the Recycle Bin."""
+    """Send Trash files (these, or all of them) to the Windows Recycle Bin. Not undoable here: restore them from the Recycle Bin.
+    Emptying all of it also sends the originals kept for undoing edits (each folder's .mlg-trash/edits) there."""
     from send2trash import send2trash
     with db.read() as c:
         if ids is None:
@@ -291,12 +292,33 @@ def empty(db, ids=None) -> dict:
             _tidy_trash(r["root"], r["trash_rel"])
         except OSError as ex:
             failed.append({"id": r["id"], "error": str(ex)})
-    if gone:
+    backups = 0
+    if ids is None:
+        with db.read() as c:
+            roots = [r[0] for r in c.execute("SELECT path FROM folders WHERE online=1")]
+        for root in roots:
+            edits = os.path.join(root, TRASH, "edits")
+            if not os.path.isdir(edits):
+                continue
+            n = sum(len(fs) for _, _, fs in os.walk(edits))
+            try:
+                send2trash(edits)
+                backups += n
+            except OSError as ex:
+                failed.append({"id": None, "error": str(ex)})
+                continue
+            try:
+                os.rmdir(os.path.join(root, TRASH))  # nothing else left in it
+            except OSError:
+                pass
+    if gone or backups:
         with db.write() as c:
             c.executemany("DELETE FROM files WHERE id=?", [(i,) for i in gone])
-            record(c, "empty", f"Sent {len(gone)} file{'s' if len(gone) != 1 else ''} from the Trash to the Recycle Bin", {"count": len(gone)})
+            what = [f"{len(gone)} file{'s' if len(gone) != 1 else ''} from the Trash"] if gone else []
+            what += [f"{backups} original{'s' if backups != 1 else ''} kept for undoing edits"] if backups else []
+            record(c, "empty", f"Sent {' and '.join(what)} to the Recycle Bin", {"count": len(gone), "backups": backups})
             _recount(c)
-    return {"emptied": len(gone), "failed": failed}
+    return {"emptied": len(gone), "backups": backups, "failed": failed}
 
 
 def _tidy_trash(root: str, trash_rel: str) -> None:
@@ -393,6 +415,13 @@ def undo(db, op_id: int) -> dict:
 
 def history(db, limit: int = 100) -> list[dict]:
     with db.read() as c:
-        return [{"id": r["id"], "at": r["at"], "kind": r["kind"], "summary": r["summary"], "undone": r["undone"],
-                 "undoable": r["kind"] != "empty" and not r["undone"]}
-                for r in c.execute("SELECT id, at, kind, summary, undone FROM ops ORDER BY id DESC LIMIT ?", (int(limit),))]
+        out = []
+        for r in c.execute("SELECT id, at, kind, summary, undone, data FROM ops ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall():
+            undoable = r["kind"] != "empty" and not r["undone"]
+            if undoable and r["kind"] == "edit":  # a replaced original sent to the Recycle Bin (by emptying the Trash) can't come back from here
+                data = json.loads(r["data"])
+                if data.get("backup_rel"):
+                    f = _row(c, data["id"])
+                    undoable = bool(f) and os.path.isfile(_full(f["root"], data["backup_rel"]))
+            out.append({"id": r["id"], "at": r["at"], "kind": r["kind"], "summary": r["summary"], "undone": r["undone"], "undoable": undoable})
+        return out
