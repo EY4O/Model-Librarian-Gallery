@@ -304,3 +304,49 @@ export function lookIcon(item, fallback) {
   if (item.color) el.style.color = item.color;
   return el;
 }
+
+// ---------------------------------------------------------------- progress: a bar, and the time left
+// a bar: set(0..1), or set(null) while how much is left isn't known (it sweeps instead)
+export function progressBar(cls = "") {
+  const fill = h("span.pbar-fill");
+  const el = h("div.pbar" + cls, { role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100 }, fill);
+  el.set = (f) => {
+    el.classList.toggle("sweep", f == null);
+    if (f == null) { el.removeAttribute("aria-valuenow"); fill.style.width = ""; return; }
+    const pc = Math.max(0, Math.min(100, f * 100));
+    fill.style.width = `${pc}%`;
+    el.setAttribute("aria-valuenow", String(Math.round(pc)));
+  };
+  return el;
+}
+
+// the time left, from how fast it's gone lately (the last half minute, smoothed): steady, not jumping with each file
+export class Pace {
+  constructor() { this.reset(); }
+  reset() { this.samples = []; this.rate = null; this.total = null; }
+  // -> seconds left, or null until it's been going long enough to say
+  update(done, total, now = performance.now() / 1000) {
+    const last = this.samples[this.samples.length - 1];
+    if (last && (done < last[1] || total !== this.total)) this.reset();  // started again, or another job
+    this.total = total;
+    this.samples.push([now, done]);
+    while (this.samples.length > 2 && now - this.samples[0][0] > 30) this.samples.shift();
+    const [t0, d0] = this.samples[0];
+    if (now - t0 < 3 || done <= d0) return this.rate && done < total ? (total - done) / this.rate : null;
+    const r = (done - d0) / (now - t0);
+    this.rate = this.rate == null ? r : this.rate * 0.75 + r * 0.25;
+    return done < total ? (total - done) / this.rate : 0;
+  }
+}
+
+export function fmtLeft(s) {
+  if (s == null || !isFinite(s)) return "";
+  if (s < 45) return "less than a minute left";
+  if (s < 90) return "about a minute left";
+  if (s < 3600) return `about ${Math.round(s / 60)} min left`;
+  const m = Math.round(s / 300) * 5;  // (to the nearest 5 minutes past an hour: no false precision)
+  return `about ${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""} left`;
+}
+
+// the long job of yours under way, if its dialog is hidden: what the status bar shows it with, and how to open it again
+export const job = { reopen: null };

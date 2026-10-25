@@ -194,15 +194,18 @@ def _flush(db, now, touched: list, pending: list) -> None:
                 c.execute("UPDATE files SET rel=?, name=? WHERE id=?", (f"{parent}/{free}" if parent else free, free, oid))
                 refresh_search(c, oid)
             elif op == "insert":
-                new = c.execute("INSERT INTO files (folder_id, rel, name, ext, kind, size, mtime, fp, width, height, first_seen, last_seen, taken, shot)"
-                                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", args).lastrowid
-                # findable by its name at once; reading its metadata fills in the rest
-                c.execute("INSERT INTO search (rowid, name, prompt, negative, models, tags) VALUES (?,?,'','','','')", (new, search_name(args[2])))
+                # (the folder watcher and an import or a rescan may both find a new file at once: whichever comes second leaves it be)
+                cur = c.execute("INSERT INTO files (folder_id, rel, name, ext, kind, size, mtime, fp, width, height, first_seen, last_seen, taken, shot)"
+                                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (folder_id, rel) DO NOTHING", args)
+                if cur.rowcount:  # findable by its name at once; reading its metadata fills in the rest
+                    c.execute("INSERT INTO search (rowid, name, prompt, negative, models, tags) VALUES (?,?,'','','','')", (cur.lastrowid, search_name(args[2])))
             elif op == "change":
                 c.execute("UPDATE files SET size=?, mtime=?, fp=?, width=?, height=?, last_seen=?, missing=0, thumb=0, meta=0, phash=NULL, colors=0,"
                           " dated=0, credited=0, trashed=NULL, trash_rel=NULL WHERE id=?", args)
                 c.execute("DELETE FROM colors WHERE file_id=?", (args[-1],))  # another picture now: its colours are worked out again
             elif op == "move":
+                if c.execute("SELECT 1 FROM files WHERE folder_id=? AND rel=? AND id<>?", (args[0], args[1], args[-1])).fetchone():
+                    continue  # indexed there meanwhile (by the folder watcher): that record stands
                 c.execute("UPDATE files SET folder_id=?, rel=?, name=?, ext=?, size=?, mtime=?, last_seen=?, missing=0, meta=0, dated=0, credited=0 WHERE id=?", args)
                 refresh_search(c, args[-1])
     touched.clear()

@@ -1,6 +1,6 @@
 // Model Librarian Gallery: Settings - the library, folders, thumbnails, videos, Model Librarian, ComfyUI, the data folder, updates.
 
-import { KINDS, api, ask, askText, baseName, fmtDate, fmtSize, h, lib, plural, toast } from "./util.js";
+import { KINDS, Pace, api, ask, askText, baseName, fmtDate, fmtLeft, fmtSize, h, job, lib, plural, progressBar, toast } from "./util.js";
 import { done } from "./organize.js";
 
 const field = (label, control, note) => h("div.set-row", {}, h("label.set-label", {}, label), h("div.set-control", {}, control, note ? h("p.note", {}, note) : null));
@@ -142,21 +142,44 @@ function updates(s, again, save) {
 }
 
 // ---------------------------------------------------------------- bring in an Eagle library
-async function follow(title, note, line) {
-  // a dialog that follows a job in the background (/eagle/read) until it's no longer `running`
+async function follow(title, note, line, stopping) {
+  // a dialog that follows a job in the background (/eagle/read) until it's no longer running: a bar and the time left,
+  // Stop, and Keep using the Gallery (it hides; the status bar carries on, and a click there opens it again)
   const status = h("p", { "aria-live": "polite" }, line({ done: 0 }));
-  const dlg = h("dialog.dialog", { "aria-label": title }, h("form", { method: "dialog" }, h("h2", {}, title), status, h("p.note", {}, note)));
-  dlg.addEventListener("keydown", (e) => e.preventDefault());
+  const bar = progressBar();
+  bar.set(null);
+  const left = h("p.p-left");
+  const pace = new Pace();
+  const stop = h("button.btn.danger", { type: "button", onclick: async () => {
+    if (!await ask(stopping.title, stopping.text, { ok: "Stop", danger: true })) return;
+    stop.disabled = true;
+    await api("/eagle/stop", { method: "POST" }).catch((e) => toast(e.message, true));
+  } }, "Stop");
+  const hide = () => {
+    if (!dlg.open) return;
+    dlg.close();
+    job.reopen = () => { job.reopen = null; dlg.showModal(); };
+  };
+  const dlg = h("dialog.dialog.follow", { "aria-label": title }, h("form", { method: "dialog", onsubmit: (e) => e.preventDefault() },
+    h("h2", {}, title), status, bar, left, h("p.note", {}, note),
+    h("div.row.end", {}, h("button.btn", { type: "button", onclick: hide }, "Keep using the Gallery"), stop)));
+  dlg.addEventListener("cancel", (e) => { e.preventDefault(); hide(); });  // (Esc: hidden, not stopped)
+  dlg.addEventListener("keydown", (e) => { if (e.key !== "Escape" && e.key !== "Tab" && e.key !== "Enter" && e.key !== " ") e.preventDefault(); e.stopPropagation(); });
   document.body.append(dlg);
   dlg.showModal();
   let st;
   for (;;) {
     await new Promise((r) => setTimeout(r, 400));
     st = await api("/eagle/read").catch(() => ({ state: "failed", error: "The Gallery stopped answering." }));
-    if (st.state === "reading" || st.state === "applying") status.textContent = line(st);
-    else break;
+    if (st.state !== "reading" && st.state !== "applying") break;
+    status.textContent = st.stop ? "Stopping after the file in hand…" : line(st);
+    const bytes = st.bytes_total > 0;  // copying: by the bytes, so a few big videos don't throw the time out
+    const done = bytes ? st.bytes || 0 : st.done || 0, total = bytes ? st.bytes_total : st.total || 0;
+    bar.set(total ? done / total : null);
+    left.textContent = total && !st.stop ? fmtLeft(pace.update(done, total)) : "";
   }
-  dlg.close();
+  job.reopen = null;
+  if (dlg.open) dlg.close();
   dlg.remove();
   return st;
 }
@@ -174,7 +197,9 @@ async function eagleImport(folders, lb) {
     await api("/eagle/read", { method: "POST", body: { path } });
   } catch (e) { return toast(e.message, true); }
   const st = await follow("Reading the Eagle library", "Only reading: nothing in it changes.",
-    (x) => `Reading the library… ${(x.done || 0).toLocaleString()} items so far`);
+    (x) => (x.total ? `Reading the library… ${(x.done || 0).toLocaleString()} of ${x.total.toLocaleString()} items` : `Reading the library… ${(x.done || 0).toLocaleString()} items so far`),
+    { title: "Stop reading the library?", text: "Nothing has been brought in yet: reading it again starts from the beginning." });
+  if (st.state === "stopped") return toast("Stopped reading the Eagle library: nothing was brought in.");
   if (st.state !== "ready") return toast(st.error || "Reading the library didn't finish.", true);
   const s = st.summary;
   const online = folders.filter((f) => f.online);
@@ -216,11 +241,14 @@ async function eagleImport(folders, lb) {
     } catch (ex) { err.textContent = ex.message; go.disabled = false; return; }
     box.close();
     const end = await follow(`Bringing in ${s.name}`, "Copied and checked one by one; Eagle's library isn't changed.",
-      (x) => (x.total ? `Copying… ${(x.done || 0).toLocaleString()} of ${x.total.toLocaleString()}` : "Bringing in the tags, albums, ratings and notes…"));
+      (x) => (x.total && x.done < x.total ? `Copying… ${(x.done || 0).toLocaleString()} of ${x.total.toLocaleString()}${x.bytes_total ? ` · ${fmtSize(x.bytes || 0)} of ${fmtSize(x.bytes_total)}` : ""}`
+        : "Bringing in the tags, albums, ratings and notes…"),
+      { title: `Stop bringing in ${s.name}?`, text: "What's copied so far stays, with its tags, albums, ratings and notes; the rest isn't copied. It's one step in History: Undo takes it all back." });
     if (end.state !== "done") return toast(end.error || "Bringing it in didn't finish.", true);
     const r = end.result;
     const marks = `${plural(r.tags, "tag")}, ${plural(r.albums, "album place")}, ${plural(r.ratings, "rating")} and ${plural(r.notes, "note")}`;
-    const failed = r.failed && r.failed.length ? ` ${plural(r.failed.length, "file")} couldn't be copied (${r.failed.slice(0, 3).join(", ")}${r.failed.length > 3 ? "…" : ""}).` : "";
+    const failed = (r.failed && r.failed.length ? ` ${plural(r.failed.length, "file")} couldn't be copied (${r.failed.slice(0, 3).join(", ")}${r.failed.length > 3 ? "…" : ""}).` : "")
+      + (r.stopped ? ` Stopped: ${plural(r.stopped, "item")} not copied.` : "");
     if (r.library) {
       const msg = `${r.library.name}: ${plural(r.copied, "file")} copied from ${s.name}, with ${marks}.${failed}`;
       if (lb.can_switch && await ask(`${r.library.name} is ready`, `${msg} Open it now?`, { ok: "Open it" })) {

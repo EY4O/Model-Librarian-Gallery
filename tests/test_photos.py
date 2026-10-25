@@ -508,3 +508,25 @@ def test_the_watcher_seeing_a_file_go_to_the_trash_leaves_it_in_the_trash(lib, m
     assert trashed and lib.files(sort="trashed")["total"] == 1
     fileops.restore(lib.db, [fid])
     assert lib.files()["total"] == 2
+
+
+def test_two_indexers_finding_one_new_file_at_once(lib, media, monkeypatch):
+    # an import (or a rescan) and the folder watcher both index a file just copied in: the second leaves it be
+    from contextlib import contextmanager
+    image(media / "a.png", seed=1)
+    f = folder(lib, media)
+    read, other = lib.db.read, []
+
+    @contextmanager
+    def then_the_watcher():
+        with read() as c:
+            yield c
+        if not other:
+            other.append(True)
+            monkeypatch.setattr(lib.db, "read", read)
+            scan.index_files(lib.db, f, ["a.png"])  # the watcher, in between
+    monkeypatch.setattr(lib.db, "read", then_the_watcher)
+    scan.index_files(lib.db, f, ["a.png"])  # used to fail: UNIQUE constraint failed: files.folder_id, files.rel
+    with lib.db.read() as c:
+        assert c.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 1
+        assert c.execute("SELECT COUNT(*) FROM search").fetchone()[0] == 1

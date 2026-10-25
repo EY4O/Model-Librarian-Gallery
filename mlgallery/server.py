@@ -126,6 +126,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_post("/api/file/{id}/note", file_note)
     r.add_post("/api/eagle/read", eagle_read)
     r.add_get("/api/eagle/read", eagle_read_status)
+    r.add_post("/api/eagle/stop", eagle_stop)
     r.add_post("/api/eagle/apply", eagle_apply)
     r.add_get("/api/eagle/folders", eagle_folders)
     r.add_post("/api/eagle/send", eagle_send)
@@ -192,6 +193,7 @@ def _lib(request) -> Library:
 async def status(request):
     st = await asyncio.to_thread(_lib(request).status)
     st["update"] = request.app[UPDATER].available()  # a newer Gallery on GitHub (only known once it's been asked)
+    st["job"] = eagle_job()  # a long job of yours under way (an Eagle library brought in), for the status bar
     return web.json_response(st)
 
 
@@ -829,12 +831,16 @@ async def eagle_read(request):
         return _err("An Eagle library is being read or brought in: wait for it to finish.", 409)
     lib = _lib(request)
     _EAGLE.clear()
-    _EAGLE.update(state="reading", path=lib_path, done=0)
+    _EAGLE.update(state="reading", path=lib_path, done=0, total=0, title=f"Reading {os.path.basename(lib_path)[: -len('.library')] or lib_path}")
 
     def run():
         try:
-            plan = eagle.plan_import(lib.db, lib_path, progress=lambda n: _EAGLE.update(done=n))
+            _EAGLE["total"] = eagle.count_items(lib_path)
+            plan = eagle.plan_import(lib.db, lib_path, progress=lambda n: _EAGLE.update(done=n), stop=lambda: _EAGLE.get("stop"))
             _EAGLE.update(state="ready", plan=plan, summary=eagle.summary(plan))
+        except eagle.Stopped:
+            _EAGLE.clear()
+            _EAGLE.update(state="stopped")
         except Exception as ex:
             _EAGLE.update(state="failed", error=str(ex))
     import threading
@@ -844,6 +850,21 @@ async def eagle_read(request):
 
 async def eagle_read_status(request):
     return web.json_response({k: v for k, v in _EAGLE.items() if k != "plan"} or {"state": "idle"})
+
+
+async def eagle_stop(request):
+    """Stop reading, or copying: what's copied so far stays, with its marks (one History step, as ever)."""
+    if _EAGLE.get("state") not in ("reading", "applying"):
+        return _err("Nothing is being read or brought in.", 409)
+    _EAGLE["stop"] = True
+    return web.json_response({"ok": True})
+
+
+def eagle_job() -> dict | None:
+    """The Eagle library being read or brought in, for the status bar (while its dialog is hidden)."""
+    if _EAGLE.get("state") not in ("reading", "applying"):
+        return None
+    return {k: _EAGLE.get(k) for k in ("state", "title", "done", "total", "bytes", "bytes_total", "stop")}
 
 
 async def eagle_apply(request):
@@ -860,7 +881,8 @@ async def eagle_apply(request):
     lib = _lib(request)
     new = b.get("target") == "new"
     made = None
-    _EAGLE.update(state="applying", done=0, total=0, error=None)  # at once: a second click meanwhile is refused, not done twice
+    _EAGLE.update(state="applying", done=0, total=0, bytes=0, bytes_total=0, error=None, stop=False,
+                  title=f"Bringing in {plan['name']}")  # at once: a second click meanwhile is refused, not done twice
     if new:
         path = str(b.get("path") or "")
         bad = None
@@ -884,7 +906,9 @@ async def eagle_apply(request):
         return _err("copy_to: a folder's id", 400)
     sub = b.get("sub")  # None: "From Eagle - <name>"; "": the library folder itself
     total = len(work["missing"]) if new or copy_to else 0
-    _EAGLE["total"] = total
+    _EAGLE.update(total=total, bytes_total=sum(it.get("size") or 0 for it in work["missing"]) if total else 0)
+    progress = lambda n, b: _EAGLE.update(done=n, bytes=b)  # noqa: E731
+    stop = lambda: _EAGLE.get("stop")  # noqa: E731
 
     def run():
         try:
@@ -895,13 +919,14 @@ async def eagle_apply(request):
                 with db.write() as c:
                     fid = c.execute("INSERT INTO folders (path, added) VALUES (?, ?)", (os.path.normpath(root), time.time())).lastrowid
                 libraries.update_info(root, opened=time.time())
-                copied = eagle.copy_in(db, work, fid, "", progress=lambda n: _EAGLE.update(done=n))
+                copied = eagle.copy_in(db, work, fid, "", progress=progress, stop=stop)
                 r = eagle.apply_import(db, work)
-                result = {**r, "copied": copied, "failed": work.get("failed") or [], "library": {"root": root, "name": made["name"]}}
+                result = {**r, "copied": copied, "failed": work.get("failed") or [], "stopped": work.get("stopped") or 0,
+                          "library": {"root": root, "name": made["name"]}}
             else:
-                copied = eagle.copy_in(lib.db, work, copy_to, None if sub is None else str(sub), progress=lambda n: _EAGLE.update(done=n)) if copy_to else 0
+                copied = eagle.copy_in(lib.db, work, copy_to, None if sub is None else str(sub), progress=progress, stop=stop) if copy_to else 0
                 r = eagle.apply_import(lib.db, work)
-                result = {**r, "copied": copied, "failed": work.get("failed") or []}
+                result = {**r, "copied": copied, "failed": work.get("failed") or [], "stopped": work.get("stopped") or 0}
                 lib.thumbs.nudge()
                 lib.meta.nudge()
                 lib.db.user_change()

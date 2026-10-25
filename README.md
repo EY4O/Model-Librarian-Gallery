@@ -110,6 +110,7 @@ The first start sets up the app's own Python in `.venv`; later starts open strai
 - The Gallery indexes the folders you add where they are. A rescan only looks at files that changed; a folder watcher picks up new generations within seconds.
 - Each file gets a quick fingerprint (its size and first and last 64 KB), so a file you move or rename keeps its ratings, tags and characters. A drive that isn't plugged in keeps its files, shown again when it's back.
 - Thumbnails are small WebP files kept by fingerprint, made in the background, newest first. Videos get a poster frame from ffmpeg.
+- While the Gallery works in the background (indexing, thumbnails, reading prompts, dates and artists), the status bar shows a bar and about how long is left.
 - The index is one SQLite file, backed up daily (the last 7 kept). Your files' own data can always be read again from them; your ratings, tags, albums and characters live in the index. This PC's library keeps it in `%LOCALAPPDATA%\Model Librarian Gallery`.
 - Hidden and system folders, and Eagle libraries (`*.library`), are never indexed.
 </details>
@@ -130,6 +131,7 @@ The first start sets up the app's own Python in `.venv`; later starts open strai
 - **Settings → Eagle → Bring in an Eagle library** reads its `.library` folder (only reads: nothing in it changes) and asks where it goes: into a new library of its own, in a folder you pick, or into the library that's open.
 - Each item is copied out, checked against the original, laid out by its Eagle folder (`Characters\Aurelia\…`; an item in several goes into the first, items in none into `Unfiled`), under the name Eagle shows, keeping the date it was added to Eagle.
 - Its tags, star rating and note come along; its source link goes on a line of its own at the end of the note; every Eagle folder becomes an album too; Eagle's colours become its colour set. A file the library already has (the same bytes) just gets the marks, without a second copy.
+- A bar shows how far it's got and about how long is left (worked out from the pace so far, by the bytes while copying). **Keep using the Gallery** hides it: the status bar carries on, and a click there opens it again. **Stop** stops after the file in hand; what's copied so far stays, with its marks.
 - It's one step in History: Undo takes the marks off and moves the copies to the Gallery's Trash. Once you're happy, delete the Eagle library yourself.
 </details>
 

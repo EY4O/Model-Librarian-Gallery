@@ -131,6 +131,20 @@ def test_copy_in_what_the_gallery_lacks(lib, tmp_path):
     assert [o["kind"] for o in fileops.history(lib.db)] == ["eagle"]
 
 
+def test_copying_reports_its_progress_and_stops_when_asked(lib, tmp_path):
+    media, f, ids, eag = setup(lib, tmp_path)
+    plan = eagle.plan_import(lib.db, str(eag))
+    seen = []
+    n = eagle.copy_in(lib.db, plan, f["id"], progress=lambda k, b: seen.append((k, b)), stop=lambda: len(seen) > 1)
+    assert n == 1 and plan["stopped"] == 1  # one copied, then stopped: the other isn't copied
+    assert seen[0] == (0, 0) and seen[1][1] > 0 and seen[-1][0] == 1
+    r = eagle.apply_import(lib.db, plan)
+    assert r["files"] == 3  # the two it had, and the one copied: they get their marks
+    assert eagle.count_items(str(eag)) == 5
+    with pytest.raises(eagle.Stopped):
+        eagle.plan_import(lib.db, str(eag), stop=lambda: True)
+
+
 NESTED = [{"id": "S", "name": "Sample", "children": [{"id": "S2", "name": "Stola", "children": []}]},
           {"id": "W", "name": 'What? A "folder": yes', "children": []}]
 

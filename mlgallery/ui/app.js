@@ -3,7 +3,7 @@
 // scrolls the same at 200 files or 250,000. Day headings come from a per-day count (one small request),
 // so every tile's place is known without fetching the pages above it.
 
-import { $, KINDS, LOOK_COLORS, LOOK_ICONS, TOKEN, aiOnly, api, has, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lib, lookIcon, media, menu, plural, stars, store, toast, who } from "./util.js";
+import { $, KINDS, LOOK_COLORS, LOOK_ICONS, Pace, TOKEN, aiOnly, api, fmtLeft, has, job, progressBar, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lib, lookIcon, media, menu, plural, stars, store, toast, who } from "./util.js";
 import { renderStats } from "./stats.js";
 import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
 import { creditEditor, renderArtist, renderArtists } from "./artists.js";
@@ -1590,6 +1590,44 @@ function askKind() {
 
 for (const b of $("kind-nav").querySelectorAll("[data-is]")) b.onclick = () => openFromStats([{ key: "is", value: b.dataset.is }]);
 
+// the status bar's progress: what's being done in the background, how far along, and the time left (from the pace so far)
+const sbBar = progressBar(".sb"), sbLeft = h("span.sb-left");
+sbBar.hidden = true;
+$("status").after(sbBar, sbLeft);
+$("status").addEventListener("click", () => job.reopen?.());
+let bg = null;  // {key, total, pace}: the background task being followed
+function bgProgress(key, done, total) {
+  if (!bg || bg.key !== key) bg = { key, pace: new Pace() };
+  return { f: total ? done / total : null, left: total ? bg.pace.update(done, total) : null };
+}
+const SHOW_FROM = 40;  // a task this small is over before a bar would mean anything
+
+function statusLine(st) {
+  if (st.job) {  // a job of yours (an Eagle library brought in) whose dialog you hid: click to open it again
+    const j = st.job, bytes = j.bytes_total > 0;
+    const p = j.stop ? { f: null, left: null } : bgProgress(`job:${j.title}`, bytes ? j.bytes || 0 : j.done || 0, bytes ? j.bytes_total : j.total || 0);
+    const what = j.stop ? "stopping…" : j.total && j.done < j.total ? `${(j.done || 0).toLocaleString()} of ${j.total.toLocaleString()}` : j.state === "reading" ? "reading…" : "tags, albums, ratings and notes…";
+    return { text: `${j.title}: ${what}`, ...p, job: true };
+  }
+  if (st.scanning) {  // how many it holds, from the last time it was looked through: a guess, until it's done
+    const f = state.folders.find((x) => x.id === st.scanning.folder), seen = st.scanning.seen || 0;
+    const known = f && f.file_count > seen && f.file_count >= SHOW_FROM ? f.file_count : 0;
+    return { text: `Indexing ${baseName(st.scanning.path)}: ${plural(seen, "file")} found`, ...(known ? bgProgress(`scan:${f.id}`, seen, known) : { f: null, left: null }) };
+  }
+  if (st.queued) return { text: "Indexing…", f: null, left: null };
+  const task = [["thumbs", st.thumbs_pending, "Making thumbnails"], ["meta", st.meta_pending, "Reading prompts and settings"],
+    ["dates", st.dates_pending, "Reading the dates pictures were taken"], ["credits", st.credits_pending, "Looking for who made them"]].find((t) => t[1]);
+  if (task) {
+    const [key, n, label] = task;
+    if (!bg || bg.key !== key) bg = { key, pace: new Pace(), total: n };
+    bg.total = Math.max(bg.total, n);  // more came in meanwhile: they're part of it
+    const p = bg.total >= SHOW_FROM ? bgProgress(key, bg.total - n, bg.total) : { f: undefined, left: null };
+    return { text: `${label}: ${n.toLocaleString()} to go`, ...p };
+  }
+  bg = null;
+  return { text: st.files ? `Up to date · ${plural(st.files, "file")}` : "Up to date", f: undefined, left: null };
+}
+
 async function poll() {
   clearTimeout(pollTimer);
   try {
@@ -1597,13 +1635,15 @@ async function poll() {
     lastStatus = st;
     if (JSON.stringify(st.kinds) !== JSON.stringify(lib.kinds)) applyKinds(st.kinds);
     if (st.kinds === null && !askedKind) { askedKind = true; askKind(); }
-    const busy = st.scanning || st.queued || st.thumbs_pending || st.meta_pending;
-    $("status-dot").classList.toggle("busy", !!busy);
-    $("status").textContent = st.scanning ? `Indexing ${baseName(st.scanning.path)}: ${plural(st.scanning.seen || 0, "file")} found`
-      : st.queued ? "Indexing…"
-      : st.thumbs_pending ? `Making thumbnails: ${st.thumbs_pending.toLocaleString()} to go`
-      : st.meta_pending ? `Reading prompts and settings: ${st.meta_pending.toLocaleString()} to go`
-      : st.files ? `Up to date · ${plural(st.files, "file")}` : "Up to date";
+    const busy = st.scanning || st.queued || st.thumbs_pending || st.meta_pending || st.job;
+    $("status-dot").classList.toggle("busy", !!(busy || st.dates_pending || st.credits_pending));
+    const line = statusLine(st);
+    $("status").textContent = line.text;
+    $("status").classList.toggle("job", !!(line.job && job.reopen));
+    $("status").title = line.job && job.reopen ? "Open it again" : "";
+    sbBar.hidden = line.f === undefined;  // (undefined: no bar; null: one that sweeps, how much is left not known yet)
+    if (line.f !== undefined) sbBar.set(line.f);
+    sbLeft.textContent = fmtLeft(line.left);
     $("status-right").textContent = st.thumbs_failed ? `${plural(st.thumbs_failed, "file")} without a thumbnail` : "";
     const searching = !!queryString();
     if (st.offline !== lastOffline) { lastOffline = st.offline; loadFolders(); } // a folder went (or came back)

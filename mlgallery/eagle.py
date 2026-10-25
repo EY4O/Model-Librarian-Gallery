@@ -115,6 +115,18 @@ def note_with_url(note: str, url: str) -> str:
     return note
 
 
+class Stopped(Exception):
+    """You stopped it."""
+
+
+def count_items(lib: str) -> int:
+    """How many items there are to read (deleted ones included: a quick count, for the progress bar)."""
+    try:
+        return sum(1 for d in os.listdir(os.path.join(lib, "images")) if d.endswith(".info"))
+    except OSError:
+        return 0
+
+
 def items(lib: str):
     """Every item in the library that isn't in Eagle's trash: {id, name, ext, file, tags, folders, star, note, url}."""
     base = os.path.join(lib, "images")
@@ -144,7 +156,7 @@ def items(lib: str):
 
 
 # ---------------------------------------------------------------- import
-def plan_import(db, path: str, progress=None) -> dict:
+def plan_import(db, path: str, progress=None, stop=None) -> dict:
     """What an import would do: how many items, which the Gallery already has, the tags, albums and ratings.
     Only items whose size matches a file the Gallery has are fingerprinted (a quick read); the rest can't be one."""
     lib = library_root(path)
@@ -161,6 +173,8 @@ def plan_import(db, path: str, progress=None) -> dict:
             break
         if progress and n % 200 == 0:
             progress(n)
+        if stop and n % 50 == 0 and stop():
+            raise Stopped()
         try:
             size = os.path.getsize(it["file"])
             fid = have.get((scan.fingerprint(it["file"], size), size)) if size in sizes else None
@@ -199,10 +213,11 @@ def for_new_library(plan: dict) -> dict:
                                               for it in plan["matched"] + plan["missing"] if scan.kind_of(it["name"])]}
 
 
-def copy_in(db, plan: dict, folder_id: int, sub: str | None = None, progress=None) -> int:
+def copy_in(db, plan: dict, folder_id: int, sub: str | None = None, progress=None, stop=None) -> int:
     """Copy the items the Gallery doesn't have into one of your library folders (Eagle's own copies stay), laid out
     by Eagle folder, under the names Eagle shows; each copy checked against the original; then index them.
-    `sub`: the folder inside it (None: "From Eagle - <name>"; "": the library folder itself)."""
+    `sub`: the folder inside it (None: "From Eagle - <name>"; "": the library folder itself). `progress(n, bytes)`
+    after each item; `stop()` true: no more are copied (the ones copied so far are kept, and get their marks)."""
     with db.read() as c:
         d = c.execute("SELECT id, path, online FROM folders WHERE id=?", (int(folder_id),)).fetchone()
     if not d or not d["online"] or not os.path.isdir(d["path"]):
@@ -211,9 +226,15 @@ def copy_in(db, plan: dict, folder_id: int, sub: str | None = None, progress=Non
     sub_parts = [folder_part(p) for p in base.replace("\\", "/").split("/") if p.strip()]
     taken: set[str] = set()
     rels, failed = [], []
+    done_bytes = 0
+    plan["stopped"] = 0
     for n, it in enumerate(plan["missing"]):
         if progress:
-            progress(n)
+            progress(n, done_bytes)
+        if stop and stop():
+            plan["stopped"] = len(plan["missing"]) - n  # the ones left
+            break
+        done_bytes += it.get("size") or 0
         target = None
         try:  # anything going wrong with one item (a path too long, a name taken by a file) leaves that item out, not the rest
             parts = [*sub_parts, *(folder_part(p) for p in (it.get("path") or ["Unfiled"]))]
@@ -238,6 +259,8 @@ def copy_in(db, plan: dict, folder_id: int, sub: str | None = None, progress=Non
             continue
         it["copied_rel"] = f"{rel_dir}/{name}" if rel_dir else name
         rels.append(it["copied_rel"])
+    if progress:  # all copied (or as far as it went): the marks are next
+        progress(len(plan["missing"]) - plan["stopped"], done_bytes)
     plan["failed"] = failed
     scan.index_files(db, {"id": d["id"], "path": d["path"]}, rels)
     ids = {}
