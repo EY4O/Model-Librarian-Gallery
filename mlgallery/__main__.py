@@ -42,9 +42,25 @@ def _own_taskbar_entry() -> None:
     if os.name == "nt":
         try:
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EY4O.ModelLibrarianGallery")
+            from .winshell import APP_ID
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
         except Exception:
             pass
+
+
+def _pin_as_gallery(hwnd, pkg: str | None) -> None:
+    """Pinning the window pins the portable folder's launcher, under the Gallery's name and icon (not "Python")."""
+    if os.name != "nt" or not hwnd:
+        return
+    try:
+        from . import winshell
+        exe = os.path.join(pkg, f"{APP_NAME}.exe") if pkg else None
+        if exe and os.path.isfile(exe):
+            winshell.window_identity(hwnd, f'"{exe}"', APP_NAME, f"{exe},0")
+        else:  # a checkout: no launcher to pin, but the window still groups as the Gallery
+            winshell.window_identity(hwnd)
+    except Exception:
+        pass
 
 
 def _set_window_icon(hwnd=None) -> None:
@@ -176,6 +192,7 @@ def main(argv=None) -> int:
                 except Exception:
                     hwnd = None
                 _set_window_icon(hwnd)
+                _pin_as_gallery(hwnd, pkg)
             window["w"].events.shown += shown
             webview.start(private_mode=False, storage_path=os.path.join(pick["home"], "webview"))
     except KeyboardInterrupt:

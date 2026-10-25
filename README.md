@@ -54,7 +54,7 @@ A Windows app for large libraries of AI generations: it indexes the folders you 
 2. Unzip it somewhere outside OneDrive, such as `%LOCALAPPDATA%\Programs`.
 3. Start **Model Librarian Gallery.exe** in the unzipped folder. The program isn't signed, so Windows may ask first: choose **More info → Run anyway**.
 
-Then use **Settings → Add the Gallery to the Start menu**. To keep it up to date, turn on **Settings → Updates**.
+Then use **Settings → Add the Gallery to the Start menu**, or right-click its taskbar button and choose **Pin to taskbar**. To keep it up to date, turn on **Settings → Updates**.
 
 ### Option 2: **Build the portable folder**
 

@@ -113,3 +113,27 @@ def test_start_menu_shortcut(tmp_path, monkeypatch):
     assert lnk == str(tmp_path / "Model Librarian Gallery.lnk") and os.path.getsize(lnk) > 100 and shortcut.exists()
     prog, args, wd = shortcut.target()
     assert prog.lower().endswith(("pythonw.exe", "python.exe")) and args == "-m mlgallery" and os.path.isdir(os.path.join(wd, "mlgallery"))
+    from mlgallery import winshell
+    assert winshell.read_shortcut(lnk) == winshell.APP_ID  # the window groups under a pin made from it
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the Windows taskbar")
+def test_pinning_the_window_pins_the_gallery(tmp_path):
+    import ctypes
+    from mlgallery import winshell
+    from mlgallery.__main__ import _pin_as_gallery
+    user32 = ctypes.windll.user32
+    user32.CreateWindowExW.restype = ctypes.c_void_p
+    pkg = tmp_path / "Model Librarian Gallery"
+    pkg.mkdir()
+    exe = pkg / "Model Librarian Gallery.exe"
+    exe.write_bytes(b"MZ")
+    for folder, want in ((str(pkg), {"id": winshell.APP_ID, "relaunch": f'"{exe}"', "name": "Model Librarian Gallery", "icon": f"{exe},0"}),
+                         (None, {"id": winshell.APP_ID, "relaunch": None, "name": None, "icon": None})):  # a checkout: nothing to relaunch
+        hwnd = user32.CreateWindowExW(0, "STATIC", "Model Librarian Gallery", 0, 0, 0, 10, 10, None, None, None, None)
+        try:
+            assert winshell.read_window(hwnd)["id"] is None
+            _pin_as_gallery(hwnd, folder)
+            assert winshell.read_window(hwnd) == want  # not "Python": the launcher, by the Gallery's name and icon
+        finally:
+            user32.DestroyWindow(ctypes.c_void_p(hwnd))

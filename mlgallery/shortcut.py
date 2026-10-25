@@ -1,4 +1,5 @@
-"""A Start menu shortcut to the Gallery (made when you ask, from Settings): a normal Windows .lnk with its icon."""
+"""A Start menu shortcut to the Gallery (made when you ask, from Settings): a normal Windows .lnk with its icon, and the
+Gallery's app id, so pinning it from the Start menu and the running window share one taskbar button (winshell.py)."""
 from __future__ import annotations
 
 import os
@@ -45,6 +46,11 @@ def make() -> str:
                        creationflags=0x08000000)
     if r.returncode or not os.path.isfile(lnk):
         raise OSError((r.stderr or "the shortcut wasn't made").strip()[:300])
+    try:  # the window's own app id: it groups under a pin made from this shortcut
+        from .winshell import shortcut_identity
+        shortcut_identity(lnk)
+    except OSError:
+        pass  # still a working shortcut; only pinning it from the Start menu would give a second taskbar button
     return lnk
 
 
