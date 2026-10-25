@@ -626,8 +626,8 @@ async def eagle_read(request):
         lib_path = eagle.library_root(b.get("path"))
     except eagle.EagleError as ex:
         return _err(str(ex), 422)
-    if _EAGLE.get("state") == "reading":
-        return _err("Another Eagle library is being read.", 409)
+    if _EAGLE.get("state") in ("reading", "applying"):
+        return _err("An Eagle library is being read or brought in: wait for it to finish.", 409)
     lib = _lib(request)
     _EAGLE.clear()
     _EAGLE.update(state="reading", path=lib_path, done=0)
@@ -661,19 +661,31 @@ async def eagle_apply(request):
     lib = _lib(request)
     new = b.get("target") == "new"
     made = None
+    _EAGLE.update(state="applying", done=0, total=0, error=None)  # at once: a second click meanwhile is refused, not done twice
     if new:
         path = str(b.get("path") or "")
+        bad = None
         if await asyncio.to_thread(libraries.find, path):
-            return _err("That folder is a library already: open it, then bring the Eagle library into it.", 422)
-        try:
-            made = await asyncio.to_thread(libraries.create, path, b.get("name") or plan["name"])
-        except (ValueError, OSError) as ex:
-            return _err(str(ex), 422)
+            bad = "That folder is a library already: open it, then bring the Eagle library into it."
+        else:
+            try:
+                made = await asyncio.to_thread(libraries.create, path, b.get("name") or plan["name"])
+            except (ValueError, OSError) as ex:
+                bad = str(ex)
+        if bad:
+            _EAGLE["state"] = "ready"
+            return _err(bad, 422)
         work = eagle.for_new_library(plan)
     else:
         work = plan
-    copy_to = int(b["copy_to"]) if not new and b.get("copy_to") and plan["missing"] else None
-    _EAGLE.update(state="applying", done=0, total=len(work["missing"]) if new or copy_to else 0, error=None)  # a second click is refused
+    try:
+        copy_to = int(b["copy_to"]) if not new and b.get("copy_to") and plan["missing"] else None
+    except (TypeError, ValueError):
+        _EAGLE["state"] = "ready"
+        return _err("copy_to: a folder's id", 400)
+    sub = b.get("sub")  # None: "From Eagle - <name>"; "": the library folder itself
+    total = len(work["missing"]) if new or copy_to else 0
+    _EAGLE["total"] = total
 
     def run():
         try:
@@ -688,7 +700,7 @@ async def eagle_apply(request):
                 r = eagle.apply_import(db, work)
                 result = {**r, "copied": copied, "failed": work.get("failed") or [], "library": {"root": root, "name": made["name"]}}
             else:
-                copied = eagle.copy_in(lib.db, work, copy_to, b.get("sub") or None, progress=lambda n: _EAGLE.update(done=n)) if copy_to else 0
+                copied = eagle.copy_in(lib.db, work, copy_to, None if sub is None else str(sub), progress=lambda n: _EAGLE.update(done=n)) if copy_to else 0
                 r = eagle.apply_import(lib.db, work)
                 result = {**r, "copied": copied, "failed": work.get("failed") or []}
                 lib.thumbs.nudge()
@@ -700,7 +712,7 @@ async def eagle_apply(request):
             _EAGLE.clear()
             _EAGLE.update(state="failed", error=str(ex)[:300])
     threading.Thread(target=run, name="eagle-import", daemon=True).start()
-    return web.json_response({"state": "applying", "total": _EAGLE["total"]})
+    return web.json_response({"state": "applying", "total": total})
 
 
 async def eagle_folders(request):
@@ -898,6 +910,8 @@ async def library_new(request):
     bring = {"data": lib.data_dir, "name": lib.name or "this PC's library"} if b.get("bring") else None
     try:
         made = await asyncio.to_thread(libraries.create, str(b.get("path") or ""), b.get("name"), bring)
+        if made["existing"] and bring:  # a library already: the marks come when it next opens
+            await asyncio.to_thread(libraries.update_info, made["root"], bring_from=bring)
     except (ValueError, OSError) as ex:
         return _err(str(ex), 422)
     if not _can_relaunch(request.app):

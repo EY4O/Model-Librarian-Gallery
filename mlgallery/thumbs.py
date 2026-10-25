@@ -293,16 +293,18 @@ class Thumbnails:
             try:
                 with Image.open(cache_path(self.dir, r["fp"], size)) as im:
                     if r["phash"] is None:
-                        hashes.append((phash(im), r["id"]))
+                        hashes.append((phash(im), r["id"], r["fp"]))
                     if not r["colors"]:
-                        sets.append((r["id"], colors.palette(im)))
+                        sets.append((r["id"], r["fp"], colors.palette(im)))
             except (OSError, ValueError):
                 continue
         if hashes or sets:
             with self.db.write() as c:
-                c.executemany("UPDATE files SET phash=? WHERE id=?", hashes)
-                for fid, pal in sets:
-                    colors.store(c, fid, pal)
+                # only for the picture they were worked out from: a file that changed meanwhile gets its own
+                c.executemany("UPDATE files SET phash=? WHERE id=? AND fp=?", hashes)
+                for fid, fp, pal in sets:
+                    if c.execute("SELECT 1 FROM files WHERE id=? AND fp=?", (fid, fp)).fetchone():
+                        colors.store(c, fid, pal)
 
     def backfill_fingerprints(self) -> None:
         """Fingerprints and colour sets for files that had thumbnails before those existed."""

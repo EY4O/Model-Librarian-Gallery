@@ -431,3 +431,110 @@ def test_launcher_inside_a_library_checks_its_locks(tmp_path, home, launcher):
     with open(pkg / "running.lock", "a+"):  # a Gallery from this folder is running (with another library)
         assert run() == "nothing applied"
     assert run() == NEXT
+
+
+# ---------------------------------------------------------------- what a QA pass found
+def test_moved_onto_one_of_its_own_outside_folders(tmp_path, home):
+    root = media_lib(tmp_path / "D" / "Art")
+    libraries.create(str(root))
+    lib = open_lib(root)
+    outside = media_lib(tmp_path / "E" / "Art")
+    with lib.db.write() as c:
+        c.execute("INSERT INTO folders (path, added) VALUES (?, 0)", (str(outside),))
+    shutil.copytree(root, outside, dirs_exist_ok=True)  # the library moved to where that outside folder is
+    assert libraries.rebase(lib.db, str(outside)) == 0  # no crash: the path is taken, so that folder stays put
+    assert sorted(f["path"] for f in lib.folders()) == sorted([str(root), str(outside)])
+
+
+def test_only_your_own_marks_travel_and_undo_survives_gone_files(tmp_path, home):
+    src, src_media = marked_source(tmp_path)
+    ids = ids_by_name(src)
+    with src.db.write() as c:  # what the files' own data gave (a Gallery Info node): the new library reads that itself
+        c.execute("INSERT INTO file_tags (file_id, tag_id, source) VALUES (?, ?, 'workflow')", (ids["2.png"], metadata.tag_id(c, "from-node")))
+        c.execute("INSERT INTO file_tags (file_id, tag_id, source, removed) VALUES (?, ?, 'workflow', 1)", (ids["2.png"], metadata.tag_id(c, "taken-off")))
+        c.execute("INSERT INTO marks (file_id, rating, favorite, source, updated) VALUES (?, 3, 0, 'workflow', 0)", (ids["2.png"],))
+    root = tmp_path / "Drive" / "Gen"
+    shutil.copytree(src_media, root)
+    libraries.create(str(root), bring_from={"data": src.data_dir, "name": "this PC's library"})
+    lib = open_lib(root)
+    scan_all(lib)
+    libraries.bring_when_scanned(lib, str(root))
+    new = ids_by_name(lib)
+    with lib.db.read() as c:
+        tags = {r[0]: r[1] for r in c.execute("SELECT t.name, ft.removed FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.file_id=?", (new["2.png"],))}
+        assert tags == {"taken-off": 1}  # your removal travels; the node's own tag doesn't (the file brings it)
+        assert c.execute("SELECT COUNT(*) FROM marks WHERE file_id=?", (new["2.png"],)).fetchone()[0] == 0
+        op = c.execute("SELECT id FROM ops WHERE kind='carry'").fetchone()[0]
+    with lib.db.write() as c:
+        c.execute("DELETE FROM files WHERE id=?", (new["0.png"],))  # a file gone from the index since
+    fileops.undo(lib.db, op)  # still undoes the rest
+    with lib.db.read() as c:
+        assert c.execute("SELECT COUNT(*) FROM marks").fetchone()[0] == 0 and c.execute("SELECT COUNT(*) FROM characters").fetchone()[0] == 0
+
+
+def test_folder_looks_alone_are_a_step(tmp_path, home):
+    src_media = media_lib(tmp_path / "out")
+    src = Library(str(tmp_path / "src"))
+    with src.db.write() as c:
+        c.execute("INSERT INTO folders (path, added, icon) VALUES (?, 0, 'star')", (str(src_media),))
+    scan_all(src)
+    libraries.create(str(src_media), bring_from={"data": src.data_dir, "name": "src"})
+    lib = open_lib(src_media)
+    scan_all(lib)
+    libraries.bring_when_scanned(lib, str(src_media))
+    assert libraries.info(str(src_media))["brought"]["op"]
+
+
+def test_the_watcher_leaves_the_portable_gallery_out(tmp_path):
+    root = media_lib(tmp_path / "Gen")
+    app = root / "Model Librarian Gallery"
+    (app / "update" / "app.part" / "mlgallery" / "ui").mkdir(parents=True)
+    image(app / "update" / "app.part" / "mlgallery" / "ui" / "icon.png", (32, 32))
+    (app / "Model Librarian Gallery.exe").write_bytes(b"MZ")
+    lib = Library(str(tmp_path / "data"))
+    with lib.db.write() as c:
+        fid = c.execute("INSERT INTO folders (path, added) VALUES (?, 0)", (str(root),)).lastrowid
+    counts = scan.index_files(lib.db, {"id": fid, "path": str(root)}, ["Model Librarian Gallery/update/app.part/mlgallery/ui/icon.png", "sub/0.png"])
+    assert counts["added"] == 1 and list(ids_by_name(lib)) == ["0.png"]
+
+
+def test_two_galleries_keep_each_others_settings(tmp_path):
+    from mlgallery.config import Settings
+    a, b = Settings(str(tmp_path)), Settings(str(tmp_path))  # one PC, two Galleries (two libraries) open
+    a.update({"comfy_url": "http://127.0.0.1:9000"})
+    b.update({"thumb_size": 512})
+    again = Settings(str(tmp_path))
+    assert again.get("comfy_url") == "http://127.0.0.1:9000" and again.get("thumb_size") == 512
+
+
+def test_bring_into_a_folder_that_is_a_library_already(tmp_path, home):
+    lib = Library(str(tmp_path / "data"), str(home))
+    root = media_lib(tmp_path / "Gen")
+    libraries.create(str(root))
+
+    async def fn(c):
+        r = await c.post("/api/libraries/new", headers=H, json={"path": str(root), "bring": True})
+        assert (await r.json())["existing"]
+    run_app(lib, fn)
+    assert libraries.info(str(root))["bring_from"]["data"] == lib.data_dir  # the marks come when it next opens
+
+
+def test_launcher_reads_library_arguments_like_the_gallery(tmp_path, home, launcher):
+    import hashlib
+    from test_update import NEXT, app_zip
+    root = media_lib(tmp_path / "Gen")
+    libraries.create(str(root))
+    pkg = tmp_path / "Elsewhere" / "Model Librarian Gallery"
+    (pkg / "python").mkdir(parents=True)
+    build_portable.make_app(str(pkg / "app"))
+    shutil.copy2(launcher, pkg / "Model Librarian Gallery.exe")
+    b = app_zip()
+    update.stage(str(pkg), b, hashlib.sha256(b).hexdigest(), NEXT)
+    hold = libraries.Lock(libraries.data_dir(str(root)))
+    assert hold.acquire()
+    try:  # --library=...\.mlgallery names the same library as --library ...: its open lock is found
+        r = subprocess.run([str(pkg / "Model Librarian Gallery.exe"), "--apply-update-only", f"--library={root / '.mlgallery'}"],
+                           capture_output=True, text=True, timeout=60)
+        assert r.stdout.strip() == "nothing applied"
+    finally:
+        hold.release()

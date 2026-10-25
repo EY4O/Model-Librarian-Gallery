@@ -140,10 +140,16 @@ def rebase(db, root: str) -> int:
     moved = 0
     if _norm(old) != _norm(root):
         with db.write() as c:
-            for f in c.execute("SELECT id, path FROM folders").fetchall():
+            rows = c.execute("SELECT id, path FROM folders").fetchall()
+            taken = {_norm(f["path"]) for f in rows}
+            for f in rows:
                 if inside(f["path"], old):
                     rel = os.path.relpath(os.path.abspath(f["path"]), os.path.abspath(old))
                     new = os.path.normpath(root if rel == "." else os.path.join(root, rel))
+                    if _norm(new) in taken:
+                        continue  # one of its folders already is that path: this one stays where it was (shown as not reachable)
+                    taken.discard(_norm(f["path"]))
+                    taken.add(_norm(new))
                     c.execute("UPDATE folders SET path=? WHERE id=?", (new, f["id"]))
                     moved += 1
     if info(root).get("root") != root:
@@ -299,8 +305,13 @@ def launch_command(target: list[str], browser: bool = False) -> tuple[list[str],
 def _source(path: str) -> sqlite3.Connection:
     if not os.path.isfile(path):
         raise ValueError("The library to bring marks from isn't there any more.")
-    from pathlib import Path
-    c = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)  # encoded: a # or space in a folder name is a name
+    import urllib.parse
+    p = os.path.abspath(path)
+    if p.startswith("\\\\"):  # \\server\share: opened as a plain path, and only asked, never told (query_only)
+        c = sqlite3.connect(p)
+        c.execute("PRAGMA query_only = 1")
+    else:  # read-only; encoded, so a # or space in a folder name is part of the name
+        c = sqlite3.connect("file:/" + urllib.parse.quote(p.replace(os.sep, "/"), safe="/:") + "?mode=ro", uri=True)
     c.row_factory = sqlite3.Row
     return c
 
@@ -320,10 +331,11 @@ def bring_marks(db, source_db: str, name: str) -> dict:
         sid_to = dict(pairs)
         fp_of = {r["id"]: r["fp"] for r in src.execute("SELECT id, fp FROM files WHERE fp IS NOT NULL")}
         q = lambda sql, ids: [r for ch in _chunks(list(ids)) for r in src.execute(sql % ",".join("?" * len(ch)), ch)]  # noqa: E731
-        s_marks = q("SELECT file_id, rating, favorite, source FROM marks WHERE file_id IN (%s)", sid_to)
-        s_tags = q("SELECT ft.file_id, t.name, ft.source, ft.removed FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.file_id IN (%s)", sid_to)
+        s_marks = q("SELECT file_id, rating, favorite, source FROM marks WHERE source != 'workflow' AND file_id IN (%s)", sid_to)
+        s_tags = q("SELECT ft.file_id, t.name, ft.source, ft.removed FROM file_tags ft JOIN tags t ON t.id=ft.tag_id"
+                   " WHERE (ft.source != 'workflow' OR ft.removed = 1) AND ft.file_id IN (%s)", sid_to)
         s_albums = q("SELECT af.file_id, a.name, a.icon, a.color, a.cover, af.source, af.removed FROM album_files af JOIN albums a ON a.id=af.album_id"
-                     " WHERE af.file_id IN (%s)", sid_to)
+                     " WHERE (af.source != 'workflow' OR af.removed = 1) AND af.file_id IN (%s)", sid_to)
         s_notes = q("SELECT file_id, note, source FROM file_notes WHERE file_id IN (%s)", sid_to)
         s_chars = src.execute("SELECT id, name, aliases, cover, created FROM characters").fetchall()
         s_rules = src.execute("SELECT character_id, kind, value, strength, muted FROM character_rules").fetchall()
@@ -344,7 +356,7 @@ def bring_marks(db, source_db: str, name: str) -> dict:
     with db.write() as c:
         for m in s_marks:
             for fid in here(m["file_id"]):
-                cur = c.execute("SELECT rating, favorite, source FROM marks WHERE file_id=?", (fid,)).fetchone()
+                cur = c.execute("SELECT rating, favorite, source, updated FROM marks WHERE file_id=?", (fid,)).fetchone()
                 if cur and cur["source"] == "user":
                     continue  # yours here win
                 rec["marks"].append({"file_id": fid, "was": dict(cur) if cur else None})
@@ -415,7 +427,7 @@ def bring_marks(db, source_db: str, name: str) -> dict:
         for fid in touched:
             metadata.refresh_search(c, fid)
         files = len({fid for _, ids in pairs for fid in ids})
-        changed = sum(len(rec[k]) for k in ("marks", "tags", "albums", "notes", "decided", "new_characters"))
+        changed = sum(len(rec[k]) for k in ("marks", "tags", "albums", "notes", "decided", "new_characters", "new_albums", "folders"))
         op = fileops.record(c, "carry", f"Brought ratings, tags, albums, characters and notes from {name} ({files:,} file{'s' if files != 1 else ''} matched)",
                             rec) if changed else None
     return {"op": op, "files": files, "ratings": len(rec["marks"]), "tags": len(rec["tags"]), "albums": len(rec["albums"]),
@@ -426,6 +438,9 @@ def undo_bring(db, data: dict) -> dict:
     """Each list backwards, back to how this library was before."""
     from . import metadata
     with db.write() as c:
+        ids = {i["file_id"] for k in ("marks", "tags", "albums", "notes", "decided") for i in data[k]}
+        alive = {r[0] for ch in _chunks(list(ids)) for r in c.execute(f"SELECT id FROM files WHERE id IN ({','.join('?' * len(ch))})", ch)}
+        data = {**data, **{k: [i for i in data[k] if i["file_id"] in alive] for k in ("marks", "tags", "albums", "notes", "decided")}}
         for it in reversed(data["decided"]):
             if it["was"] is None:
                 c.execute("DELETE FROM file_characters WHERE file_id=? AND character_id=?", (it["file_id"], it["character"]))
@@ -462,7 +477,7 @@ def undo_bring(db, data: dict) -> dict:
             else:
                 w = it["was"]
                 c.execute("INSERT OR REPLACE INTO marks (file_id, rating, favorite, source, updated) VALUES (?,?,?,?,?)",
-                          (it["file_id"], w["rating"], w["favorite"], w["source"], time.time()))
+                          (it["file_id"], w["rating"], w["favorite"], w["source"], w.get("updated") or time.time()))
         for fid in data["folders"]:
             c.execute("UPDATE folders SET icon=NULL, color=NULL WHERE id=?", (fid,))
         for fid in {i["file_id"] for k in ("marks", "tags", "albums", "notes") for i in data[k]}:

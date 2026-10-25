@@ -62,7 +62,7 @@ def folder_names(lib: str) -> dict[str, str]:
         for n in nodes or []:
             if not isinstance(n, dict) or not n.get("id"):
                 continue
-            name = f"{prefix}{str(n.get('name') or '').strip()}"
+            name = f"{prefix}{str(n.get('name') or '').strip() or 'Folder'}"
             out[n["id"]] = name
             walk(n.get("children"), name + " / ")
     walk(_read(os.path.join(lib, "metadata.json"), {}).get("folders"))
@@ -90,12 +90,21 @@ _RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f
 def safe_name(name: str, fallback: str = "_") -> str:
     """A name Windows takes as a file or folder name: no \\ / : * ? " < > | or control characters, no trailing
     dot or space, not a device name (CON, NUL, ...), not a hidden dot-name."""
-    s = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", str(name or "")).strip().rstrip(". ").lstrip(".")
+    s = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", str(name or "")).strip().lstrip(".")[:180].rstrip(". ")
     if not s:
         return fallback
     if s.split(".")[0].lower() in _RESERVED:
         s = "_" + s
-    return s[:180]
+    return s
+
+
+def folder_part(name: str) -> str:
+    """safe_name for a folder, and never one the Gallery's own scanner leaves out ($..., *.library, @eaDir, ...):
+    copies in it would never be indexed."""
+    p = safe_name(name, "Folder")
+    while scan.skip_dir(p, True):
+        p = p[:-len(".library")] + "_library" if p.lower().endswith(".library") else "_" + p
+    return p
 
 
 def note_with_url(note: str, url: str) -> str:
@@ -124,6 +133,8 @@ def items(lib: str):
             if not cands:
                 continue
             f = os.path.join(base, d, cands[0])
+        if not name.strip():
+            name = os.path.splitext(os.path.basename(f))[0]
         star = m.get("star")
         yield {"id": m.get("id") or d[:-5], "name": f"{name}.{ext}" if ext else name, "ext": ext, "file": f,
                "tags": [str(t) for t in m.get("tags") or [] if str(t).strip()], "folders": [str(x) for x in m.get("folders") or []],
@@ -196,32 +207,36 @@ def copy_in(db, plan: dict, folder_id: int, sub: str | None = None, progress=Non
         d = c.execute("SELECT id, path, online FROM folders WHERE id=?", (int(folder_id),)).fetchone()
     if not d or not d["online"] or not os.path.isdir(d["path"]):
         raise EagleError("That library folder isn't reachable.")
-    sub = fileops._clean_sub(f"From Eagle - {safe_name(plan['name'])}" if sub is None else sub)
+    base = f"From Eagle - {plan['name']}" if sub is None else str(sub)
+    sub_parts = [folder_part(p) for p in base.replace("\\", "/").split("/") if p.strip()]
     taken: set[str] = set()
     rels, failed = [], []
     for n, it in enumerate(plan["missing"]):
         if progress:
             progress(n)
-        parts = [safe_name(p, "Folder") for p in (it.get("path") or ["Unfiled"])]
-        rel_dir = "/".join(p for p in (sub, *parts) if p)
-        dest = os.path.join(d["path"], *rel_dir.split("/"))
-        os.makedirs(dest, exist_ok=True)
-        stem, ext = os.path.splitext(it["name"])
-        name = fileops._free_name(dest, safe_name(stem, "Untitled") + ext.lower(), taken)
-        target = os.path.join(dest, name)
-        try:
+        target = None
+        try:  # anything going wrong with one item (a path too long, a name taken by a file) leaves that item out, not the rest
+            parts = [*sub_parts, *(folder_part(p) for p in (it.get("path") or ["Unfiled"]))]
+            rel_dir = fileops._real_sub(d["path"], "/".join(parts))  # Art and art are one folder on disk: the index must say which
+            dest = os.path.join(d["path"], *rel_dir.split("/"))
+            os.makedirs(dest, exist_ok=True)
+            stem, ext = os.path.splitext(it["name"])
+            with db.read() as c:  # a name an old record still holds (a missing file) is taken too: it would inherit its marks
+                name = fileops._free_name(dest, safe_name(stem, "Untitled") + ext.lower(), taken, fileops._held(c, d["id"], rel_dir))
+            target = os.path.join(dest, name)
             shutil.copy2(it["file"], target)
             size = os.path.getsize(it["file"])
             if os.path.getsize(target) != size or scan.fingerprint(target, size) != scan.fingerprint(it["file"], size):
                 raise OSError("the copy doesn't match")
-        except OSError:
-            try:
-                os.remove(target)
-            except OSError:
-                pass
+        except (OSError, ValueError):
+            if target:
+                try:
+                    os.remove(target)
+                except OSError:
+                    pass
             failed.append(it["name"])
             continue
-        it["copied_rel"] = f"{rel_dir}/{name}"
+        it["copied_rel"] = f"{rel_dir}/{name}" if rel_dir else name
         rels.append(it["copied_rel"])
     plan["failed"] = failed
     scan.index_files(db, {"id": d["id"], "path": d["path"]}, rels)
@@ -233,11 +248,19 @@ def copy_in(db, plan: dict, folder_id: int, sub: str | None = None, progress=Non
                                                               (d["id"], *part))})
     n = 0
     for it in plan["missing"]:
-        fid = ids.get(it.get("copied_rel"))
+        rel = it.get("copied_rel")
+        fid = ids.get(rel)
         if fid:
             it["file_id"] = fid
             plan["matched"].append(it)
             n += 1
+        elif rel:  # copied but not indexed: never left behind unseen
+            try:
+                os.remove(os.path.join(d["path"], *rel.split("/")))
+            except OSError:
+                pass
+            it.pop("copied_rel")
+            failed.append(it["name"])
     plan["missing"] = [it for it in plan["missing"] if not it.get("file_id")]
     return n
 
@@ -258,6 +281,8 @@ def apply_import(db, plan: dict) -> dict:
                 tagged.append({"file_id": fid, "tag": t, "was": dict(cur) if cur else None})
             for a in it.get("albums") or []:
                 aid = bulk.album_id(c, a[:100])
+                if not aid:
+                    continue
                 cur = c.execute("SELECT source, removed FROM album_files WHERE album_id=? AND file_id=?", (aid, fid)).fetchone()
                 if cur and not cur["removed"]:
                     continue

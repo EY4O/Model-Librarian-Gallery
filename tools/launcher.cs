@@ -37,17 +37,26 @@ static class Launcher
             if (argv[i] == "--apply-update-only") { applyOnly = true; continue; }
             if (argv[i] == "--data" && i + 1 < argv.Length) data = argv[i + 1];
             if (argv[i] == "--library" && i + 1 < argv.Length) library = argv[i + 1];
-            if (argv[i] == "--data" || argv[i] == "--library" || argv[i] == "--local") chosen = true;
+            if (argv[i].StartsWith("--data=")) data = argv[i].Substring(7);
+            if (argv[i].StartsWith("--library=")) library = argv[i].Substring(10);
+            if (argv[i] == "--data" || argv[i] == "--library" || argv[i] == "--local" || argv[i].StartsWith("--data=") || argv[i].StartsWith("--library="))
+                chosen = true;
             rest.Add(argv[i]);
         }
         string parent = Path.GetDirectoryName(pkg);
-        if (!chosen && parent != null && File.Exists(Path.Combine(parent, ".mlgallery", "library.json")))
+        if (!chosen && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MLG_DATA")) && parent != null
+            && File.Exists(Path.Combine(parent, ".mlgallery", "library.json")))
         {
-            library = parent;  // kept inside a library: open that one
+            library = parent;  // kept inside a library: open that one (MLG_DATA, like any choice of yours, comes first)
             rest.InsertRange(0, new[] { "--library", parent });
         }
         if (library != null)
+        {
+            library = Path.GetFullPath(Path.Combine(pkg, library)).TrimEnd('\\');  // a relative one as the Gallery reads it (from this folder)
+            if (string.Equals(Path.GetFileName(library), ".mlgallery", StringComparison.OrdinalIgnoreCase))
+                library = Path.GetDirectoryName(library);  // the library's .mlgallery folder itself, as the Gallery also takes it
             data = Path.Combine(library, ".mlgallery");
+        }
         data = data ?? Environment.GetEnvironmentVariable("MLG_DATA");
         if (string.IsNullOrEmpty(data))
             data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppName);

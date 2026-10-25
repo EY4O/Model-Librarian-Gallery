@@ -52,7 +52,8 @@ def test_near_twins_are_one_colour(tmp_path):
 
 @pytest.mark.parametrize("rgb,name", [((0, 0, 0), "black"), ((255, 255, 255), "white"), ((128, 128, 128), "gray"), ((230, 30, 30), "red"),
                                       ((250, 150, 20), "orange"), ((240, 220, 40), "yellow"), ((40, 180, 60), "green"), ((30, 200, 210), "cyan"),
-                                      ((30, 80, 230), "blue"), ((140, 40, 200), "purple"), ((240, 80, 170), "pink"), ((120, 70, 30), "brown")])
+                                      ((30, 80, 230), "blue"), ((140, 40, 200), "purple"), ((240, 80, 170), "pink"), ((120, 70, 30), "brown"),
+                                      ((255, 192, 203), "pink"), ((200, 30, 50), "red")])
 def test_families(rgb, name):
     assert colors.family(rgb) == name
 

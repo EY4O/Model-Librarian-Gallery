@@ -88,6 +88,8 @@ def family(rgb) -> str:
     deg = h * 360
     if 12 <= deg < 45 and v < 0.62:
         return "brown"
+    if (deg < 12 or deg >= 330) and s < 0.45 and v > 0.7:
+        return "pink"  # a light, soft red: #ffc0cb
     if deg < 12 or deg >= 345:
         return "red"
     if deg < 42:

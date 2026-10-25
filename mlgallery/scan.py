@@ -208,6 +208,18 @@ def index_files(db, folder: dict, rels: list[str], *, skip_eagle: bool = True) -
     now = time.time()
     counts = {"seen": 0, "added": 0, "changed": 0, "moved": 0, "missing": 0, "unchanged": 0, "errors": 0, "offline": False}
     rels = [r for r in dict.fromkeys(rels) if kind_of(r) and not any(skip_dir(p, skip_eagle) for p in r.split("/")[:-1])]
+    app_dirs: dict[str, bool] = {}
+
+    def in_app(rel: str) -> bool:  # inside the portable Gallery kept in a library (its own icons, an update being unpacked)
+        parts = rel.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            d = "/".join(parts[:i])
+            if d not in app_dirs:
+                app_dirs[d] = os.path.isfile(os.path.join(root, *parts[:i], APP_EXE))
+            if app_dirs[d]:
+                return True
+        return False
+    rels = [r for r in rels if not in_app(r)]
     if not rels:
         return counts
     touched: list[int] = []

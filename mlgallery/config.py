@@ -72,6 +72,13 @@ class Settings:
 
     def update(self, patch: dict) -> dict:
         with self._lock:
+            try:  # another Gallery on this PC (another library) may have changed other settings meanwhile: keep those
+                with open(self.path, encoding="utf-8") as f:
+                    stored = json.load(f)
+                if isinstance(stored, dict):
+                    self._values.update({k: v for k, v in stored.items() if k in DEFAULTS})
+            except (OSError, ValueError):
+                pass
             for k, v in patch.items():
                 if k in DEFAULTS and isinstance(v, type(DEFAULTS[k])):
                     self._values[k] = v

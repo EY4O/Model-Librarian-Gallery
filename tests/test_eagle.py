@@ -242,6 +242,71 @@ def test_bring_it_in_as_a_new_library(lib, tmp_path):
     assert scan.scan_folder(new.db, new.folders()[0])["unchanged"] == 5
 
 
+def test_awkward_folders_and_names(lib, tmp_path):
+    """What a QA pass found: blank and odd folder names, two folders differing only in case, long names, a nameless item,
+    an old record still holding a name. Every copy ends up indexed, in a folder the Gallery reads, with its marks."""
+    media = tmp_path / "media"
+    media.mkdir()
+    f = lib.add_folder(str(media))
+    (media / "Art").mkdir()
+    image(media / "Art" / "kept.png", (40, 40), seed=30)  # an old record at that name, its file then gone
+    scan.scan_folder(lib.db, f)
+    os.remove(media / "Art" / "kept.png")
+    scan.scan_folder(lib.db, f)
+    long_name = "L" * 178 + ". tail"
+    eag = make_eagle(tmp_path / "eagle", [
+        {"id": "C1", "file": "a.png", "seed": 21, "folders": ["blank"], "tags": ["t"]},
+        {"id": "C2", "file": "b.png", "seed": 22, "folders": ["cash"]},
+        {"id": "C3", "file": "c.png", "seed": 23, "folders": ["lib"]},
+        {"id": "C4", "file": "d.png", "seed": 24, "folders": ["art"], "eagle_name": "kept"},
+        {"id": "C5", "file": "e.png", "seed": 25, "folders": ["long"]},
+        {"id": "C6", "file": "f.png", "seed": 26, "eagle_name": ""},
+    ], [{"id": "blank", "name": "  ", "children": []}, {"id": "cash", "name": "$ cash", "children": []},
+        {"id": "lib", "name": "refs.library", "children": []}, {"id": "art", "name": "art", "children": []},
+        {"id": "long", "name": long_name, "children": []}])
+    plan = eagle.plan_import(lib.db, str(eag))
+    assert eagle.copy_in(lib.db, plan, f["id"], "") == 6 and plan["failed"] == []
+    r = eagle.apply_import(lib.db, plan)  # a blank folder name used to stop it here, after copying
+    assert r["files"] == 6
+    got = sorted(x["rel"] for x in (dict(row) for row in lib.db.connect().execute("SELECT rel FROM files WHERE missing=0")))
+    assert got == sorted(["Folder/a.png", "_$ cash/b.png", "refs_library/c.png", "Art/kept (2).png", f"{'L' * 178}/e.png", "Unfiled/f.png"])
+    # a rescan finds every copy where the index says it is: nothing missing, nothing new
+    counts = scan.scan_folder(lib.db, lib.folders()[0])
+    assert counts["missing"] == 0 and counts["added"] == 0
+    assert {a["name"] for a in lib.albums()} >= {"Folder", "$ cash", "refs.library", "art"}
+
+
+def test_an_empty_folder_box_means_the_folder_itself(lib, tmp_path):
+    from aiohttp.test_utils import TestClient, TestServer
+    from mlgallery.server import _EAGLE, make_app
+    media = tmp_path / "media"
+    media.mkdir()
+    f = lib.add_folder(str(media))
+    _EAGLE.clear()
+    _EAGLE.update(state="ready", plan=eagle.plan_import(lib.db, str(leaving(tmp_path))), summary={})
+    H = {"X-MLG-Token": "t"}
+
+    async def go():
+        c = TestClient(TestServer(make_app(lib, "t"), host="127.0.0.1"))
+        await c.start_server()
+        try:
+            r = await c.post("/api/eagle/apply", headers=H, json={"target": "here", "copy_to": f["id"], "sub": ""})
+            assert r.status == 200
+            # while it runs, reading another library is refused instead of wiping its state
+            assert (await c.post("/api/eagle/read", headers=H, json={"path": str(tmp_path / "eagle")})).status in (409, 200)
+            for _ in range(200):
+                st = await (await c.get("/api/eagle/read", headers=H)).json()
+                if st["state"] in ("done", "failed"):
+                    return st
+                await asyncio.sleep(0.05)
+        finally:
+            await c.close()
+    st = asyncio.run(go())
+    _EAGLE.clear()
+    assert st["state"] == "done" and st["result"]["copied"] == 5
+    assert (media / "Sample" / "Estinien.jpg").is_file() and not (media / "From Eagle - Testing Library").exists()
+
+
 def test_a_folder_that_is_a_library_already(lib, tmp_path):
     from aiohttp.test_utils import TestClient, TestServer
     from mlgallery import libraries

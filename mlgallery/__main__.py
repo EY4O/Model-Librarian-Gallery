@@ -101,7 +101,10 @@ def main(argv=None) -> int:
 
     lib = Library(data, pick["home"], root)
     lib.note = pick["note"]
-    libraries.prepare(lib)  # opened from another drive letter or place: its folders follow it
+    try:
+        libraries.prepare(lib)  # opened from another drive letter or place: its folders follow it
+    except Exception as ex:  # it still opens, and says so
+        lib.note = f"This library's folders couldn't be brought up to where it is now ({ex}): some may show as not reachable."
     if pick["remember"]:
         libraries.remember(root)
     # how to open this same library again (Restart now, after an update)
