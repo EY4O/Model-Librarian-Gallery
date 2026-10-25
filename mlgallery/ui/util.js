@@ -49,6 +49,12 @@ export function h(tag, props, ...kids) {
 export const SVG = {
   star: '<path d="M12 3.2l2.6 5.5 6 .8-4.4 4.2 1.1 6-5.3-2.9-5.3 2.9 1.1-6L3.4 9.5l6-.8Z"/>',
   more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+  twist: '<path d="m9 6 6 6-6 6"/>',
+  back: '<path d="m15 6-6 6 6 6"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>',
+  swipe: '<rect x="7" y="4" width="10" height="16" rx="2"/><path d="M3.5 8v8M20.5 8v8"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
   view: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.1-2.4 3.6M12 17h.01"/>',
   send: '<path d="M4 12 20 4l-6 16-3-7Z"/><path d="m11 13 9-9"/>',
@@ -350,3 +356,41 @@ export function fmtLeft(s) {
 
 // the long job of yours under way, if its dialog is hidden: what the status bar shows it with, and how to open it again
 export const job = { reopen: null, following: false, told: false };
+
+// ---------------------------------------------------------------- folders and albums as trees (the sidebar, the phone's Browse)
+// albums nest by name: "Trips / Coast" is in Trips (a parent that isn't an album itself is only their name)
+export const albumName = (n) => String(n || "").split("/").map((p) => p.trim()).filter(Boolean).join(" / ");
+export const sameName = (a, b) => albumName(a).toLowerCase() === albumName(b).toLowerCase();
+export const leafName = (n) => albumName(n).split(" / ").pop();
+export const parentName = (n) => albumName(n).split(" / ").slice(0, -1).join(" / ");
+export const inside = (n, of) => albumName(n).toLowerCase().startsWith(albumName(of).toLowerCase() + " / ");
+
+export function albumTree(albums) {
+  const root = { kids: new Map() };
+  for (const a of albums) {
+    const parts = albumName(a.name).split(" / ");
+    let node = root;
+    parts.forEach((p, i) => {
+      const k = p.toLowerCase();
+      if (!node.kids.has(k)) node.kids.set(k, { name: p, path: parts.slice(0, i + 1).join(" / "), album: null, kids: new Map() });
+      node = node.kids.get(k);
+    });
+    node.album = a;
+  }
+  return root;
+}
+
+// a library folder's subfolders ([{rel, n}], n counting the ones inside too) as a tree
+export function dirTree(list) {
+  const root = { kids: new Map() };
+  for (const d of list) {
+    let node = root;
+    const parts = d.rel.split("/");
+    parts.forEach((p, i) => {
+      if (!node.kids.has(p)) node.kids.set(p, { name: p, rel: parts.slice(0, i + 1).join("/"), n: 0, kids: new Map() });
+      node = node.kids.get(p);
+    });
+    node.n = d.n;
+  }
+  return root;
+}

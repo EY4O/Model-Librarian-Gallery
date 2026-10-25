@@ -1,17 +1,17 @@
-"""Changes to many files at once - rating, favourite, tags, albums, the artist - each recorded so it can be undone."""
+"""Changes to many files at once - rating, favourite, tags, albums, characters, the artist - each recorded so it can be undone."""
 from __future__ import annotations
 
 import time
 
 from . import characters as chars
-from . import credits, fileops, metadata
+from . import credits, fileops, metadata, search
 
 MAX = fileops.MAX_ITEMS
 
 
 def album_id(c, name: str, create: bool = True) -> int | None:
     """The album of that name (made if there's none); None for a smart album: its search decides what's in it."""
-    name = str(name or "").strip()[:100]
+    name = search.album_name(name)
     if not name:
         return None
     r = c.execute("SELECT id, query FROM albums WHERE name=? COLLATE NOCASE", (name,)).fetchone()
@@ -73,7 +73,7 @@ def apply(db, ids, action: str, value=None) -> dict:
             c.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM file_tags)")
             op = fileops.record(c, "tags", f"{'Tagged' if action == 'tag' else 'Untagged'} {files} {', '.join(names)}", {"action": action, "items": data})
         elif action in ("album", "unalbum"):
-            if c.execute("SELECT 1 FROM albums WHERE name=? COLLATE NOCASE AND query IS NOT NULL", (str(value or "").strip(),)).fetchone():
+            if c.execute("SELECT 1 FROM albums WHERE name=? COLLATE NOCASE AND query IS NOT NULL", (search.album_name(value),)).fetchone():
                 raise fileops.OpError("That's a smart album: it holds what its search finds. Change its search instead.")
             aid = album_id(c, value, create=action == "album")
             if not aid:
@@ -96,6 +96,21 @@ def apply(db, ids, action: str, value=None) -> dict:
             name = c.execute("SELECT name FROM albums WHERE id=?", (aid,)).fetchone()[0]
             op = fileops.record(c, "albums", f"{'Added' if action == 'album' else 'Took'} {files} {'to' if action == 'album' else 'out of'} {name}",
                                 {"action": action, "album": aid, "items": data})
+        elif action == "character":  # these are that character (or person): confirmed, as a yes in To review is
+            cid = chars.find(c, value)
+            if not cid:
+                raise fileops.OpError("Which character?")
+            data = []
+            now = time.time()
+            for i in ids:
+                cur = c.execute("SELECT state, source, at FROM file_characters WHERE file_id=? AND character_id=?", (i, cid)).fetchone()
+                if cur and cur["state"] == "confirmed":
+                    continue
+                c.execute("INSERT INTO file_characters (file_id, character_id, state, source, at) VALUES (?,?, 'confirmed', 'user', ?)"
+                          " ON CONFLICT (file_id, character_id) DO UPDATE SET state='confirmed', source='user', at=excluded.at", (i, cid, now))
+                data.append({"file_id": i, "was": dict(cur) if cur else None})
+            name = c.execute("SELECT name FROM characters WHERE id=?", (cid,)).fetchone()[0]
+            op = fileops.record(c, "characters", f"Added {files} to {name}", {"character": cid, "items": data})
         elif action == "artist":  # a name; '' for no artist; None for what was found in them
             if value is not None and not isinstance(value, str):
                 raise fileops.OpError("The artist is a name.")
@@ -111,7 +126,7 @@ def apply(db, ids, action: str, value=None) -> dict:
             op = fileops.record(c, "credits", what, [{"file_id": i, "was": prev.get(i)} for i in ids])
         else:
             raise fileops.OpError(f"Unknown action {action}")
-    if action == "artist":
+    if action in ("artist", "character"):
         db.user_change()
     return {"op": op, "count": len(ids)}
 
@@ -151,6 +166,20 @@ def undo(db, kind: str, data) -> dict:
                 else:
                     c.execute("INSERT OR REPLACE INTO album_files (album_id, file_id, source, removed, added) VALUES (?,?,?,?,?)",
                               (aid, it["file_id"], was["source"], was["removed"], time.time()))
+            return {"undone": len(data["items"])}
+        if kind == "characters":
+            cid = data["character"]
+            if not c.execute("SELECT 1 FROM characters WHERE id=?", (cid,)).fetchone():
+                return {"undone": 0}
+            for it in data["items"]:
+                was = it["was"]
+                if was is None:  # not theirs before: what its rules say again
+                    c.execute("DELETE FROM file_characters WHERE file_id=? AND character_id=?", (it["file_id"], cid))
+                    if c.execute("SELECT 1 FROM files WHERE id=?", (it["file_id"],)).fetchone():
+                        chars.match_file(c, it["file_id"])
+                else:
+                    c.execute("UPDATE file_characters SET state=?, source=?, at=? WHERE file_id=? AND character_id=?",
+                              (was["state"], was["source"], was["at"], it["file_id"], cid))
             return {"undone": len(data["items"])}
         if kind == "credits":
             for it in data:

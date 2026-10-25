@@ -134,6 +134,11 @@ def match_file(c, file_id: int) -> None:
     _workflow_names_for_file(c, file_id)
 
 
+def find(c, name) -> int | None:
+    """The character (or person) called this, by name or another name."""
+    return _names(c).get(norm(name)) if isinstance(name, str) and name.strip() else None
+
+
 def _names(c) -> dict[str, int]:
     """Every name and alias (lower case) -> its character."""
     out = {}

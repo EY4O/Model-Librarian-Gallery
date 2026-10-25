@@ -122,6 +122,7 @@ A LoRA alone is a strong match. A tag alone is weaker and waits in the review li
 - A move shows a preview with the count, size and destination, and only moves into your library folders (so a file keeps its ratings, tags and characters). Moves across drives copy, check the size and fingerprint, then remove the original. Every operation is logged with **Undo** (Ctrl+Z, or History).
 - Delete moves files to the Gallery's Trash, a hidden `.mlg-trash` folder in the file's own library folder, so it's instant and **Put back** restores it. Emptying the Trash sends the files to the Windows Recycle Bin.
 - The database is backed up daily (the last 7 kept).
+- The server listens on 127.0.0.1 with a token per start. **Phone and tablet** (off by default) adds a second listener for paired devices only, answered only from private addresses, and only for what a device may do (an allowlist: no Settings, folders, moves, renames or emptying).
 - It never asks for, stores or sends any keys.
 
 ## Performance targets
@@ -184,6 +185,21 @@ The portable folder can bring itself up to date from the repository's GitHub Rel
 - **Checking:** with the switch on, the Gallery asks GitHub's API for the latest release once a day. Nothing is sent but the request itself.
 - **Installing:** it downloads only `app\` (about 1 MB), checks its SHA-256, and unpacks it beside the running one. `Model Librarian Gallery.exe` swaps it in at the next start, while no Gallery is open; **Restart now** does that straight away.
 - **Limits:** a release that needs other packages isn't installed this way; it points to the full portable download instead. A checkout updates with `git pull`.
+
+## Phone and tablet
+
+The library on a phone or tablet, on the home network or Tailscale (`remote.py`, `ui/phone.*`).
+
+- **Off by default.** Turned on, a second aiohttp site joins the same runner on `0.0.0.0:<port>` (8766 unless changed: it stays the same so a paired device's address does). Requests from 127.0.0.1 go through the usual token and Host checks; any other is a device.
+- **Who's answered:** only private addresses (10/8, 172.16/12, 192.168/16, Tailscale's 100.64/10, link-local, fc00::/7). Anything else gets a 403 whatever it carries.
+- **Pairing:** Settings shows a QR code of `http://<address>:<port>/pair?c=<code>` (and the code to type on the page an unpaired device sees). A code is 8 letters without look-alikes, lasts 10 minutes and pairs one device. The device gets `id.secret` in an HttpOnly, SameSite=Strict cookie; settings keep the id, a name from its user agent, a SHA-256 of the secret, and when it was added and last seen. Removing it in Settings locks it out at once.
+- **What a device may do:** an allowlist of method and path (`remote.ALLOWED`): reading, marks, tags, notes, the artist, characters, albums through bulk, the Trash and putting back, undo, and Swipe. API calls also need the `X-MLG-Token` header (any value), which a page elsewhere can't send without a preflight; only the pictures themselves (`/api/thumb`, `/api/file`) come without it, as `<img>` and `<video>` fetch them.
+- **The phone layout:** `/` for a device (and `/m?t=<token>` on the PC, to see it) serves `phone.html` with `device` as its token, never the PC's. It reuses `util.js`, `organize.js`'s dialogs and `swipe.js`. The QR code is drawn by `qr.js` (byte mode, error correction M, versions 1-10), checked module for module against segno.
+
+## Nested folders and albums
+
+- A folder's subfolders come from where its files are (`/api/folders/<id>/dirs`, counting what's deeper too). `path:"a/b"` searches one, with what's inside it.
+- Albums nest by name: `Trips / Coast` is inside `Trips` (a `/` typed in a name nests it; Eagle's folders come in so). `album:trips` holds Trips and every album inside it, smart ones included; a name that's only a parent works the same. Moving or renaming one moves the albums inside it with it, never onto a name that's taken nor into itself.
 
 ## Decisions
 

@@ -181,7 +181,7 @@ def test_layout_names_links_and_colours(lib, tmp_path):
     assert r["files"] == 5
     ids = {x["name"]: x["id"] for x in lib.files()["items"]}
     two = lib.info(ids["708952787_n.jpg"])
-    assert {a["name"] for a in two["albums"]} == {"Sample / Stola", 'What? A "folder": yes'} and two["rating"] == 5  # every folder an album too
+    assert {a["name"] for a in two["albums"]} == {"Sample / Stola", "What? A 'folder': yes"} and two["rating"] == 5  # every folder an album too (a " as ': searches quote names with ")
     assert two["note"]["note"] == "https://example.com/post/2"  # a link alone is the note
     assert lib.info(ids["708547164_n.jpg"])["note"]["note"] == "Estinien is cool\nhttps://example.com/post/3"  # its own line, at the end
     one = lib.info(ids["Estinien.jpg"])

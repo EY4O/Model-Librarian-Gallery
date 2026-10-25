@@ -16,6 +16,7 @@ import sqlite3
 from aiohttp import web
 
 from . import APP_NAME, VERSION
+from . import remote
 from .library import Library
 from .update import Updater
 
@@ -38,6 +39,9 @@ UPDATER = web.AppKey("updater", Updater)
 QUIT = web.AppKey("quit", object)
 RELAUNCH = web.AppKey("relaunch", object)
 DAILY = web.AppKey("daily", object)
+DEVICES = web.AppKey("devices", remote.Devices)
+RUNNER = web.AppKey("runner", object)      # the server's runner, for the second site (phones) to join
+REMOTE = web.AppKey("remote_site", object)  # that site, while it runs
 
 
 def _err(msg: str, status: int = 400) -> web.Response:
@@ -48,13 +52,22 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     """The aiohttp application. `pick_folder()`: the window's folder dialog, when there is one; `quit()` closes the
     Gallery and `relaunch(args)` starts another one (switching libraries, Restart now), when it can."""
     token = token or secrets.token_urlsafe(24)
-    app = web.Application(middlewares=[_guard], client_max_size=4 * 1024 * 1024)
+    app = web.Application(middlewares=[_guard], client_max_size=4 * 1024 * 1024)  # (_guard: this PC, or a paired device)
     app[LIB], app[TOKEN], app[PICK], app[QUIT], app[RELAUNCH] = lib, token, pick_folder, quit, relaunch
     app[UPDATER] = Updater(lib.home, lib.settings)
+    app[DEVICES] = remote.Devices(lib.settings)
+    app[REMOTE] = None
     app.on_startup.append(_start_daily)
     app.on_cleanup.append(_stop_daily)
     r = app.router
     r.add_get("/", index)
+    r.add_get("/m", phone_page)
+    r.add_get("/pair", pair)
+    r.add_get("/api/remote", remote_get)
+    r.add_post("/api/remote", remote_set)
+    r.add_post("/api/remote/code", remote_code)
+    r.add_post("/api/remote/forget", remote_forget)
+    r.add_post("/api/remote/rename", remote_rename)
     r.add_static("/ui/", UI_DIR, show_index=False)
     r.add_get("/api/status", status)
     r.add_post("/api/library/kind", library_kind)
@@ -64,6 +77,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_delete("/api/folders/{fid}", remove_folder)
     r.add_post("/api/folders/{fid}/scan", scan_folder)
     r.add_post("/api/folders/{fid}/look", folder_look)
+    r.add_get("/api/folders/{fid}/dirs", folder_dirs)
     r.add_post("/api/albums/{aid}/look", album_look)
     r.add_get("/api/shapes", shapes)
     r.add_post("/api/scan", scan_all)
@@ -115,6 +129,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_post("/api/ops/{oid}/undo", undo)
     r.add_get("/api/albums", albums)
     r.add_post("/api/albums", album_create)
+    r.add_post("/api/albums/move", album_move)
     r.add_post("/api/albums/{aid}", album_update)
     r.add_delete("/api/albums/{aid}", album_delete)
     r.add_get("/api/duplicates", duplicates)
@@ -151,8 +166,18 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     return app
 
 
+def _peer(request) -> str:
+    return request.remote or ""
+
+
+def _is_local(request) -> bool:
+    return _peer(request) in ("127.0.0.1", "::1")
+
+
 @web.middleware
 async def _guard(request: web.Request, handler):
+    if not _is_local(request):  # another device: a paired phone or tablet on a private network, or nothing
+        return await _guard_device(request, handler)
     host = (request.host or "").rsplit(":", 1)[0].strip("[]").lower()
     if host not in ("127.0.0.1", "localhost"):
         return _err("Only this PC can use the Gallery.", 403)
@@ -160,6 +185,43 @@ async def _guard(request: web.Request, handler):
         given = request.headers.get("X-MLG-Token") or request.query.get("t") or ""
         if not secrets.compare_digest(given, request.app[TOKEN]):
             return _err("Open the Gallery from its own window.", 403)
+    return await _run(request, handler)
+
+
+async def _guard_device(request: web.Request, handler):
+    """A phone or tablet: only while Phone and tablet is on, only on a private network, only a paired device (but for
+    pairing itself), and only what a device may do (remote.ALLOWED). Its API requests carry a header a web page
+    elsewhere can't send without asking first, and the cookie is never sent from another site: no other page can act for it."""
+    lib = _lib(request)
+    lib.settings.fresh()  # (turned off in another Gallery on this PC: off here too)
+    if not lib.settings.get("remote") or not remote.private(_peer(request)):
+        return web.Response(status=403, text="Not here.")
+    if request.path == "/pair":
+        return await _run(request, handler)
+    device = request.app[DEVICES].check(request.cookies.get(remote.COOKIE))
+    if not device:
+        return web.Response(status=403, content_type="text/html", text=_PAIR_PAGE.format(app=APP_NAME, title="This device isn't paired",
+                            text="On the PC: Settings, Phone and tablet, Pair a device. Scan its QR code with this device, or type its code here."))
+    path = getattr(request.rel_url, "path_safe", None) or request.path  # (as the router reads it: an encoded / stays encoded)
+    if path.startswith("/api/"):
+        picture = request.method == "GET" and remote.MEDIA.fullmatch(path)
+        if not (request.headers.get("X-MLG-Token") or picture) or not remote.allowed(request.method, path):
+            return _err("Not from a phone or tablet: do that on the PC.", 403)
+    elif not (path in ("/", "/m") or path.startswith("/ui/")):
+        return web.Response(status=404)
+    return await _run(request, handler)
+
+
+# what an unpaired device sees: how to pair, and a box for the code (sent to /pair, as the QR code's link does)
+_PAIR_PAGE = ("<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{app}</title>"
+              "<body style='font:16px/1.5 system-ui;background:#1c1c1c;color:#eee;padding:24px;max-width:520px;margin:auto'>"
+              "<h2 style='font-weight:600'>{title}</h2><p>{text}</p><form action='/pair' method='get' style='display:flex;gap:8px'>"
+              "<input name='c' placeholder='ABCD-2345' autocapitalize='characters' autocomplete='off' aria-label='Code' "
+              "style='flex:1;font:inherit;padding:10px 12px;border-radius:10px;border:1px solid #444;background:#2a2a2a;color:#eee;letter-spacing:.1em'>"
+              "<button style='font:inherit;padding:10px 16px;border-radius:10px;border:0;background:#8b7cf6;color:#fff'>Pair</button></form>")
+
+
+async def _run(request: web.Request, handler):
     try:
         resp = await handler(request)
     except (ValueError, TypeError, OverflowError, sqlite3.IntegrityError) as ex:
@@ -177,12 +239,122 @@ async def _guard(request: web.Request, handler):
 
 
 async def index(request: web.Request):
+    if not _is_local(request):
+        return await phone_page(request)  # (a paired device: the phone layout)
     if not secrets.compare_digest(request.query.get("t", ""), request.app[TOKEN]):
         return web.Response(text=f"<!doctype html><title>{APP_NAME}</title><p>Open the Gallery from its own window.", content_type="text/html", status=403)
     with open(os.path.join(UI_DIR, "index.html"), encoding="utf-8") as f:
         html = f.read()
     html = html.replace("{{TOKEN}}", request.app[TOKEN]).replace("{{VERSION}}", VERSION).replace("{{APP}}", APP_NAME)
     return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+async def phone_page(request: web.Request):
+    """The layout made for phones (ui/phone.html): a paired device's, and on the PC at /m?t=<token> to see it."""
+    local = _is_local(request)
+    if local and not secrets.compare_digest(request.query.get("t", ""), request.app[TOKEN]):
+        return web.Response(text=f"<!doctype html><title>{APP_NAME}</title><p>Open the Gallery from its own window.", content_type="text/html", status=403)
+    with open(os.path.join(UI_DIR, "phone.html"), encoding="utf-8") as f:
+        html = f.read()
+    html = html.replace("{{TOKEN}}", request.app[TOKEN] if local else "device").replace("{{VERSION}}", VERSION).replace("{{APP}}", APP_NAME)
+    return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+async def pair(request: web.Request):
+    """A device opening the pairing address (the QR code): remembered, with a key in a cookie only it sends."""
+    if _is_local(request):
+        return web.Response(status=404)
+    key = request.app[DEVICES].pair(request.query.get("c", ""), request.headers.get("User-Agent", ""))
+    if not key:
+        return web.Response(status=403, content_type="text/html", text=_PAIR_PAGE.format(app=APP_NAME, title="That code didn't work",
+                            text="A code lasts 10 minutes and pairs one device. On the PC: Settings, Phone and tablet, Pair a device, for a new one."))
+    resp = web.Response(status=302, headers={"Location": "/"})
+    resp.set_cookie(remote.COOKIE, key, max_age=10 * 365 * 86400, httponly=True, samesite="Strict", path="/")
+    return resp
+
+
+# ---------------------------------------------------------------- Phone and tablet, from the PC's Settings
+async def remote_start(app) -> str | None:
+    """Listen for paired devices (on every network: only private addresses are answered). -> why it couldn't, or None."""
+    if app[REMOTE] or not app.get(RUNNER):
+        return None
+    lib = app[LIB]
+    port = int(lib.settings.get("remote_port") or remote.PORT)
+    site = web.TCPSite(app[RUNNER], os.environ.get("MLG_REMOTE_HOST") or "0.0.0.0", port)  # (MLG_REMOTE_HOST: the tests keep it on 127.0.0.1)
+    try:
+        await site.start()
+    except OSError as ex:
+        return f"Port {port} is taken ({ex.strerror or ex}): pick another in Settings."
+    app[REMOTE] = site
+    return None
+
+
+async def remote_stop(app) -> None:
+    site, app[REMOTE] = app[REMOTE], None
+    if site:
+        await site.stop()
+
+
+def _remote_view(request) -> dict:
+    app, lib = request.app, _lib(request)
+    port = int(lib.settings.get("remote_port") or remote.PORT)
+    return {"on": bool(lib.settings.get("remote")), "running": bool(app[REMOTE]), "port": port, "devices": app[DEVICES].list(),
+            "addresses": [dict(a, url=f"http://{a['ip']}:{port}/") for a in remote.addresses()]}
+
+
+async def remote_get(request):
+    return web.json_response(_remote_view(request))
+
+
+async def remote_set(request):
+    """{on: true|false, port}: listen for paired devices, or stop."""
+    b = await _body(request)
+    lib, app = _lib(request), request.app
+    patch = {}
+    if "port" in b:
+        try:
+            port = int(b["port"])
+        except (TypeError, ValueError):
+            return _err("A port is a number, like 8766.", 422)
+        if not 1024 <= port <= 65535:
+            return _err("A port is between 1024 and 65535.", 422)
+        patch["remote_port"] = port
+    if isinstance(b.get("on"), bool):
+        patch["remote"] = b["on"]
+    await asyncio.to_thread(lib.settings.update, patch)
+    if app[REMOTE] and ("remote_port" in patch or patch.get("remote") is False):
+        await remote_stop(app)
+    if lib.settings.get("remote"):
+        why = await remote_start(app)
+        if why:
+            await asyncio.to_thread(lib.settings.update, {"remote": False})
+            return _err(why, 409)
+    return web.json_response(_remote_view(request))
+
+
+async def remote_code(request):
+    """A pairing code (10 minutes, one device), and the addresses to open with it (for the QR code)."""
+    if not _lib(request).settings.get("remote") or not request.app[REMOTE]:
+        return _err("Turn Phone and tablet on first.", 409)
+    code = request.app[DEVICES].new_code()
+    view = _remote_view(request)
+    return web.json_response({**view, "code": code, "minutes": remote.CODE_FOR // 60,
+                              "pair": [f"{a['url']}pair?c={code}" for a in view["addresses"]]})
+
+
+async def remote_forget(request):
+    b = await _body(request)
+    ok = await asyncio.to_thread(request.app[DEVICES].forget, str(b.get("id") or ""))
+    return web.json_response(_remote_view(request)) if ok else _err("not found", 404)
+
+
+async def remote_rename(request):
+    b = await _body(request)
+    try:
+        ok = await asyncio.to_thread(request.app[DEVICES].rename, str(b.get("id") or ""), b.get("name"))
+    except ValueError as ex:
+        return _err(str(ex), 422)
+    return web.json_response(_remote_view(request)) if ok else _err("not found", 404)
 
 
 async def _body(request: web.Request) -> dict:
@@ -734,7 +906,19 @@ async def empty(request, b):
 @_op
 async def bulk_op(request, b):
     from . import bulk
-    return await asyncio.to_thread(bulk.apply, _lib(request).db, await _ids(request, b), str(b.get("action")), b.get("value"))
+    from . import characters as chars
+    lib = _lib(request)
+    if b.get("action") == "character" and isinstance(b.get("value"), str) and b["value"].strip():  # a new name: made first
+        def known():
+            with lib.db.read() as c:
+                return chars.find(c, b["value"])
+        if not await asyncio.to_thread(known):
+            try:
+                await asyncio.to_thread(lib.character_save, None, b["value"])
+            except ValueError as ex:
+                from .fileops import OpError
+                raise OpError(str(ex))
+    return await asyncio.to_thread(bulk.apply, lib.db, await _ids(request, b), str(b.get("action")), b.get("value"))
 
 
 @_op
@@ -756,7 +940,15 @@ async def history(request):
 async def undo(request):
     from . import fileops
     try:
-        return web.json_response(await asyncio.to_thread(fileops.undo, _lib(request).db, int(request.match_info["oid"])))
+        oid = int(request.match_info["oid"])
+        if not _is_local(request):  # a phone or tablet undoes only what a device can do
+            def kind():
+                with _lib(request).db.read() as c:
+                    r = c.execute("SELECT kind FROM ops WHERE id=?", (oid,)).fetchone()
+                return r[0] if r else None
+            if await asyncio.to_thread(kind) not in remote.UNDO:
+                return _err("Undo that on the PC.", 403)
+        return web.json_response(await asyncio.to_thread(fileops.undo, _lib(request).db, oid))
     except fileops.OpError as ex:
         return _err(str(ex), 422)
     except ValueError:
@@ -764,7 +956,30 @@ async def undo(request):
 
 
 async def albums(request):
-    return web.json_response({"albums": await asyncio.to_thread(_lib(request).albums)})
+    lib = _lib(request)
+    def both():
+        out = lib.albums()
+        return {"albums": out, "groups": lib.album_groups(out)}  # (groups: the names with albums inside, counted whole)
+    return web.json_response(await asyncio.to_thread(both))
+
+
+async def album_move(request):
+    """{path, to}: an album, with the albums inside it, to another name (into another album, or to the top)."""
+    b = await _body(request)
+    try:
+        return web.json_response(await asyncio.to_thread(_lib(request).album_move, str(b.get("path") or ""), str(b.get("to") or "")))
+    except KeyError:
+        return _err("not found", 404)
+    except ValueError as ex:
+        return _err(str(ex), 422)
+
+
+async def folder_dirs(request):
+    try:
+        fid = int(request.match_info["fid"])
+    except ValueError:
+        return _err("bad id")
+    return web.json_response({"dirs": await asyncio.to_thread(_lib(request).dirs, fid)})
 
 
 async def album_create(request):
@@ -1058,7 +1273,8 @@ def _settings_out(lib, updater: Updater, can_restart: bool) -> dict:
     backups = os.path.join(lib.data_dir, "backups")
     last = sorted(f for f in os.listdir(backups) if f.endswith(".db")) if os.path.isdir(backups) else []
     from . import shortcut
-    return {"settings": lib.settings.all(), "ml_data_found": lib.models.data_dir(), "data_dir": lib.data_dir,
+    shown = {k: v for k, v in lib.settings.all().items() if k != "remote_devices"}  # (the devices' keys' hashes stay in the file)
+    return {"settings": shown, "ml_data_found": lib.models.data_dir(), "data_dir": lib.data_dir,
             "ffmpeg_found": find_ffmpeg(lib.settings.get("ffmpeg")), "last_backup": last[-1] if last else None, "version": VERSION,
             "shortcut": shortcut.exists() if os.name == "nt" else None, "update": dict(updater.info(), can_restart=can_restart)}
 
@@ -1224,12 +1440,18 @@ async def library_forget(request):
 
 
 async def reveal_folder(request):
-    """Open a library folder in Explorer (only one that's in the library)."""
+    """Open a library folder in Explorer (only one that's in the library), or {rel} a folder inside it."""
     f = next((f for f in await asyncio.to_thread(_lib(request).folders) if f["id"] == int(request.match_info["fid"])), None)
-    if not f or not os.path.isdir(f["path"]):
+    rel = str((await _body(request)).get("rel") or "") if request.can_read_body else ""
+    path = os.path.normpath(os.path.join(f["path"], rel)) if f else ""
+    try:
+        inside = bool(f) and os.path.commonpath([path, os.path.normpath(f["path"])]) == os.path.normpath(f["path"])
+    except ValueError:  # (another drive)
+        inside = False
+    if not inside or not os.path.isdir(path):
         return _err("That folder isn't reachable right now.", 404)
     import subprocess
-    subprocess.Popen(["explorer", os.path.normpath(f["path"])])
+    subprocess.Popen(["explorer", path])
     return web.json_response({"ok": True})
 
 
@@ -1285,4 +1507,7 @@ async def serve(lib: Library, port: int = 0, token: str | None = None, pick_fold
     site = web.TCPSite(runner, "127.0.0.1", port)
     await site.start()
     real = site._server.sockets[0].getsockname()[1]
+    app[RUNNER] = runner
+    if lib.settings.get("remote"):  # Phone and tablet was on: paired devices can come back
+        await remote_start(app)
     return runner, real, app[TOKEN]

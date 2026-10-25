@@ -1,14 +1,15 @@
-// Model Librarian Gallery: Settings - the library, folders, thumbnails, videos, Model Librarian, ComfyUI, the data folder, updates.
+// Model Librarian Gallery: Settings - the library, folders, phones and tablets, thumbnails, videos, Model Librarian, ComfyUI, the data folder, updates.
 
 import { KINDS, Pace, api, ask, askText, baseName, fmtDate, fmtLeft, fmtSize, h, job, lib, plural, progressBar, toast } from "./util.js";
-import { done } from "./organize.js";
+import { dialog, done } from "./organize.js";
+import { qrSvg } from "./qr.js";
 
 const field = (label, control, note) => h("div.set-row", {}, h("label.set-label", {}, label), h("div.set-control", {}, control, note ? h("p.note", {}, note) : null));
 
 export async function renderSettings(root, ctx) {
-  let s, folders, lb, inbox;
+  let s, folders, lb, inbox, remote;
   try {
-    [s, { folders }, lb, { folders: inbox }] = await Promise.all([api("/settings"), api("/folders"), api("/libraries"), api("/inbox/folders")]);
+    [s, { folders }, lb, { folders: inbox }, remote] = await Promise.all([api("/settings"), api("/folders"), api("/libraries"), api("/inbox/folders"), api("/remote")]);
   } catch (e) { toast(e.message, true); return; }
   const save = async (patch, what) => {
     try {
@@ -43,6 +44,7 @@ export async function renderSettings(root, ctx) {
           h("button.btn.small", { type: "button", onclick: () => ctx.removeFolder(f) }, "Remove"))))) : h("p.st-none", {}, "No folders yet."),
       field("Eagle libraries", h("label.check", { for: "set-eagle" }, eagle, " Leave them out (recommended)"), "Eagle manages the files in its *.library folders; the Gallery doesn't index or touch them.")),
     (lib.kinds || []).includes("illustrations") ? downloads(s, inbox, () => renderSettings(root, ctx)) : null,
+    phones(remote, () => renderSettings(root, ctx)),
     h("section.st-card.set", { "aria-label": "Thumbnails and videos" },
       h("div.st-card-head", {}, h("h2", {}, "Thumbnails and videos")),
       field("Thumbnail size", thumbSize, "A bigger size is made in the background as tiles need it; the smaller ones stay in the cache."),
@@ -106,6 +108,80 @@ function downloads(s, inbox, again) {
       const r = await api("/inbox/undismiss", { method: "POST" }).catch((e) => { toast(e.message, true); return null; });
       if (r) toast(r.back ? `${plural(r.back, "dismissed download")} offered again.` : "None were dismissed.");
     } }, "Offer them again"), "Downloads you dismissed aren't offered again, unless they change."));
+}
+
+// ---------------------------------------------------------------- Phone and tablet: paired devices, on the home network or Tailscale
+function phones(r, again) {
+  const set = async (path, body, what) => {
+    try {
+      await api(path, { method: "POST", body });
+      if (what) toast(what);
+    } catch (e) { toast(e.message, true); }
+    again();
+  };
+  const on = h("input", { type: "checkbox", id: "set-remote", checked: r.on,
+    onchange: (e) => set("/remote", { on: e.target.checked }, e.target.checked ? "Phones and tablets you pair can open the library now." : "Phones and tablets can't open the library any more.") });
+  const port = h("input", { type: "number", min: 1024, max: 65535, value: r.port, "aria-label": "Port" });
+  const savePort = () => set("/remote", { port: Number(port.value) }, "Port saved.");
+  port.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") savePort(); });
+  const where = r.addresses.length ? h("ul.set-addrs", {}, r.addresses.map((a) => h("li", {}, h("code", {}, a.url), h("span.st-none", {}, KIND_NET[a.kind]))))
+    : h("span.st-none", {}, "This PC has no home network or Tailscale address right now.");
+  const devices = r.devices.length ? h("ol.set-folders.set-devices", {}, r.devices.map((d) => h("li", {},
+    h("span.sf-name", {}, d.name),
+    h("span.st-none", {}, `Paired ${fmtDate(d.added)}${d.seen ? ` · last here ${fmtDate(d.seen)}` : ""}`),
+    h("div.row", {},
+      h("button.btn.small", { type: "button", onclick: async () => {
+        const name = await askText(`Rename ${d.name}`, "Name", d.name, { ok: "Rename" });
+        if (name && name !== d.name) set("/remote/rename", { id: d.id, name });
+      } }, "Rename"),
+      h("button.btn.small", { type: "button", onclick: async () => {
+        if (await ask(`Remove ${d.name}?`, "It can't open the library any more, unless you pair it again.", { ok: "Remove", danger: true })) set("/remote/forget", { id: d.id }, `${d.name} removed.`);
+      } }, "Remove"))))) : h("p.st-none", {}, "None yet.");
+  return h("section.st-card.set", { "aria-label": "Phone and tablet" },
+    h("div.st-card-head", {}, h("h2", {}, "Phone and tablet"),
+      r.on && r.running ? h("button.btn.small", { type: "button", onclick: () => pairDialog(new Set(r.devices.map((d) => d.id)), again) }, "Pair a device…") : null),
+    h("p.note.set-lede", {}, "Look through the library on a phone or tablet: on your home Wi-Fi, or anywhere over Tailscale. It can rate, favourite, tag, put in albums, Swipe and delete to the Trash. Only devices you pair here are let in, and only from a private network, never the open internet. Settings, folders, moving and renaming files, Eagle and filing downloads stay on this PC."),
+    field("Phones and tablets", h("label.check", { for: "set-remote" }, on, " Let paired devices open the library"),
+      r.on && !r.running ? "On, but not listening: another program has the port. Pick another one below."
+        : "The first time, Windows asks whether the Gallery may use the network: allow it on private networks."),
+    field("Port", h("div.inline.set-port", {}, port, h("button.btn", { type: "button", onclick: savePort }, "Save")),
+      "It stays the same, so paired devices keep their address. Change it only if another program uses it."),
+    r.on ? field("Addresses", where, "Home Wi-Fi carries it unencrypted, like anything else on your network; over Tailscale it's encrypted.") : null,
+    field("Paired devices", devices));
+}
+
+const KIND_NET = { home: "home network", tailscale: "Tailscale", other: "another network (a virtual one, often)" };
+
+// the QR code to scan (and a code to type), good for 10 minutes and one device; closes once that device is paired
+async function pairDialog(had, again) {
+  let r;
+  try { r = await api("/remote/code", { method: "POST" }); } catch (e) { toast(e.message, true); return; }
+  if (!r.pair.length) { toast("This PC has no home network or Tailscale address to pair over right now.", true); return; }
+  const code = `${r.code.slice(0, 4)}-${r.code.slice(4)}`;
+  const qr = h("div.pair-qr"), url = h("code.pair-url"), typed = h("p.note");
+  const show = (i) => {
+    qr.innerHTML = qrSvg(r.pair[i], 5);  // (our own SVG of the address: no text from anywhere else)
+    url.textContent = r.pair[i];
+    typed.textContent = `Or open ${r.addresses[i].url} on it and type the code ${code}.`;
+  };
+  const pick = r.addresses.length > 1 ? h("select", { "aria-label": "Network", onchange: (e) => show(Number(e.target.value)) },
+    r.addresses.map((a, i) => h("option", { value: i }, `${KIND_NET[a.kind]}: ${a.ip}`))) : null;
+  show(0);
+  const { dlg } = dialog("Pair a phone or tablet", h("div.pair", {},
+    h("p", {}, `Scan this with the phone or tablet's camera and open the link: it's remembered from then on. The code works for ${r.minutes} minutes, for one device.`),
+    pick ? h("label.field-row", {}, h("span", {}, "Over"), pick) : null, qr, url, typed), { submitLabel: "Done", submit: () => true });
+  const watch = setInterval(async () => {  // paired: say so, and show it in the list
+    if (!dlg.isConnected) return clearInterval(watch);
+    const now = await api("/remote").catch(() => null);
+    const added = now?.devices.find((d) => !had.has(d.id));
+    if (added) {
+      clearInterval(watch);
+      dlg.close();
+      toast(`${added.name} is paired.`);
+      again();
+    }
+  }, 2000);
+  dlg.addEventListener("close", () => { clearInterval(watch); again(); });
 }
 
 // ---------------------------------------------------------------- updates from GitHub Releases

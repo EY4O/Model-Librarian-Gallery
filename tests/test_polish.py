@@ -183,3 +183,124 @@ def test_nothing_adds_files_to_a_smart_album(lib, media):
     lib.album_save(None, "Best", query="rating:4")
     with lib.db.write() as c:
         assert bulk.album_id(c, "Best") is None  # (Eagle, bringing marks, a Gallery Info node: they all go through this)
+
+
+# ---------------------------------------------------------------- many at once, to a character
+def test_adding_a_selection_to_a_character_and_undo(lib, media):
+    from mlgallery import bulk
+    pictures(lib, media)
+    cid = lib.character_save(None, "Aurelia", aliases=["Aury"])
+    ids = [i["id"] for i in lib.files()["items"]][:3]
+    r = bulk.apply(lib.db, ids, "character", "aury")  # by another name too
+    assert r["count"] == 3 and lib.files(q="character:aurelia")["total"] == 3
+    assert lib.character(cid)["counts"]["confirmed"] == 3
+    assert fileops.history(lib.db)[0]["summary"] == "Added 3 files to Aurelia"
+    fileops.undo(lib.db, r["op"])
+    assert lib.files(q="character:aurelia")["total"] == 0
+    with pytest.raises(fileops.OpError):
+        bulk.apply(lib.db, ids, "character", "Nobody")  # (a new name is made first, by the route)
+
+
+def test_a_new_name_makes_the_character(tmp_path, sample_dir):
+    from aiohttp.test_utils import TestClient, TestServer
+    import asyncio
+    from mlgallery.library import Library
+    from mlgallery.server import make_app
+    lib = Library(str(tmp_path / "data"))
+    f = folder(lib, sample_dir)
+    scan.scan_folder(lib.db, f)
+    ids = [i["id"] for i in lib.files()["items"]][:2]
+
+    async def go():
+        app = make_app(lib, token="t")
+        async with TestClient(TestServer(app)) as cl:
+            r = await cl.post("/api/ops/bulk", json={"selection": ids, "action": "character", "value": "Lumen"}, headers={"X-MLG-Token": "t", "Host": "127.0.0.1"})
+            return r.status, await r.json()
+    status, body = asyncio.run(go())
+    assert status == 200 and body["count"] == 2
+    assert [(c["name"], c["n"]) for c in lib.characters()["characters"]] == [("Lumen", 2)]
+
+
+# ---------------------------------------------------------------- nested albums and subfolders
+def test_albums_nest_by_name_and_a_parent_holds_whats_inside(lib, media):
+    pictures(lib, media)
+    from mlgallery import bulk
+    ids = {k: v["id"] for k, v in items(lib).items()}
+    bulk.apply(lib.db, [ids["p0.png"]], "album", "Archive/Extras")  # (a / makes it nested, written one way)
+    bulk.apply(lib.db, [ids["p1.png"]], "album", "Archive / Extras / New")
+    bulk.apply(lib.db, [ids["p2.png"], ids["p0.png"]], "album", "Archive / AI Review")
+    assert sorted(a["name"] for a in lib.albums()) == ["Archive / AI Review", "Archive / Extras", "Archive / Extras / New"]
+    names = lambda q: sorted(i["name"] for i in lib.files(q=q)["items"])
+    assert names("album:archive") == ["p0.png", "p1.png", "p2.png"]  # a parent that's only their name: all inside it
+    assert names('album:"Archive / Extras"') == ["p0.png", "p1.png"] and names('album:"archive/extras/new"') == ["p1.png"]
+    assert names("-album:archive") == ["p3.png"]
+    groups = {g["name"]: g["n"] for g in lib.album_groups(lib.albums())}
+    assert groups == {"Archive": 3, "Archive / Extras": 2}  # each file once
+
+    # moving a branch takes the albums inside with it; never into itself, never onto a name that's taken
+    assert lib.album_move("Archive / Extras", "Extras")["moved"] == 2
+    assert sorted(a["name"] for a in lib.albums()) == ["Archive / AI Review", "Extras", "Extras / New"]
+    with pytest.raises(ValueError):
+        lib.album_move("Extras", "Extras / New / Deeper")
+    lib.album_save(None, "Archive / Extras")
+    with pytest.raises(ValueError):
+        lib.album_move("Extras", "Archive / Extras")
+    # renaming an album moves what's in it too; a parent that's only a name moves by its name
+    ex = next(a for a in lib.albums() if a["name"] == "Extras")
+    lib.album_save(ex["id"], "Old/Extras")
+    lib.album_move("Archive", "Kept")
+    assert sorted(a["name"] for a in lib.albums()) == ["Kept / AI Review", "Kept / Extras", "Old / Extras", "Old / Extras / New"]
+    assert names("album:old") == ["p0.png", "p1.png"]
+
+
+def test_a_smart_album_inside_another_counts_in_it(lib, media):
+    pictures(lib, media)
+    from mlgallery import bulk
+    ids = {k: v["id"] for k, v in items(lib).items()}
+    lib.mark(ids["p3.png"], rating=5)
+    bulk.apply(lib.db, [ids["p0.png"]], "album", "Trips / Coast")
+    lib.album_save(None, "Trips / Best", query="rating:5")
+    assert sorted(i["name"] for i in lib.files(q="album:trips")["items"]) == ["p0.png", "p3.png"]
+
+
+def test_subfolders_are_listed_and_searched(lib, media):
+    for i, rel in enumerate(["a.png", "Chars/Aurelia/b.png", "Chars/Aurelia/Old/c.png", "Chars/d.png", "Other_1/e.png", "Other11/f.png"]):
+        (media / rel).parent.mkdir(parents=True, exist_ok=True)
+        image(media / rel, seed=i)
+    f = folder(lib, media)
+    scan.scan_folder(lib.db, f)
+    assert lib.dirs(f["id"]) == [{"rel": "Chars", "n": 3}, {"rel": "Chars/Aurelia", "n": 2}, {"rel": "Chars/Aurelia/Old", "n": 1},
+                                 {"rel": "Other11", "n": 1}, {"rel": "Other_1", "n": 1}]
+    names = lambda q: sorted(i["name"] for i in lib.files(folder=f["id"], q=q)["items"])
+    assert names('path:"Chars/Aurelia"') == ["b.png", "c.png"] and names("path:chars") == ["b.png", "c.png", "d.png"]
+    assert names("path:Other_1") == ["e.png"]  # (an _ is a letter, not any letter)
+    assert names("-path:Chars") == ["a.png", "e.png", "f.png"]
+
+
+def test_album_names_are_written_one_way(tmp_path):
+    from mlgallery import bulk, search
+    from mlgallery.library import Library
+    long = search.album_name("a" * 98 + "/xyz")
+    assert long == search.album_name(long) and not long.endswith("/") and len(long) <= 100  # (stable: it finds itself again)
+    assert search.album_name('My "best" / Sub') == "My 'best' / Sub"
+    lib = Library(str(tmp_path / "d"))
+    with lib.db.write() as c:  # named before nesting: "AC/DC", a name with "
+        c.execute("INSERT INTO albums (name, created) VALUES ('AC/DC', 0), ('Say \"hi\"', 0)")
+    lib = Library(str(tmp_path / "d"))
+    assert sorted(a["name"] for a in lib.albums()) == ["AC / DC", "Say 'hi'"]
+    with lib.db.write() as c:
+        assert bulk.album_id(c, "AC/DC") == next(a["id"] for a in lib.albums() if a["name"] == "AC / DC")  # the same album, not a second
+
+
+def test_moving_an_album_follows_it_in_smart_albums(lib, media):
+    pictures(lib, media)
+    from mlgallery import bulk
+    ids = {k: v["id"] for k, v in items(lib).items()}
+    bulk.apply(lib.db, [ids["p0.png"]], "album", "Trips / Coast")
+    lib.mark(ids["p0.png"], rating=5)
+    lib.album_save(None, "Best coast", query='album:"Trips / Coast" rating:5')
+    lib.album_save(None, "Not trips", query="-album:trips is:fav")
+    lib.album_move("Trips", "Holidays")
+    q = {a["name"]: a["query"] for a in lib.albums()}
+    assert q["Best coast"] == 'album:"Holidays / Coast" rating:5' and q["Not trips"] == '-album:"Holidays" is:fav'
+    assert [i["name"] for i in lib.files(q="album:\"Best coast\"")["items"]] == ["p0.png"]

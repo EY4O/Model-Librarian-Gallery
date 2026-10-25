@@ -1,0 +1,110 @@
+/* Model Librarian Gallery on a phone or tablet: app.css's look, sized for fingers. Big tiles, a bar at the bottom
+   (within the safe area of phones without a home button), a viewer that fills the screen. */
+html, body { height: auto; min-height: 100%; overflow: visible; font-size: 15px; background: var(--stage); }
+body.p-viewing { overflow: hidden; }
+.phone { -webkit-tap-highlight-color: transparent; overscroll-behavior-y: contain; }
+.phone button { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+.phone svg { width: 20px; height: 20px; }
+
+.p-top {
+  position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 6px; min-height: 52px;
+  padding: calc(6px + env(safe-area-inset-top)) 8px 6px 14px; background: rgba(27, 27, 27, .94); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line);
+}
+.p-title { font: 600 17px/1.2 var(--display); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.p-n { margin-left: 8px; color: var(--dim); font: 400 13px var(--sans); }
+.p-top .spacer { flex: 1; }
+.p-icon { width: 42px; height: 42px; flex: none; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 10px; background: none; color: var(--text-2); }
+.p-icon:active, .p-tab:active, .p-row:active { background: var(--raise); }
+.p-text { border: 0; background: none; color: var(--accent-text); padding: 10px 12px; font-weight: 600; }
+.p-search { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--control); color: var(--text); font-size: 16px; }
+
+.p-main { padding: 4px 4px calc(84px + env(safe-area-inset-bottom)); }
+.p-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; }
+@media (min-width: 600px) { .p-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (min-width: 900px) { .p-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+.p-tile { position: relative; aspect-ratio: 1; padding: 0; border: 0; border-radius: 4px; overflow: hidden; background: var(--tile-bg); touch-action: manipulation; }
+.p-tile img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.p-badge, .p-fav { position: absolute; display: flex; padding: 3px; border-radius: 6px; background: rgba(0, 0, 0, .55); color: #fff; }
+.p-badge { left: 5px; bottom: 5px; }
+.p-fav { right: 5px; bottom: 5px; color: #f687b3; }
+.p-badge svg, .p-fav svg { width: 14px; height: 14px; }
+.p-fav svg { fill: currentColor; }
+.p-check { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 50%; border: 2px solid #fff; background: rgba(0, 0, 0, .3); display: none; align-items: center; justify-content: center; }
+.p-check svg { width: 14px; height: 14px; stroke-width: 3; color: #fff; }
+.p-app.selecting .p-check { display: flex; }
+.p-tile.sel .p-check { background: var(--accent); border-color: var(--accent); }
+.p-tile.sel img { transform: scale(.88); border-radius: 6px; transition: transform .12s; }
+.p-more { height: 1px; }
+.p-empty { padding: 48px 24px; text-align: center; color: var(--dim); line-height: 1.6; }
+.p-empty h2 { color: var(--text); font: 600 18px var(--display); margin: 0 0 6px; }
+
+.p-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; display: flex; justify-content: space-around; gap: 2px;
+  padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); background: rgba(27, 27, 27, .96); backdrop-filter: blur(10px); border-top: 1px solid var(--line);
+}
+.p-tab { flex: 1; max-width: 120px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 2px; border: 0; border-radius: 10px; background: none; color: var(--dim); font-size: 11px; }
+.p-tab.on { color: var(--accent-text); }
+.p-tab.danger { color: #ff8a8a; }
+.p-tab:disabled { opacity: .4; }
+
+/* Browse: the views, folders, albums, artists and characters */
+.p-browse { display: flex; flex-direction: column; gap: 18px; padding: 8px 4px 0; }
+.p-sec h2 { margin: 0 0 6px 12px; color: var(--dim); font-size: 12px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; }
+.p-row { width: 100%; display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 8px 14px; border: 0; border-radius: 10px; background: none; color: var(--text); text-align: left; }
+.p-row .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p-row .n { color: var(--dim); font-variant-numeric: tabular-nums; }
+.p-row .twist { width: 28px; height: 28px; margin: -4px -6px -4px -8px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: var(--dim); }
+.p-row .twist svg { width: 14px; height: 14px; transition: transform .12s; }
+.p-row .twist.open svg { transform: rotate(90deg); }
+.p-row.on { background: var(--raise); }
+
+/* the viewer: one picture at a time, swiped through; pinch or double-tap to zoom */
+.p-viewer { position: fixed; inset: 0; z-index: 10; background: #000; display: flex; flex-direction: column; color: #fff; }
+.pv-stage { flex: 1; position: relative; overflow: hidden; touch-action: none; }
+.pv-stage > img, .pv-stage > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transform-origin: 0 0; will-change: transform; user-select: none; -webkit-user-drag: none; }
+.pv-stage.moving > img, .pv-stage.moving > video { transition: none; }
+.pv-stage > .glide { transition: transform .2s ease-out; }
+.pv-top, .pv-bar { position: absolute; left: 0; right: 0; display: flex; align-items: center; gap: 4px; padding: 6px 8px; background: linear-gradient(rgba(0, 0, 0, .65), transparent); transition: opacity .15s; }
+.pv-top { top: 0; padding-top: calc(6px + env(safe-area-inset-top)); }
+.pv-bar { bottom: 0; justify-content: space-around; padding-bottom: calc(10px + env(safe-area-inset-bottom)); background: linear-gradient(transparent, rgba(0, 0, 0, .7)); }
+.p-viewer.bare .pv-top, .p-viewer.bare .pv-bar { opacity: 0; pointer-events: none; }
+.pv-top .p-icon, .pv-bar .p-icon { color: #fff; }
+.pv-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.pv-pos { color: rgba(255, 255, 255, .7); font-size: 13px; padding-right: 6px; }
+.pv-stars { display: flex; }
+.pv-star { width: 34px; height: 42px; padding: 0; border: 0; background: none; color: rgba(255, 255, 255, .45); display: flex; align-items: center; justify-content: center; }
+.pv-star svg { width: 22px; height: 22px; }
+.pv-star.on { color: #ffd166; }
+.pv-star.on svg, .p-icon.fav.on svg { fill: currentColor; }
+.p-icon.fav.on { color: #f687b3; }
+
+.pv-sheet { position: absolute; left: 0; right: 0; bottom: 0; max-height: 78%; overflow: auto; z-index: 2; padding: 6px 18px calc(18px + env(safe-area-inset-bottom));
+  background: var(--panel); color: var(--text); border-radius: 16px 16px 0 0; box-shadow: 0 -12px 40px rgba(0, 0, 0, .5); }
+.pv-grab { width: 40px; height: 5px; border-radius: 3px; background: var(--line-3); margin: 6px auto 12px; }
+.pv-sheet h3 { margin: 16px 0 6px; color: var(--dim); font-size: 12px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; }
+.pv-sheet .pv-title { margin: 0; font: 600 17px var(--display); overflow-wrap: anywhere; }
+.pv-sheet .pv-meta { margin: 4px 0 0; color: var(--dim); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.pv-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.pv-chip { display: inline-flex; align-items: center; gap: 4px; min-height: 34px; padding: 4px 6px 4px 12px; border-radius: 17px; background: var(--raise); }
+.pv-chip button { width: 26px; height: 26px; border: 0; border-radius: 13px; background: none; color: var(--dim); display: flex; align-items: center; justify-content: center; }
+.pv-chip button svg { width: 14px; height: 14px; }
+.pv-add { min-height: 34px; padding: 4px 12px; border-radius: 17px; border: 1px dashed var(--line-3); background: none; color: var(--accent-text); }
+.pv-text { margin: 0; white-space: pre-wrap; line-height: 1.5; overflow-wrap: anywhere; }
+.pv-line { display: flex; align-items: center; gap: 10px; }
+.pv-line .pv-text { flex: 1; min-width: 0; }
+.pv-sheet .dim { color: var(--dim); }
+
+.phone .toast { bottom: calc(84px + env(safe-area-inset-bottom)); max-width: calc(100vw - 24px); }
+.phone .dialog input, .phone .dialog select { font-size: 16px; } /* (16px: iOS doesn't zoom into it) */
+
+/* Swipe (swipe.js), on a phone: no keyboard hints, clear of the notch and the home bar */
+.phone .swipe kbd, .phone .sw-hint { display: none; }
+.phone .sw-bar { padding-top: calc(8px + env(safe-area-inset-top)); }
+.phone .sw-acts { grid-template-columns: auto 1fr auto; gap: 2px; padding: 0 6px; }
+.phone .sw-act.fav { justify-self: center; }
+.phone .sw-star { width: 27px; }
+.phone .sw-star svg { width: 21px; height: 21px; }
+.phone .sw-act { padding: 10px 6px; font-size: 14px; gap: 5px; letter-spacing: .3px; }
+.phone .sw-act svg { width: 21px; height: 21px; }
+.phone .sw-sort { padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
+.phone .sw-albums { justify-content: flex-start; }

@@ -32,10 +32,11 @@ A Windows app for large libraries of AI generations, photos and illustrations: i
 - 📊 **Statistics** — what you made with over time (by model family, in Model Librarian's colours), the colours you make most, your most used checkpoints, LoRAs, prompt parts and settings, and the models you have but never use.
 - 👤 **Characters and People** — a name plus its LoRA, trigger words or tags finds every image it's in; anything uncertain waits in **To review** for a yes or no. In a photo library they're People, tagged by hand.
 - 🗂️ **Organise with Undo** — ratings, favourites, tags, albums, moving, renaming by a pattern (`{artist}_{date}_{n}`) and deleting many files at once; every change is in **History** and Ctrl+Z undoes it. Deleting goes to the Gallery's own Trash first.
-- 👆 **Swipe** — go through a folder, an album or a search one picture at a time, big: swipe left (or A) to delete, right (or D) to keep, up (or W) to keep as a favourite, 1–5 to rate; Z takes the last one back. What you kept is remembered, so the next time starts where you left off.
+- 👆 **Swipe** — go through a folder, an album, a search or the last few days one picture at a time, big: swipe left (or A) to delete, right (or D) to keep, up (or W) to keep as a favourite, tap a star (or 1–5) to rate it, or tap an album in **Sort to album** to put it there (the ones you use most come first); Z takes the last one back. The picker at the top switches what you're going through. What you kept is remembered, so the next time starts where you left off.
 - 🔎 **Smart albums** — save any search as an album that stays up to date (`artist:Mika rating:4`, `is:photo date:2024`).
 - 🎞️ **Slideshow** — P in the viewer plays the view at the pace you choose.
-- 🎨 **Your sidebar** — give any folder or album an icon (or a number, or an emoji) and a colour, from its right-click menu.
+- 🎨 **Your sidebar** — folders open to show their subfolders, and albums nest inside albums ("Trips / Coast" is in Trips: drag one onto another, or **Move to…**), each showing everything inside it; give any folder or album an icon (or a number, or an emoji) and a colour, from its right-click menu.
+- 📱 **Phone and tablet** — pair a phone or tablet by scanning a QR code and look through the library on it, on your home Wi-Fi or anywhere over Tailscale: big tiles, swipe from one picture to the next, pinch to zoom; rate, favourite, tag, albums, Swipe and the Trash. Add it to the home screen and it opens like an app. Only the devices you pair get in, and only from a private network.
 - ♻️ **Duplicates** — exact copies, and the same picture saved twice in another format or size; **Compare** shows them side by side at full size before you choose.
 - 🔗 **Model Librarian and ComfyUI** — **Open in ComfyUI** opens a file's workflow in a new ComfyUI tab, **Save as recipe** puts it in Model Librarian's recipes, and the **Gallery Info** node tags images as they're made.
 - 🦅 **Leaving Eagle** — bring an Eagle library in as plain files, laid out by its folders, into a library of its own or this one, with its tags, ratings, notes, links and colours (Eagle's library is only read); or send any selection to Eagle.
@@ -185,12 +186,23 @@ Statistics count the files made in a range (7 days to all time): what they were 
 </details>
 
 <details>
+<summary><b>📱 Phone and tablet</b></summary>
+
+- Turn it on in **Settings, Phone and tablet**. The first time, Windows asks whether the Gallery may use the network: allow it on private networks.
+- **Pair a device…** shows a QR code: scan it with the phone or tablet's camera and open the link. Or open the address it shows and type the code. A code lasts 10 minutes and pairs one device. The device is remembered by a key in a cookie (the PC keeps only a hash of it); Settings lists each one, to rename or remove.
+- On a phone the library is big tiles with a bar at the bottom: **Library**, **Browse** (folders, albums, artists, characters), **Swipe** and the **Trash**. A tap opens a picture (swipe to the next, pinch or double-tap to zoom, pull down to close); a long press selects, to rate, favourite, tag, put in an album or a character, or delete. A picture's details show its tags, albums, characters, artist and note, to change there.
+- Over your home Wi-Fi the connection isn't encrypted, like anything else on your own network; over [Tailscale](https://tailscale.com) it is, and it works away from home too. Only private addresses are answered: the Gallery is never on the open internet.
+- Settings, folders, moving and renaming files, bringing in Eagle and filing downloads stay on the PC.
+</details>
+
+<details>
 <summary><b>🛡️ Safety</b></summary>
 
 - Indexing only reads. Files are moved or deleted only when you ask, and everything you change is in **History** with **Undo** (Ctrl+Z).
 - A move shows what will happen first and only goes into your library folders. Across drives it copies, checks the copy's size and fingerprint, then removes the original.
 - **Delete** moves a file to the Gallery's Trash (a hidden `.mlg-trash` folder in its own library folder), from where **Put back** restores it. Emptying the Trash sends files to the Windows Recycle Bin.
 - The Gallery listens on 127.0.0.1 only, with a new token each start; other programs and web pages can't use it. It sends nothing anywhere: Open in ComfyUI talks only to the ComfyUI address you set.
+- **Phone and tablet** is off until you turn it on. Then the Gallery also listens on the network, on a port of its own, but answers only devices you've paired and only from private addresses (home networks and Tailscale), never the open internet, even if a router forwards the port. A paired device can look and organise; it can't change Settings or folders, move, rename or empty anything.
 - **Updates** are off until you turn them on. Checking only reads GitHub's list of releases. An update is checked against its SHA-256 before it's unpacked beside the app, and the Gallery swaps it in at its next start, while it's closed.
 </details>
 

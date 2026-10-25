@@ -96,6 +96,7 @@ class Library:
         os.makedirs(data_dir, exist_ok=True)
         self.settings = Settings(self.home)
         self.db = Database(os.path.join(data_dir, "library.db"))
+        self._tidy_album_names()
         self.thumbs = Thumbnails(self.db, os.path.join(data_dir, "thumbs"), self.settings)
         self.meta = metadata.MetaReader(self.db)
         self.dater = dates.Dater(self.db, self.settings)
@@ -172,6 +173,19 @@ class Library:
         folder = next(f for f in self.folders() if f["id"] == fid)
         self.watcher.add(folder)
         return folder
+
+    def dirs(self, folder_id: int) -> list[dict]:
+        """A library folder's subfolders that hold files (in them or deeper): {rel, n}, n counting the ones deeper too."""
+        def run():
+            n: dict[str, int] = {}
+            with self.db.read() as c:
+                for (rel,) in c.execute("SELECT rel FROM files WHERE folder_id=? AND missing=0", (int(folder_id),)):
+                    parts = rel.split("/")[:-1]
+                    for i in range(1, len(parts) + 1):
+                        k = "/".join(parts[:i])
+                        n[k] = n.get(k, 0) + 1
+            return [{"rel": k, "n": v} for k, v in sorted(n.items(), key=lambda kv: kv[0].casefold())]
+        return self.db.cached(("dirs", int(folder_id)), run)
 
     def remove_folder(self, folder_id: int) -> bool:
         """Forget a folder and its files in the index. The folder and its files on disk are not touched."""
@@ -841,6 +855,69 @@ class Library:
                 a["stale"] = not fresh
         return out
 
+    def album_groups(self, albums: list[dict]) -> list[dict]:
+        """Every album name that has albums inside it - an album, or only their parent ("Trips" of "Trips / Coast") -
+        with what it and they hold, each file once: {name, n, latest, stale}."""
+        names: dict[str, str] = {}
+        for a in albums:
+            parts = search.album_name(a["name"]).split(" / ")
+            for i in range(1, len(parts)):
+                p = " / ".join(parts[:i])
+                names.setdefault(p.casefold(), p)
+        out = []
+        for key, p in sorted(names.items()):
+            (n, latest), fresh = self.db.cached_lazy(("album-tree", key), lambda p=p: self._smart_count(f'album:"{p}"'))
+            out.append({"name": p, "n": n, "latest": latest, "stale": not fresh})
+        return out
+
+    def _tidy_album_names(self) -> None:
+        """Albums named before nesting ("AC/DC", a name with "): written the one way now ("AC / DC"), unless that's taken."""
+        with self.db.read() as c:
+            rows = c.execute("SELECT id, name FROM albums").fetchall()
+        odd = [(r[0], search.album_name(r[1])) for r in rows if search.album_name(r[1]) != r[1]]
+        if not odd:
+            return
+        with self.db.write() as c:
+            for aid, name in odd:
+                if name and not c.execute("SELECT 1 FROM albums WHERE name=? COLLATE NOCASE AND id<>?", (name, aid)).fetchone():
+                    c.execute("UPDATE albums SET name=? WHERE id=?", (name, aid))
+
+    def album_move(self, path: str, to: str) -> dict:
+        """An album and the albums inside it (or, for a name that's only their parent, those) to another name:
+        "Trips / Coast" to "Coast" brings it to the top; to "Summer / Coast", into Summer."""
+        old, new = search.album_name(path), search.album_name(to)
+        if not old or not new:
+            raise ValueError("An album needs a name.")
+        if new.casefold().startswith(old.casefold() + " / "):
+            raise ValueError("An album can't go inside itself.")
+        depth = len(old.split(" / "))
+        with self.db.write() as c:
+            rows = [(r[0], search.album_name(r[1])) for r in c.execute("SELECT id, name FROM albums")]
+            moving = [(i, n) for i, n in rows if n.casefold() == old.casefold() or n.casefold().startswith(old.casefold() + " / ")]
+            if not moving:
+                raise KeyError(path)
+            renamed = [(i, " / ".join([new, *n.split(" / ")[depth:]])) for i, n in moving]
+            ids = {i for i, _ in moving}
+            taken = {n.casefold() for i, n in rows if i not in ids}
+            for _, n in renamed:
+                if n.casefold() in taken:
+                    raise ValueError(f"There's already an album called {n}.")
+                if len(n) > 100:
+                    raise ValueError(f"{n} is too long a name (100 letters at most).")
+            for i, n in renamed:
+                c.execute("UPDATE albums SET name=? WHERE id=?", (n, i))
+            # smart albums whose search names one of them: the new name in it
+            def renamed_filter(m):  # (an album, or a name that's only their parent)
+                name = search.album_name(m.group(2) if m.group(2) is not None else m.group(3))
+                if name.casefold() != old.casefold() and not name.casefold().startswith(old.casefold() + " / "):
+                    return m.group(0)
+                return f'{m.group(1)}"{" / ".join([new, *name.split(" / ")[depth:]])}"'
+            for aid, q in c.execute("SELECT id, query FROM albums WHERE query IS NOT NULL").fetchall():
+                q2 = search.ALBUM_FILTER.sub(renamed_filter, q)
+                if q2 != q:
+                    c.execute("UPDATE albums SET query=? WHERE id=?", (q2, aid))
+        return {"moved": len(renamed), "name": new}
+
     def _smart_count(self, q: str) -> tuple[int, int | None]:
         try:
             got = self.files(limit=1, q=q)
@@ -856,9 +933,14 @@ class Library:
             query = str(query).strip()[:2000]
             if not query:
                 raise ValueError("A smart album needs a search.")
-        name = (name or "").strip()[:100]
+        name = search.album_name(name)  # (a / in it puts it inside another: "Trips / Coast" is in Trips)
         if not name:
             raise ValueError("An album needs a name.")
+        if aid is not None:  # renamed: the albums inside it go with it
+            with self.db.read() as c:
+                was = c.execute("SELECT name FROM albums WHERE id=?", (int(aid),)).fetchone()
+            if was and search.album_name(was[0]) != name:
+                self.album_move(was[0], name)
         with self.db.write() as c:
             clash = c.execute("SELECT id FROM albums WHERE name=? COLLATE NOCASE", (name,)).fetchone()
             if clash and clash[0] != aid:

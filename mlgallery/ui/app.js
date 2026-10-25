@@ -3,7 +3,7 @@
 // scrolls the same at 200 files or 250,000. Day headings come from a per-day count (one small request),
 // so every tile's place is known without fetching the pages above it.
 
-import { $, KINDS, LOOK_COLORS, LOOK_ICONS, Pace, TOKEN, aiOnly, api, fmtLeft, has, job, progressBar, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lib, lookIcon, media, menu, plural, stars, store, toast, who } from "./util.js";
+import { $, KINDS, LOOK_COLORS, LOOK_ICONS, Pace, TOKEN, aiOnly, albumName, albumTree, api, dirTree, fmtLeft, has, inside, job, leafName, parentName, progressBar, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lib, lookIcon, media, menu, plural, sameName, stars, store, toast, who } from "./util.js";
 import { renderStats } from "./stats.js";
 import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
 import { creditEditor, renderArtist, renderArtists } from "./artists.js";
@@ -28,7 +28,7 @@ const KIND_NAMES = { "": "Images and videos", image: "Images only", video: "Vide
 // ---------------------------------------------------------------- state
 const state = {
   sel: new Set(), selAll: false, anchor: -1,  // the selection: ids, or the whole view
-  albums: [], album: null,
+  albums: [], album: null, albumGroups: [], sub: null, dirs: {},
   folders: [], view: "all", folder: null, seed: 1 + Math.floor(Math.random() * 1e9),
   sort: store.get("sort", "newest"), kind: store.get("kind", ""), tile: store.get("tile", 176),
   layout: store.get("layout", "waterfall"), quality: store.get("quality", "speed"), show: { ...SHOW, ...store.get("show", {}) }, shapes: null,
@@ -170,7 +170,10 @@ function onInput() {
 async function loadFolders() {
   const { folders } = await api("/folders");
   state.folders = folders;
-  if (state.folder && !folders.some((f) => f.id === state.folder)) { state.folder = null; state.view = "all"; }
+  if (state.folder && !folders.some((f) => f.id === state.folder)) { state.folder = null; state.sub = null; state.view = "all"; }
+  await Promise.all(folders.filter((f) => f.online).map(async (f) => {  // (their subfolders, for the tree)
+    try { state.dirs[f.id] = (await api(`/folders/${f.id}/dirs`)).dirs; } catch {}
+  }));
   renderSide();
 }
 
@@ -184,10 +187,13 @@ function renderSide() {
   $("view-characters").classList.toggle("sel", state.view === "characters" || state.view === "character");
   $("view-artists").classList.toggle("sel", state.view === "artists" || state.view === "artist");
   $("view-downloads").classList.toggle("sel", state.view === "downloads");
-  const items = state.folders.map((f) => {
-    const sel = state.view === "folder" && state.folder === f.id;
-    return h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", title: f.path, onclick: () => selectView("folder", f.id),
+  const trees = new Map(state.folders.map((f) => [f.id, dirTree(state.dirs[f.id] || [])]));
+  const anyDirs = [...trees.values()].some((t) => t.kids.size);
+  const items = state.folders.flatMap((f) => {
+    const sel = state.view === "folder" && state.folder === f.id && !state.sub, tree = trees.get(f.id), key = `f:${f.id}`;
+    return [h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", title: f.path, onclick: () => selectView("folder", f.id),
       "aria-current": sel ? "true" : null, oncontextmenu: (e) => { e.preventDefault(); lookMenu(e.currentTarget, "folder", f); } },
+      anyDirs ? twist(key, tree.kids.size > 0) : null,
       lookIcon(f, "folder"),
       h("span.label", {}, baseName(f.path)),
       f.online ? h("span.n", {}, f.file_count.toLocaleString())
@@ -196,32 +202,157 @@ function renderSide() {
         h("span.act", { role: "button", tabIndex: 0, title: "Look for new and changed files", "aria-label": `Rescan ${baseName(f.path)}`,
           onclick: (e) => { e.stopPropagation(); rescan(f); }, onkeydown: actKey }, icon("rescan")),
         h("span.act", { role: "button", tabIndex: 0, title: "Remove from the library (the folder and its files stay where they are)",
-          "aria-label": `Remove ${baseName(f.path)}`, onclick: (e) => { e.stopPropagation(); removeFolder(f); }, onkeydown: actKey }, icon("remove"))));
+          "aria-label": `Remove ${baseName(f.path)}`, onclick: (e) => { e.stopPropagation(); removeFolder(f); }, onkeydown: actKey }, icon("remove")))),
+    ...(opened.has(key) ? dirRows(f, tree, 1) : [])];
   });
   $("folders").replaceChildren(...(items.length ? items
     : [h("p.nav-empty", {}, "No folders yet. ", h("button", { type: "button", onclick: addFolder }, "Add one"))]));
-  $("albums").replaceChildren(...(state.albums.length ? state.albums.map((a) => {
-    const sel = state.view === "album" && state.album === a.name;
-    return h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", onclick: () => selectView("album", a.name), "aria-current": sel ? "true" : null,
-      oncontextmenu: (e) => { e.preventDefault(); lookMenu(e.currentTarget, "album", a); } },
-      lookIcon(a, a.query != null ? "filter" : "album"), h("span.label", { title: a.query != null ? `Smart album: ${a.query}` : "" }, a.name), h("span.n", {}, a.n.toLocaleString()),
-      h("span.acts", {},
-        h("span.act", { role: "button", tabIndex: 0, title: "Rename", "aria-label": `Rename ${a.name}`, onkeydown: actKey,
-          onclick: async (e) => { e.stopPropagation(); renameAlbum(a); } }, icon("tag")),
-        h("span.act", { role: "button", tabIndex: 0, title: "Delete the album (its files stay where they are)", "aria-label": `Delete ${a.name}`, onkeydown: actKey,
-          onclick: async (e) => { e.stopPropagation(); deleteAlbum(a); } }, icon("remove"))));
-  }) : [h("p.nav-empty", {}, "Albums gather files from any folder.")]));
+  const tree = albumTree(state.albums);
+  $("albums").replaceChildren(...(state.albums.length ? albumRows(tree, 0, [...tree.kids.values()].some((n) => n.kids.size))
+    : [h("p.nav-empty", {}, "Albums gather files from any folder.")]));
   renderToolbar();
+}
+
+// which folders and albums are open in the sidebar ("f:<id>/<subfolder>", "a:<album name>"), kept between sessions
+const opened = new Set(store.get("open", []));
+function setOpen(key, on) {
+  if (on) opened.add(key); else opened.delete(key);
+  store.set("open", [...opened].slice(-500));
+}
+const twist = (key, has) => (has
+  ? h("span.twist" + (opened.has(key) ? ".open" : ""), { role: "button", tabIndex: 0, "aria-label": opened.has(key) ? "Close" : "Open", "aria-expanded": String(opened.has(key)),
+    onclick: (e) => { e.stopPropagation(); setOpen(key, !opened.has(key)); renderSide(); }, onkeydown: actKey }, icon("twist"))
+  : h("span.twist.none"));
+const indent = (depth) => (depth ? { paddingLeft: `${10 + depth * 16}px` } : null);
+
+function dirRows(f, node, depth) {
+  return [...node.kids.values()].flatMap((d) => {
+    const key = `f:${f.id}/${d.rel}`, sel = state.view === "folder" && state.folder === f.id && state.sub === d.rel;
+    const reveal = () => api(`/folders/${f.id}/reveal`, { method: "POST", body: { rel: d.rel } }).catch((e) => toast(e.message, true));
+    return [h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", title: `${f.path}\\${d.rel.replaceAll("/", "\\")}`, style: indent(depth),
+      onclick: () => selectView("folder", f.id, d.rel), "aria-current": sel ? "true" : null,
+      oncontextmenu: (e) => { e.preventDefault(); menu(e.currentTarget, [{ label: "Show in Explorer", icon: "explorer", onclick: reveal }]); } },
+      twist(key, d.kids.size > 0), icon("folder"), h("span.label", {}, d.name), h("span.n", {}, d.n.toLocaleString())),
+      ...(d.kids.size && opened.has(key) ? dirRows(f, d, depth + 1) : [])];
+  });
+}
+
+let dragging = null;  // the album being dragged in the sidebar (its name), to drop into another or on Albums for the top
+const canDrop = (target) => dragging && !sameName(target, dragging) && !inside(target, dragging) && !sameName(parentName(dragging), target);
+
+function albumRows(node, depth, nested) {
+  const groups = new Map(state.albumGroups.map((g) => [g.name.toLowerCase(), g]));
+  return [...node.kids.values()].flatMap((n) => {
+    const a = n.album, g = groups.get(n.path.toLowerCase()), key = `a:${n.path.toLowerCase()}`;
+    const sel = state.view === "album" && sameName(state.album, n.path);
+    const count = g ? g.n : a ? a.n : 0;
+    const row = h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", draggable: "true", style: indent(depth), title: n.path,
+      onclick: () => selectView("album", n.path), "aria-current": sel ? "true" : null,
+      oncontextmenu: (e) => { e.preventDefault(); a ? lookMenu(e.currentTarget, "album", a) : parentMenu(e.currentTarget, n.path); },
+      ondragstart: (e) => { dragging = n.path; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", n.path); },
+      ondragend: () => { dragging = null; },
+      ondragover: (e) => { if (canDrop(n.path)) { e.preventDefault(); e.currentTarget.classList.add("drop"); } },
+      ondragleave: (e) => e.currentTarget.classList.remove("drop"),
+      ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove("drop"); if (canDrop(n.path)) moveAlbum(dragging, `${n.path} / ${leafName(dragging)}`); } },
+      nested ? twist(key, n.kids.size > 0) : null,
+      a ? lookIcon(a, a.query != null ? "filter" : "album") : icon("album"),
+      h("span.label", { title: a?.query != null ? `Smart album: ${a.query}` : n.path }, n.name), h("span.n", {}, count.toLocaleString()),
+      h("span.acts", {},
+        h("span.act", { role: "button", tabIndex: 0, title: "Rename", "aria-label": `Rename ${n.path}`, onkeydown: actKey,
+          onclick: async (e) => { e.stopPropagation(); a ? renameAlbum(a) : renameParent(n.path); } }, icon("tag")),
+        a ? h("span.act", { role: "button", tabIndex: 0, title: "Delete the album (its files stay where they are)", "aria-label": `Delete ${n.path}`, onkeydown: actKey,
+          onclick: async (e) => { e.stopPropagation(); deleteAlbum(a); } }, icon("remove")) : null));
+    return [row, ...(n.kids.size && opened.has(key) ? albumRows(n, depth + 1, nested) : [])];
+  });
+}
+
+// the albums heading takes a dragged album back to the top
+for (const t of ["dragend", "drop"]) document.addEventListener(t, () => setTimeout(() => { dragging = null; }), true);  // (even if its row was drawn again meanwhile)
+{
+  const head = $("album-new").parentElement;
+  head.addEventListener("dragover", (e) => { if (dragging && parentName(dragging)) { e.preventDefault(); head.classList.add("drop"); } });
+  head.addEventListener("dragleave", () => head.classList.remove("drop"));
+  head.addEventListener("drop", (e) => { e.preventDefault(); head.classList.remove("drop"); if (dragging && parentName(dragging)) moveAlbum(dragging, leafName(dragging)); });
+}
+
+// an album's parents open, so it shows in the sidebar
+function openTo(name) {
+  const parts = albumName(name).split(" / ");
+  for (let i = 1; i < parts.length; i++) setOpen(`a:${parts.slice(0, i).join(" / ").toLowerCase()}`, true);
+}
+
+// an album (with the albums inside it) moved or renamed: what's shown, and what's open, go with it
+function followMove(from, to) {
+  const f = albumName(from), moved = (p) => (sameName(p, f) ? to : inside(p, f) ? to + albumName(p).slice(f.length) : null);
+  if (state.view === "album" && state.album && moved(state.album)) state.album = moved(state.album);
+  for (const k of [...opened]) {
+    if (k.startsWith("a:") && moved(k.slice(2))) { opened.delete(k); opened.add(`a:${moved(k.slice(2)).toLowerCase()}`); }
+  }
+  openTo(to);
+  store.set("open", [...opened].slice(-500));
+}
+
+async function moveAlbum(path, to) {
+  try {
+    const r = await api("/albums/move", { method: "POST", body: { path, to } });
+    followMove(path, r.name);
+    await loadAlbums();
+    if (state.view === "album") reload(false);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function renameParent(path) {
+  const name = await askText(`Rename ${leafName(path)}`, "Name", path, { ok: "Rename" });
+  if (name && !sameName(name, path)) moveAlbum(path, name);
+}
+
+async function newAlbumIn(path) {
+  const name = await askText(`New album in ${leafName(path)}`, "Name", "", { ok: "Create" });
+  if (!name) return;
+  try {
+    const a = await api("/albums", { method: "POST", body: { name: `${path} / ${name}` } });
+    openTo(a.name);
+    await loadAlbums();
+  } catch (e) { toast(e.message, true); }
+}
+
+function moveToDialog(path) {
+  const names = [...new Set([...state.albums.map((a) => albumName(a.name)), ...state.albumGroups.map((g) => g.name)])]
+    .filter((p) => !sameName(p, path) && !inside(p, path) && !sameName(p, parentName(path))).sort((x, y) => x.localeCompare(y, undefined, { sensitivity: "base" }));
+  const pick = h("select", { "aria-label": "Into" }, parentName(path) ? h("option", { value: "" }, "The top (in no other album)") : null,
+    names.map((p) => h("option", { value: p }, p)));
+  if (!pick.options.length) return toast("There's no other album to put it in.");
+  org.dialog(`Move ${leafName(path)}`, h("label.field-row", {}, h("span", {}, "Into"), pick), {
+    submitLabel: "Move",
+    submit: async () => {
+      const to = pick.value ? `${pick.value} / ${leafName(path)}` : leafName(path);
+      const r = await api("/albums/move", { method: "POST", body: { path, to } });
+      followMove(path, r.name);
+      await loadAlbums();
+      if (state.view === "album") reload(false);
+    },
+  });
+}
+
+// right-click on a name that's only the parent of albums (an Eagle folder that held only folders, say)
+function parentMenu(anchor, path) {
+  menu(anchor, [
+    { label: "Rename…", icon: "pen", onclick: () => renameParent(path) },
+    { label: "New album inside…", icon: "plus", onclick: () => newAlbumIn(path) },
+    { label: "Move to…", icon: "move", onclick: () => moveToDialog(path) },
+  ]);
 }
 
 let albumsAgain = null;
 async function loadAlbums() {
   try {
-    state.albums = (await api("/albums")).albums;
-    if (state.view === "album" && !state.albums.some((a) => a.name === state.album)) selectView("all");
+    const d = await api("/albums");
+    state.albums = d.albums;
+    state.albumGroups = d.groups || [];
+    if (state.view === "album" && ![...state.albums, ...state.albumGroups].some((a) => sameName(a.name, state.album))) selectView("all");
     renderSide();
-    clearTimeout(albumsAgain);  // a smart album being counted again: its new count in a moment
-    if (state.albums.some((a) => a.stale)) albumsAgain = setTimeout(loadAlbums, 1500);
+    clearTimeout(albumsAgain);  // a smart album (or a parent's whole count) being counted again: its new count in a moment
+    if ([...state.albums, ...state.albumGroups].some((a) => a.stale)) albumsAgain = setTimeout(loadAlbums, 1500);
   } catch {}
 }
 
@@ -245,7 +376,9 @@ function lookMenu(anchor, kind, it) {
     ...(kind === "folder"
       ? [{ label: "Look again", icon: "rescan", onclick: () => rescan(it) }, { label: "Show in Explorer", icon: "explorer", onclick: () => api(`/folders/${it.id}/reveal`, { method: "POST" }).catch((e) => toast(e.message, true)) }]
       : [{ label: "Rename…", icon: "pen", onclick: () => renameAlbum(it) },
-        it.query != null ? { label: "Change its search…", icon: "filter", onclick: () => smartSearch(it) } : null].filter(Boolean)),
+        it.query != null ? { label: "Change its search…", icon: "filter", onclick: () => smartSearch(it) } : null,
+        { label: "New album inside…", icon: "plus", onclick: () => newAlbumIn(albumName(it.name)) },
+        { label: "Move to…", icon: "move", onclick: () => moveToDialog(albumName(it.name)) }].filter(Boolean)),
     null,
     kind === "folder" ? { label: `Remove ${name} from the library`, icon: "remove", danger: true, onclick: () => removeFolder(it) }
       : { label: "Delete the album", icon: "remove", danger: true, onclick: () => deleteAlbum(it) },
@@ -307,8 +440,8 @@ async function renameAlbum(a) {
   const name = await askText(`Rename ${a.name}`, "Name", a.name, { ok: "Rename" });
   if (!name || name === a.name) return;
   try {
-    await api(`/albums/${a.id}`, { method: "POST", body: { name } });
-    if (state.album === a.name) state.album = name;
+    const r = await api(`/albums/${a.id}`, { method: "POST", body: { name } });  // (the albums inside it go with it)
+    followMove(a.name, r.name);
     await loadAlbums();
     if (state.view === "album") reload(false);
   } catch (e) { toast(e.message, true); }
@@ -329,13 +462,15 @@ const isPage = () => PAGES.has(state.view);
 const pageCtx = { open: (chips) => openFromStats(chips), show: (view, id) => selectView(view, id), refresh: () => loadCharacters(),
   counts: () => pollSoon(), folders: () => state.folders };
 
-function selectView(view, arg = null) {
+function selectView(view, arg = null, sub = null) {
   closeMenu();
   if (view === "random" && state.view === "random") state.seed = 1 + Math.floor(Math.random() * 1e9); // Random again: a new shuffle
   state.view = view;
   state.folder = view === "folder" ? arg : null;
   state.character = view === "character" ? arg : null;
   state.album = view === "album" ? arg : null;
+  state.sub = view === "folder" ? sub : null;  // (a subfolder of that folder: "Characters/Aurelia")
+  if (view === "album" && arg) openTo(arg);
   clearSel();
   const page = isPage();
   document.querySelector(".toolbar").hidden = page;
@@ -389,8 +524,9 @@ const sortFor = () => (state.view === "random" ? "random" : state.view === "rece
 
 function renderToolbar() {
   const f = state.folders.find((x) => x.id === state.folder);
-  $("view-title").textContent = { random: "Random", recent: "Recently viewed", trash: "Trash" }[state.view] || (state.view === "album" ? state.album : f ? baseName(f.path) : "All");
-  $("view-title").title = f ? f.path : "";
+  $("view-title").textContent = { random: "Random", recent: "Recently viewed", trash: "Trash" }[state.view]
+    || (state.view === "album" ? state.album : f ? (state.sub ? `${baseName(f.path)} / ${state.sub.replaceAll("/", " / ")}` : baseName(f.path)) : "All");
+  $("view-title").title = f ? (state.sub ? `${f.path}\\${state.sub.replaceAll("/", "\\")}` : f.path) : "";
   $("empty-trash").hidden = state.view !== "trash" || !state.total;
   $("shuffle").hidden = state.view !== "random";
   $("save-search").hidden = !queryString();
@@ -512,7 +648,7 @@ function query(path, offset) {
 }
 
 // the search, plus what the view itself filters by (an album)
-const viewQuery = () => [state.view === "album" ? `album:${quote(state.album)}` : "", queryString()].filter(Boolean).join(" ");
+const viewQuery = () => [state.view === "album" ? `album:${quote(state.album)}` : "", state.sub ? `path:${quote(state.sub)}` : "", queryString()].filter(Boolean).join(" ");
 
 function loadPage(p) {
   if (state.pages.has(p)) return Promise.resolve();
@@ -704,8 +840,10 @@ function selChanged() {
       rateBtn,
       h("button.btn", { type: "button", onclick: () => bulk("favorite", true), title: "Favourite (F)" }, icon("heart"), "Favourite"),
       h("button.btn", { type: "button", onclick: () => org.tagDialog(sel, n) }, icon("tag"), "Tag…"),
-      state.view === "album" && !smartAlbum() ? h("button.btn", { type: "button", onclick: () => bulkAlbumOut() }, icon("album"), "Take out")
+      plainAlbum() ? h("button.btn", { type: "button", onclick: () => bulkAlbumOut() }, icon("album"), "Take out")
         : h("button.btn", { type: "button", onclick: () => org.albumDialog(sel, n) }, icon("album"), "Album…"),
+      h("button.btn", { type: "button", title: `Add these to a ${who(false, false)}`, onclick: () => org.characterDialog(sel, n,
+        { characters: state.characters || [], label: who(false), onDone: loadCharacters }) }, icon("person"), `${who(false)}…`),
       moreBtn,
       h("span.bar-sep", { "aria-hidden": "true" }),
       h("button.btn.danger", { type: "button", title: "Move to the Trash (Delete); Ctrl+Z undoes it", onclick: async () => { if (await org.trashFiles(sel)) clearSel(); } }, icon("trash"), "Delete"),
@@ -713,7 +851,9 @@ function selChanged() {
     h("button.icon-btn", { type: "button", "aria-label": "Clear the selection", title: "Clear the selection (Esc)", onclick: clearSel }, icon("remove")));
 }
 
-const smartAlbum = () => state.view === "album" && state.albums.find((a) => a.name === state.album)?.query != null;
+// the album shown is one you put files in, with no albums inside it (so Take out takes them out of what's shown)
+const plainAlbum = () => state.view === "album" && state.albums.some((a) => sameName(a.name, state.album) && a.query == null)
+  && !state.albumGroups.some((g) => sameName(g.name, state.album));
 
 async function bulk(action, value) {
   try {

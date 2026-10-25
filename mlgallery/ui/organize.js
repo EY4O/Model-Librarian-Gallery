@@ -101,6 +101,24 @@ export function artistDialog(selection, count) {
   });
 }
 
+// these files are that character (or person): one you have, or a new name
+export function characterDialog(selection, count, { characters = [], label = "Character", onDone } = {}) {
+  const input = h("input", { type: "text", placeholder: characters.length ? characters[0].name : "Their name", "aria-label": label, autocomplete: "off", spellcheck: false });
+  const list = h("datalist", { id: "bulk-characters" }, characters.map((c) => h("option", { value: c.name })));
+  input.setAttribute("list", list.id);
+  dialog(`${label} in ${what(count)}`, h("div", {}, h("label.field-row", {}, h("span", {}, label), h("div", {}, input, list)),
+    h("p.note", {}, `A name that's new makes a new one. They count as confirmed, as a yes in To review does; you can undo it.`)), {
+    submitLabel: "Add",
+    submit: async () => {
+      const name = input.value.trim();
+      if (!name) throw new Error("Pick one, or type a new name.");
+      const r = await api("/ops/bulk", { method: "POST", body: { selection, action: "character", value: name } });
+      done(r, `${plural(r.count, "file")} added to ${name}.`);
+      onDone?.();
+    },
+  });
+}
+
 export async function albumDialog(selection, count, { remove = null } = {}) {
   const { albums } = await api("/albums").catch(() => ({ albums: [] }));
   const input = h("input", { type: "text", placeholder: "An album, or a new name", "aria-label": "Album", autocomplete: "off", value: remove || "" });
@@ -233,7 +251,8 @@ export async function restoreFiles(selection) {
   try {
     const r = await api("/ops/restore", { method: "POST", body: { selection } });
     done(r, `Put back ${plural(r.restored, "file")}.`);
-  } catch (e) { toast(e.message, true); }
+    return r;
+  } catch (e) { toast(e.message, true); return null; }
 }
 
 export async function emptyTrash(selection, count) {

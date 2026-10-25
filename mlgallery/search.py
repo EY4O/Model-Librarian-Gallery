@@ -4,6 +4,8 @@
     "paper cut"                a phrase
     model:krea  lora:aurelia   a checkpoint / LoRA whose name contains this (quote names with spaces: lora:"paper cut")
     tag:dusk                   a tag (exactly)          album:coast   an album (exactly; a smart album: its search)
+                               and the albums inside it ("Trips / Coast" is in Trips: album:trips holds both)
+    path:"Characters/Aurelia"  the files in that subfolder of a library folder, and in the folders inside it
     character:aurelia          a character (by name or alias; matched or confirmed)   review:aurelia  is:review
     artist:"some name"  site:pixiv   an artist (by name or another name), and where a picture is from (credits.py)
     rating:4  rating:>=3  rating:2-4  rating:0 (unrated)
@@ -26,7 +28,7 @@ import time
 
 TOKEN = re.compile(r'(-?)(?:(\w+):)?(?:"([^"]*)"?|(\S+))')
 KEYS = {"model", "lora", "tag", "rating", "is", "has", "no", "sampler", "scheduler", "seed", "steps", "neg", "vae", "ext",
-        "cfg", "size", "after", "before", "on", "character", "review", "album", "date", "strength", "color", "colour", "artist", "site"}
+        "cfg", "size", "after", "before", "on", "character", "review", "album", "date", "strength", "color", "colour", "artist", "site", "path"}
 
 
 def tokens(q: str) -> list[tuple[str | None, str]]:
@@ -122,6 +124,27 @@ def _in(values: list) -> str:
     return ",".join("?" * len(values))
 
 
+def album_name(name) -> str:
+    """An album's name with its nesting written one way: "Trips/Coast" and "Trips /Coast" are "Trips / Coast" (in Trips).
+    Within 100 letters (never ending in a /), and with ' for " (a search quotes names with ")."""
+    tidy = lambda s: " / ".join(p.strip() for p in s.split("/") if p.strip())
+    out = tidy(str(name or "").replace('"', "'"))
+    return tidy(out[:100]) if len(out) > 100 else out
+
+
+ALBUM_FILTER = re.compile(r'(-?album:)(?:"([^"]*)"?|(\S+))', re.I)
+
+
+def _albums_under(db, name: str) -> tuple[list[int], list[str]]:
+    """The albums a name covers: it, and every album inside it -> (ids of albums of files put in them, smart albums' searches)."""
+    def load():
+        with db.read() as c:
+            return [(r[0], album_name(r[1]).casefold(), r[2]) for r in c.execute("SELECT id, name, query FROM albums")]
+    key = album_name(name).casefold()
+    under = [a for a in db.cached(("albums-named",), load) if key and (a[1] == key or a[1].startswith(key + " / "))]
+    return [a[0] for a in under if a[2] is None], [a[2] for a in under if a[2] is not None]
+
+
 def _smart(db, name: str) -> str | None:
     """A smart album's search (None: an album of files you put in it, or none of that name)."""
     def load():
@@ -215,13 +238,25 @@ def build(q: str, db=None, _depth: int = 0) -> tuple[list[str], list]:
                 continue
             where.append(cond[0])
             args += cond[1]
-        elif key == "album" and db is not None and _smart(db, v) is not None:
-            if _depth > 4:  # a smart album whose search names itself (or one that does): nothing, rather than forever
+        elif key == "album" and db is not None:  # it and the albums inside it; a smart one: what its search finds
+            ids, smart = _albums_under(db, v)
+            if smart and _depth > 4:  # a smart album whose search names itself (or one that does): nothing, rather than forever
                 where.append("0")
                 continue
-            w, a = build(_smart(db, v), db, _depth + 1)
-            where.append("(" + " AND ".join(w) + ")" if w else "1")
-            args += a
+            parts = []
+            if ids:
+                parts.append(f"f.id IN (SELECT file_id FROM album_files WHERE removed=0 AND album_id IN ({_in(ids)}))")
+                args += ids
+            for sq in smart:
+                w, a = build(sq, db, _depth + 1)
+                parts.append("(" + " AND ".join(w) + ")" if w else "1")
+                args += a
+            where.append("(" + " OR ".join(parts) + ")" if parts else "0")
+        elif key == "path":  # a subfolder (rel paths use /), with the folders inside it
+            p = "/".join(x.strip() for x in v.replace("\\", "/").split("/") if x.strip())
+            if p:
+                where.append("f.rel LIKE ? ESCAPE '\\'")
+                args.append(f"{_like(p)}/%")
         elif key == "album":
             where.append("f.id IN (SELECT af.file_id FROM album_files af JOIN albums al ON al.id=af.album_id WHERE af.removed=0 AND al.name = ? COLLATE NOCASE)")
             args.append(v)

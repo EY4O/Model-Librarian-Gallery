@@ -485,24 +485,42 @@ def test_swipe_review_and_smart_albums(server):
         async with page(url) as e:
             await e.wait("document.querySelectorAll('.tile').length > 4")
             # Swipe (in the sidebar): D keeps, A deletes (to the Trash), Z takes the last one back
+            api("/albums", {"name": "Swiped"})
+            pos = "document.querySelector('.sw-where')?.textContent"
             await e.click("#view-swipe")
-            await e.wait(f"document.querySelector('.sw-count')?.textContent.startsWith('{total} to go')")
+            await e.wait(f"{pos}?.startsWith('1 / {total} ·')")
             await e.key("Enter")  # its keys are its own: the grid behind (and the sidebar's Swipe) get none
             await e.key("Delete")
             assert await e.js("document.querySelectorAll('.swipe').length") == 1 and api("/status")["trash"] == 0
             first = await e.js("document.querySelector('.sw-card:not(.under) .sw-name').textContent")
             await e.key("d")
-            await e.wait(f"document.querySelector('.sw-count')?.textContent === '{total - 1} to go · 1 reviewed'")
+            await e.wait(f"{pos}?.startsWith('2 / {total} ·')")
             assert await e.js("document.querySelector('.sw-card:not(.under) .sw-name').textContent") != first
             await e.key("a")
-            await e.wait("document.querySelector('.sw-count')?.textContent.includes('1 reviewed') && !document.querySelector('.sw-card.out-left')")
-            await e.wait(f"document.querySelector('.sw-count')?.textContent.startsWith('{total - 2} to go')")
+            await e.wait(f"{pos}?.startsWith('3 / {total} ·') && !document.querySelector('.sw-card.out-left')")
             assert api("/status")["trash"] == 1
             await e.key("z")
-            await e.wait(f"document.querySelector('.sw-count')?.textContent.startsWith('{total - 1} to go')")
+            await e.wait(f"{pos}?.startsWith('2 / {total} ·')")
             assert api("/status")["trash"] == 0
+            # a star rates it and moves on; an album puts it there and moves on (Z takes it out again)
+            rated = await e.js("document.querySelector('.sw-card:not(.under) img')?.alt")
+            await e.js("document.querySelectorAll('.sw-star')[3].click(); true")
+            await e.wait(f"{pos}?.startsWith('3 / {total} ·')")
+            assert any(i["name"] == rated and i["rating"] == 4 for i in api("/files?q=rating:4&limit=500")["items"])
+            await e.wait("[...document.querySelectorAll('.sw-album')].some(b => b.textContent === 'Swiped')")
+            await e.js("[...document.querySelectorAll('.sw-album')].find(b => b.textContent === 'Swiped').click(); true")
+            await e.wait(f"{pos}?.startsWith('4 / {total} ·')")
+            assert api("/files?q=album:Swiped")["total"] == 1
+            await e.key("z")
+            await e.wait(f"{pos}?.startsWith('3 / {total} ·')")
+            assert api("/files?q=album:Swiped")["total"] == 0
+            # the picker: something else to go through, here a recent stretch of days
+            await e.js("document.querySelector('.sw-pick').click(); true")
+            await e.wait("document.querySelector('.sw-menu')")
+            await e.js("[...document.querySelectorAll('.sw-menu .menu-item')].find(b => b.textContent === 'Last 30 days').click(); true")
+            await e.wait("document.querySelector('.sw-pick').textContent === 'Last 30 days' && document.querySelector('.sw-where').textContent.startsWith('1 / ')")
             await e.key("Escape")
-            await e.wait("!document.querySelector('.swipe') && document.querySelector('.toast')?.textContent.startsWith('Swipe review: 1 kept')")
+            await e.wait("!document.querySelector('.swipe') && document.querySelector('.toast')?.textContent.startsWith('Swipe review: 2 kept')")
             # a search kept as a smart album: in Albums with a search icon, holding what the search finds
             await e.js("const q = document.getElementById('q'); q.value = 'lora:aurelia '; q.dispatchEvent(new Event('input')); true")
             await e.wait("!document.getElementById('save-search').hidden")
@@ -517,10 +535,10 @@ def test_swipe_review_and_smart_albums(server):
         asyncio.run(go())
     finally:  # the shared library as it was
         api("/sort/reset", {"view": {"sort": "newest"}})
-        smart = next((a for a in api("/albums")["albums"] if a["name"] == "Aurelia picks"), None)
-        if smart:
-            req = urllib.request.Request(api.base + f"/api/albums/{smart['id']}", method="DELETE", headers={"X-MLG-Token": api.token})
-            urllib.request.urlopen(req).close()
+        for a in api("/albums")["albums"]:
+            if a["name"] in ("Aurelia picks", "Swiped"):
+                req = urllib.request.Request(api.base + f"/api/albums/{a['id']}", method="DELETE", headers={"X-MLG-Token": api.token})
+                urllib.request.urlopen(req).close()
 
 
 def test_organising(server):
@@ -546,6 +564,12 @@ def test_organising(server):
             await e.js("const d = document.querySelector('dialog[open]'); d.querySelector('input[aria-label=Album]').value = 'UI picks'; d.querySelector('button[type=submit]').click(); true")
             await e.wait("[...document.querySelectorAll('#albums .nav-item')].some(a => a.textContent.includes('UI picks'))")
             assert api("/files?q=album:%22UI%20picks%22")["total"] == 2
+            # and to a character, a new one (made as it's named)
+            await e.js("[...document.querySelectorAll('#selbar .btn')].find(b => b.textContent.startsWith('Character')).click(); true")
+            await e.wait("document.querySelector('dialog[open] input[aria-label=Character]')")
+            await e.js("const d = document.querySelector('dialog[open]'); d.querySelector('input[aria-label=Character]').value = 'UI pal'; d.querySelector('button[type=submit]').click(); true")
+            await e.wait("document.querySelector('.toast')?.textContent.includes('added to UI pal')")
+            assert api("/files?q=character:%22UI%20pal%22")["total"] == 2
             await e.key("Escape")
             await e.wait("document.getElementById('selbar').hidden")
             # Delete one, then Ctrl+Z puts it back
@@ -652,4 +676,76 @@ def test_rotate_in_the_viewer_and_undo(server):
             await e.key("Escape")
             await e.wait("!document.querySelector('.v-crop') && document.getElementById('v-edit').hidden && !document.getElementById('viewer').hidden")
             assert not await e.js("window.__errors.length")
+    asyncio.run(go())
+
+
+def test_albums_and_subfolders_nest_in_the_sidebar(server):
+    url, api = server
+    ids = [i["id"] for i in api("/files?limit=3")["items"]]
+    api("/ops/bulk", {"selection": ids[:1], "action": "album", "value": "Nest / Inner"})
+    api("/ops/bulk", {"selection": ids[1:3], "action": "album", "value": "Nest/Inner/Deep"})
+
+    async def go():
+        async with page(url) as e:
+            rows = "[...document.querySelectorAll('#albums .nav-item')].map(b => b.title)"
+            await e.wait(f"{rows}.includes('Nest')")
+            assert "Nest / Inner" not in await e.js(rows)  # closed until opened
+            await e.js("[...document.querySelectorAll('#albums .nav-item')].find(b => b.title === 'Nest').click(); true")
+            await e.wait("document.getElementById('view-title').textContent === 'Nest' && document.querySelectorAll('.tile').length === 3")
+            await e.js("[...document.querySelectorAll('#albums .nav-item')].find(b => b.title === 'Nest').querySelector('.twist').click(); true")
+            await e.wait(f"{rows}.includes('Nest / Inner')")
+            n = await e.js("[...document.querySelectorAll('#albums .nav-item')].find(b => b.title === 'Nest').querySelector('.n').textContent")
+            assert n == "3"
+            # a move (as a drag or Move to... makes) takes the album inside with it, and the sidebar follows
+            await e.js("[...document.querySelectorAll('#albums .nav-item')].find(b => b.title === 'Nest / Inner').click(); true")
+            await e.wait("document.getElementById('view-title').textContent === 'Nest / Inner'")
+            # a folder's subfolders: opened from its arrow, each a view of what's in it and deeper
+            await e.js("document.querySelector('#folders .twist:not(.none)').click(); true")
+            await e.wait("document.querySelectorAll('#folders .nav-item').length > 1")
+            want = await e.js("+document.querySelectorAll('#folders .nav-item')[1].querySelector('.n').textContent")
+            await e.js("document.querySelectorAll('#folders .nav-item')[1].click(); true")
+            await e.wait(f"document.getElementById('view-title').textContent.includes(' / ') && document.querySelectorAll('.tile').length === {want}")
+            assert not await e.js("window.__errors.length")
+    asyncio.run(go())
+    r = api("/albums/move", {"path": "Nest / Inner", "to": "Inner"})
+    assert r["moved"] == 2
+    names = [a["name"] for a in api("/albums")["albums"]]
+    assert "Inner / Deep" in names and not any(n.startswith("Nest") for n in names)
+    for a in api("/albums")["albums"]:
+        if a["name"].startswith("Inner"):
+            urllib.request.urlopen(urllib.request.Request(f"{api.base}/api/albums/{a['id']}", headers={"X-MLG-Token": api.token}, method="DELETE"))
+
+
+def test_the_phone_layout(server):
+    url, api = server
+    total = api("/files")["total"]
+    phone = url.replace("/?t=", "/m?t=")
+
+    async def go():
+        async with page(phone, width=390, height=844) as e:
+            await e.wait("document.querySelectorAll('.p-tile').length > 4")
+            assert await e.js("document.documentElement.scrollWidth <= innerWidth")  # nothing wider than the phone
+            assert await e.js("document.querySelector('.p-title').textContent") == f"All{total:,}"
+            # a long press selects, and the bar becomes what can be done with the selection
+            await e.js("const t = document.querySelectorAll('.p-tile')[1]; t.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, clientX: 5, clientY: 5})); true")
+            await asyncio.sleep(0.6)
+            await e.js("const t = document.querySelectorAll('.p-tile')[1]; t.dispatchEvent(new PointerEvent('pointerup', {bubbles: true})); t.click(); true")
+            await e.wait("document.querySelector('.p-title').textContent === '1 selected'")
+            assert "Delete" in await e.js("document.querySelector('.p-bar').innerText")
+            await e.js("document.querySelector('.p-top .p-icon').click(); true")
+            await e.wait("!document.querySelector('.p-app').classList.contains('selecting')")
+            # a tap opens the viewer; a swipe to the left shows the next one
+            await e.js("document.querySelector('.p-tile').click(); true")
+            await e.wait("document.querySelector('.pv-pos')?.textContent.startsWith('1 of')")
+            await e.js("""const s = document.querySelector('.pv-stage'), ev = (t, x) => s.dispatchEvent(new PointerEvent(t, {bubbles: true, pointerId: 7, clientX: x, clientY: 400}));
+                ev('pointerdown', 320); ev('pointermove', 200); ev('pointermove', 60); ev('pointerup', 60); true""")
+            await e.wait("document.querySelector('.pv-pos')?.textContent.startsWith('2 of')")
+            await e.js("document.querySelector('.pv-top [aria-label=Details]').click(); true")
+            await e.wait("document.querySelector('.pv-sheet')?.innerText.includes('TAGS')")
+            await e.js("document.querySelector('.pv-top [aria-label=Close]').click(); true")
+            await e.wait("!document.querySelector('.p-viewer')")
+            # Browse: the folders and albums, as in the sidebar
+            await e.js("[...document.querySelectorAll('.p-bar .p-tab')].find(b => b.innerText === 'Browse').click(); true")
+            await e.wait("document.querySelector('.p-browse')?.innerText.includes('FOLDERS')")
+            assert not await e.js("window.__errors.length"), await e.js("window.__errors")
     asyncio.run(go())

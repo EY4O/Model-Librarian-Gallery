@@ -25,6 +25,9 @@ DEFAULTS = {
     "inbox_downloads": True,    # New downloads: offer the pictures in Windows' Downloads folder for filing (a library for illustrations)
     "inbox_folders": [],        # ... and these folders' too (a Discord or Telegram save folder, say)
     "inbox_notify": False,      # a Windows notification when new pictures arrive there
+    "remote": False,            # Phone and tablet: paired devices on the home network or Tailscale can open the library
+    "remote_port": 8766,        # ... on this port (it stays the same, so a paired device's address does)
+    "remote_devices": [],       # ... these: {id, name, hash of its key, added, seen} (remote.py)
 }
 
 
@@ -70,6 +73,24 @@ class Settings:
     def get(self, key: str):
         return self._values.get(key, DEFAULTS.get(key))
 
+    def fresh(self) -> None:
+        """Read the file again if it changed (another Gallery on this PC, with another library, may have written it)."""
+        try:
+            mtime = os.stat(self.path).st_mtime_ns
+        except OSError:
+            return
+        if mtime == getattr(self, "_mtime", None):
+            return
+        with self._lock:
+            try:
+                with open(self.path, encoding="utf-8") as f:
+                    stored = json.load(f)
+                if isinstance(stored, dict):
+                    self._values.update({k: v for k, v in stored.items() if k in DEFAULTS})
+                self._mtime = mtime
+            except (OSError, ValueError):
+                pass
+
     def all(self) -> dict:
         return dict(self._values)
 
@@ -86,4 +107,8 @@ class Settings:
                 if k in DEFAULTS and isinstance(v, type(DEFAULTS[k])):
                     self._values[k] = v
             write_atomic(self.path, json.dumps(self._values, indent=1).encode("utf-8"))
+            try:
+                self._mtime = os.stat(self.path).st_mtime_ns
+            except OSError:
+                pass
             return dict(self._values)
