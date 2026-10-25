@@ -24,6 +24,10 @@ mimetypes.init()  # first: a later init() would drop the types added below (and 
 mimetypes.add_type("image/webp", ".webp")
 mimetypes.add_type("video/webm", ".webm")
 mimetypes.add_type("video/mp4", ".mp4")
+mimetypes.add_type("video/mp4", ".m4v")
+mimetypes.add_type("video/mp4", ".mov")  # QuickTime is the same container family: WebView2 plays it when it's called mp4 (Live Photos)
+mimetypes.add_type("image/avif", ".avif")
+mimetypes.add_type("image/bmp", ".bmp")
 mimetypes.add_type("text/javascript", ".js")
 
 
@@ -53,6 +57,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_get("/", index)
     r.add_static("/ui/", UI_DIR, show_index=False)
     r.add_get("/api/status", status)
+    r.add_post("/api/library/kind", library_kind)
     r.add_get("/api/folders", folders)
     r.add_post("/api/folders", add_folder)
     r.add_post("/api/folders/pick", pick)
@@ -172,6 +177,17 @@ async def status(request):
     st = await asyncio.to_thread(_lib(request).status)
     st["update"] = request.app[UPDATER].available()  # a newer Gallery on GitHub (only known once it's been asked)
     return web.json_response(st)
+
+
+async def library_kind(request):
+    """What this library is for (AI generations, photos, illustrations): asked once, changeable in Settings."""
+    b = await _body(request)
+    try:
+        kinds = b.get("kinds") if isinstance(b.get("kinds"), list) else [str(b.get("kind") or "")]
+        kinds = await asyncio.to_thread(_lib(request).set_kinds, [str(k) for k in kinds])
+    except ValueError as ex:
+        return _err(str(ex), 422)
+    return web.json_response({"kinds": kinds})
 
 
 async def folders(request):
@@ -344,7 +360,7 @@ async def character_create(request):
     b = await _body(request)
     try:
         rules, aliases = _rules(b)
-        cid = await asyncio.to_thread(_lib(request).character_save, None, b.get("name"), aliases, rules or [])
+        cid = await asyncio.to_thread(_lib(request).character_save, None, b.get("name"), aliases, rules or [], who=b.get("who"))
     except ValueError as ex:
         return _err(str(ex), 422)
     return web.json_response(await asyncio.to_thread(_lib(request).character, cid))
@@ -365,6 +381,8 @@ async def character_update(request):
     try:
         rules, aliases = _rules(b)
         kw = {"cover": b["cover"]} if "cover" in b else {}
+        if "who" in b:
+            kw["who"] = b["who"]
         await asyncio.to_thread(lib.character_save, cid, b.get("name", cur["name"]), aliases if "aliases" in b else cur["aliases"], rules, **kw)
     except ValueError as ex:
         return _err(str(ex), 422)
@@ -482,7 +500,7 @@ async def file_edit(request, b):
     from . import edit
     lib = _lib(request)
     r = await asyncio.to_thread(edit.apply, lib.db, int(request.match_info["id"]), b.get("rotate") or 0, bool(b.get("flip")),
-                                b.get("crop"), bool(b.get("copy")))
+                                b.get("crop"), bool(b.get("copy")), b.get("of"))
     lib.thumbs.nudge()
     lib.meta.nudge()
     return r
@@ -973,6 +991,11 @@ async def original(request):
     path = await asyncio.to_thread(_lib(request).file_path, fid)
     if not path or not os.path.isfile(path):
         return _err("That file isn't there any more.", 404)
+    from .thumbs import NOT_IN_BROWSER
+    if os.path.splitext(path)[1].lower() in NOT_IN_BROWSER and request.query.get("raw") != "1":
+        shown = await asyncio.to_thread(_lib(request).thumbs.display, fid)  # HEIC, TIFF: a large WebP of it
+        if shown:
+            return web.FileResponse(shown, headers={"Cache-Control": "no-cache", "Content-Type": "image/webp"})
     return web.FileResponse(path, headers={"Cache-Control": "no-cache"})  # ranges supported: videos seek
 
 

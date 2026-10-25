@@ -3,6 +3,26 @@
 export const TOKEN = document.querySelector('meta[name="mlg-token"]').content;
 export const $ = (id) => document.getElementById(id);
 
+// what this library is for: one or more of ai, photos, illustrations (null until it's been asked); it decides what the screens show
+export const lib = { kinds: null };
+export const has = (kind) => (lib.kinds || ["ai"]).includes(kind);  // not asked yet: as before, AI generations
+export const aiOnly = () => !lib.kinds || lib.kinds.join() === "ai";
+// what one file is, from what's been read of it (as the server's library.FILE_IS): generation data, else a date taken, else neither
+export const fileIs = (f) => (f.meta === 1 ? "ai" : f.taken ? "photo" : "illustration");
+export const KINDS = [
+  ["ai", "AI generations", "Images and videos you generate: what made each one, models and LoRAs, characters."],
+  ["photos", "Photos", "Pictures from your phone or camera, and scans: grouped by the day they were taken, with People."],
+  ["illustrations", "Illustrations", "Art you've downloaded or made yourself, with Characters."],
+];
+// People in a photo library, Characters in the others, both in a library for photos and more: one list underneath,
+// each entry a person or a character
+export const mixedWho = () => has("photos") && (has("ai") || has("illustrations"));
+export function who(many = true, capital = true) {
+  const w = mixedWho() ? (many ? "people & characters" : "person or character")
+    : has("photos") ? (many ? "people" : "person") : (many ? "characters" : "character");
+  return capital ? w[0].toUpperCase() + w.slice(1) : w;
+}
+
 // append, prepend and replaceChildren skip a child that's left out (null or false), as h() does, instead of
 // writing "null" on the screen
 for (const m of ["append", "prepend", "replaceChildren"]) {

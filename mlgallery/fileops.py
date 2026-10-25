@@ -9,6 +9,7 @@
 * Every operation is written to `ops` first, with what's needed to undo it.
 
 A file is in the Trash when files.missing = 2 (so every view that lists files with missing = 0 leaves it out).
+A Live Photo's video goes wherever its photo goes, under the photo's name (scan.pair_live).
 """
 from __future__ import annotations
 
@@ -29,8 +30,31 @@ class OpError(ValueError):
 
 
 def _row(c, fid: int):
-    return c.execute("SELECT f.id, f.folder_id, f.rel, f.name, f.size, f.fp, f.missing, f.trash_rel, d.path AS root, d.online"
+    return c.execute("SELECT f.id, f.folder_id, f.rel, f.name, f.size, f.fp, f.missing, f.trash_rel, f.motion, d.path AS root, d.online"
                      " FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.id=?", (fid,)).fetchone()
+
+
+PRESENT = (0, scan.PAIRED)  # in its folder: shown, or shown with its Live Photo
+
+
+def _with_motion(c, rows) -> list[tuple]:
+    """(row, photo id) for the files asked for, each Live Photo followed by its video (photo id: the photo it goes with)."""
+    out, seen = [], set()
+    for r in rows:
+        if r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        out.append((r, None))
+        m = _row(c, r["motion"]) if r["motion"] else None
+        if m and m["id"] not in seen:
+            seen.add(m["id"])
+            out.append((m, r["id"]))
+    return out
+
+
+def _as_photo(photo_name: str, video_name: str) -> str:
+    """A Live Photo's video under its photo's name (IMG_1234 (2).HEIC -> IMG_1234 (2).MOV), so they stay a pair."""
+    return os.path.splitext(photo_name)[0] + os.path.splitext(video_name)[1]
 
 
 def _full(root: str, rel: str) -> str:
@@ -117,6 +141,30 @@ def record(c, kind: str, summary: str, data) -> int:
 
 
 # ---------------------------------------------------------------- move
+def _free_pair(dest_dir: str, photo: str, video: str, taken: set[str], held=None) -> tuple[str, str]:
+    """One name free for both halves of a Live Photo there: IMG_3.HEIC and IMG_3.MOV, else IMG_3 (2).HEIC and IMG_3 (2).MOV."""
+    stem, pe = os.path.splitext(photo)
+    ve = os.path.splitext(video)[1]
+    n = 1
+    while True:
+        s = stem if n == 1 else f"{stem} ({n})"
+        names = (s + pe, s + ve)
+        if not any(os.path.exists(os.path.join(dest_dir, x)) or os.path.normcase(os.path.join(dest_dir, x)) in taken
+                   or (held is not None and held(x)) for x in names):
+            taken.update(os.path.normcase(os.path.join(dest_dir, x)) for x in names)
+            return names
+        n += 1
+
+
+def _touched(items) -> set[int]:
+    """The folders some file items were in or went to (for the Live Photo pairing there)."""
+    out = set()
+    for it in items if isinstance(items, list) else ():
+        if isinstance(it, dict):
+            out.update(int(it[k]) for k in ("folder", "from_folder", "to_folder") if it.get(k) is not None)
+    return out
+
+
 def plan_move(db, ids: list[int], dest_folder: int, sub: str = "") -> dict:
     """What a move would do, before anything happens."""
     sub = _clean_sub(sub)
@@ -132,21 +180,37 @@ def plan_move(db, ids: list[int], dest_folder: int, sub: str = "") -> dict:
         out = {"count": 0, "size": 0, "renamed": 0, "already": 0, "unavailable": 0, "copies": 0, "dest": dest_dir, "items": []}
         taken: set[str] = set()
         held = _held(c, d["id"], sub)
-        for r in rows:
+        listed = _with_motion(c, rows)
+        video_of = {photo: r for r, photo in listed if photo is not None}
+        names: dict[int, str] = {}  # the name a Live Photo's video gets there, chosen with its photo's
+        for r, photo in listed:
             src = _full(r["root"], r["rel"])
-            if r["missing"] or not r["online"] or not os.path.isfile(src):
-                out["unavailable"] += 1
-                continue
-            if os.path.normcase(os.path.dirname(src)) == os.path.normcase(dest_dir):
-                out["already"] += 1
-                continue
-            name = _free_name(dest_dir, r["name"], taken, held)
-            out["renamed"] += name != r["name"]
-            out["copies"] += not _same_drive(src, d["path"])
-            out["count"] += 1
+            ok = r["missing"] in PRESENT and r["online"] and os.path.isfile(src)
+            if photo is not None:  # a Live Photo's video: where its photo goes, under its name, if its photo goes
+                if r["id"] not in names or not ok:
+                    continue
+                name = names[r["id"]]
+            else:
+                if not ok:
+                    out["unavailable"] += 1
+                    continue
+                if os.path.normcase(os.path.dirname(src)) == os.path.normcase(dest_dir):
+                    out["already"] += 1
+                    continue
+                v = video_of.get(r["id"])
+                if v is not None:
+                    name, names[v["id"]] = _free_pair(dest_dir, r["name"], v["name"], taken, held)
+                else:
+                    name = _free_name(dest_dir, r["name"], taken, held)
+                out["renamed"] += name != r["name"]
+                out["count"] += 1  # a Live Photo counts as one file
+            out["copies"] += photo is None and not _same_drive(src, d["path"])
             out["size"] += r["size"] or 0
             rel = (f"{sub}/{name}" if sub else name)
-            out["items"].append({"id": r["id"], "from_folder": r["folder_id"], "from_rel": r["rel"], "to_folder": d["id"], "to_rel": rel})
+            item = {"id": r["id"], "from_folder": r["folder_id"], "from_rel": r["rel"], "to_folder": d["id"], "to_rel": rel}
+            if photo is not None:
+                item["with"] = photo
+            out["items"].append(item)
     return out
 
 
@@ -164,58 +228,95 @@ def move(db, ids, dest_folder: int, sub: str = "") -> dict:
     if not plan["count"]:
         raise OpError("Nothing to move: those files are already there, or not reachable.")
     done, failed = [], []
+    moved: dict[int, dict] = {}  # photos (and files) moved, by id: a Live Photo's video goes only after its photo
     with db.read() as c:
         roots = {r["id"]: r["path"] for r in c.execute("SELECT id, path FROM folders")}
     for it in plan["items"]:
+        photo = it.get("with")
+        if photo is not None and photo not in moved:
+            continue  # its photo didn't move: neither does it
         src, dst = _full(roots[it["from_folder"]], it["from_rel"]), _full(roots[it["to_folder"]], it["to_rel"])
         try:
             _move_file(src, dst)
+            if not _relocate(db, it["id"], it["to_folder"], it["to_rel"]):
+                _move_file(dst, src)  # the index has that name already (it changed meanwhile): put the file back
+                raise OpError("that name was taken meanwhile")
         except (OSError, OpError) as ex:
-            failed.append({"id": it["id"], "error": str(ex)})
-            continue
-        if not _relocate(db, it["id"], it["to_folder"], it["to_rel"]):
-            _move_file(dst, src)  # the index has that name already (it changed meanwhile): put the file back
-            failed.append({"id": it["id"], "error": "that name was taken meanwhile"})
+            failed.append({"id": it["id"] if photo is None else photo, "error": str(ex)})
+            if photo is not None:  # its video wouldn't go: the photo goes back, so the two stay together
+                p = moved.pop(photo)
+                try:
+                    _move_file(_full(roots[p["to_folder"]], p["to_rel"]), _full(roots[p["from_folder"]], p["from_rel"]))
+                    _relocate(db, p["id"], p["from_folder"], p["from_rel"])
+                    done.remove(p)
+                except (OSError, OpError):
+                    pass  # it stays moved, on its own
             continue
         done.append(it)
+        if photo is None:
+            moved[it["id"]] = it
     op = None
     if done:
         with db.write() as c:
-            op = record(c, "move", f"Moved {len(done)} file{'s' if len(done) != 1 else ''} to {os.path.basename(plan['dest']) or plan['dest']}", done)
+            n = sum(1 for it in done if "with" not in it)
+            op = record(c, "move", f"Moved {n} file{'s' if n != 1 else ''} to {os.path.basename(plan['dest']) or plan['dest']}", done)
+            scan.pair_live(c, _touched(done))
             _recount(c)
-    return {"op": op, "moved": len(done), "failed": failed}
+    return {"op": op, "moved": sum(1 for it in done if "with" not in it), "failed": failed}
 
 
 # ---------------------------------------------------------------- the Trash
 def trash(db, ids) -> dict:
-    """Into the Gallery's Trash (the folder's .mlg-trash, same drive: instant)."""
+    """Into the Gallery's Trash (the folder's .mlg-trash, same drive: instant). A Live Photo goes whole: its video
+    first, and if that can't go (in use), the photo stays too."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
     done, failed = [], []
     with db.read() as c:
-        rows = [r for r in (_row(c, int(i)) for i in list(ids)[:MAX_ITEMS]) if r]
-    for r in rows:
+        groups: list[list] = []  # [file, its Live Photo video or None]
+        for r, photo in _with_motion(c, [r for r in (_row(c, int(i)) for i in list(ids)[:MAX_ITEMS]) if r]):
+            if photo is None:
+                groups.append([r, None])
+            else:
+                groups[-1][1] = r  # a video comes right after its photo
+    shown, unmarked = 0, []
+    for r, video in groups:
         src = _full(r["root"], r["rel"])
-        if r["missing"] or not r["online"] or not os.path.isfile(src):
+        if r["missing"] not in PRESENT or not r["online"] or not os.path.isfile(src):
             failed.append({"id": r["id"], "error": "not reachable"})
             continue
-        trash_rel = f"{TRASH}/{stamp}/{r['rel']}"
-        dst = _full(r["root"], trash_rel)
+        moved = []
         try:
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            os.rename(src, dst)  # inside its own folder: always the same drive
+            for f in ([video] if video is not None and os.path.isfile(_full(video["root"], video["rel"])) else []) + [r]:
+                trash_rel = f"{TRASH}/{stamp}/{f['rel']}"
+                dst = _full(f["root"], trash_rel)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                os.rename(_full(f["root"], f["rel"]), dst)  # inside its own folder: always the same drive
+                moved.append({"id": f["id"], "folder": f["folder_id"], "rel": f["rel"], "trash_rel": trash_rel})
         except OSError as ex:
+            for m in moved:  # the photo wouldn't go: its video comes back out
+                try:
+                    os.rename(_full(r["root"], m["trash_rel"]), _full(r["root"], m["rel"]))
+                    _tidy_trash(r["root"], m["trash_rel"])
+                except OSError:
+                    done.append(m)  # it stays in the Trash, on its own
+                    unmarked.append(m)
             failed.append({"id": r["id"], "error": str(ex)})
             continue
-        done.append({"id": r["id"], "folder": r["folder_id"], "rel": r["rel"], "trash_rel": trash_rel})
-        if len(done) % 200 == 0:  # the index in batches: one write per file made thousands slow
-            _mark_trashed(db, done[-200:])
-    _mark_trashed(db, done[len(done) - len(done) % 200:])
+        moved.sort(key=lambda m: m["id"] != r["id"])  # the photo first: putting it back (Undo) brings its video with it
+        done.extend(moved)
+        unmarked.extend(moved)
+        shown += 1
+        if len(unmarked) >= 200:  # the index in batches: one write per file made thousands slow
+            _mark_trashed(db, unmarked)
+            unmarked = []
+    _mark_trashed(db, unmarked)
     op = None
     if done:
         with db.write() as c:
-            op = record(c, "trash", f"Moved {len(done)} file{'s' if len(done) != 1 else ''} to the Trash", done)
+            op = record(c, "trash", f"Moved {shown} file{'s' if shown != 1 else ''} to the Trash", done)
+            scan.pair_live(c, _touched(done))
             _recount(c)
-    return {"op": op, "trashed": len(done), "failed": failed}
+    return {"op": op, "trashed": shown, "failed": failed}
 
 
 def _mark_trashed(db, items: list[dict]) -> None:
@@ -239,10 +340,24 @@ def restore(db, ids, *, as_op: bool = True) -> dict:
     """Back where they were (or beside it, " (2)", if something has taken the name meanwhile)."""
     done, failed = [], []
     with db.read() as c:
-        rows = [r for r in (_row(c, int(i)) for i in list(ids)[:MAX_ITEMS]) if r and r["missing"] == 2]
-    for r in rows:
+        pairs = _with_motion(c, [r for r in (_row(c, int(i)) for i in list(ids)[:MAX_ITEMS]) if r and r["missing"] == 2])
+    names: dict[int, str] = {}  # the name each photo is put back under, for its Live Photo video
+    video_of = {photo: r for r, photo in pairs if photo is not None}
+    for r, photo in pairs:
+        if r["missing"] != 2 or (photo is not None and photo not in names):
+            continue
         src = _full(r["root"], r["trash_rel"])
         rel = r["rel"]
+        if photo is not None:
+            rel = "/".join(rel.split("/")[:-1] + [_as_photo(names[photo], rel.split("/")[-1])])
+        elif r["id"] in video_of and video_of[r["id"]]["missing"] == 2:  # a Live Photo: a name free for both, if its own isn't
+            v = video_of[r["id"]]
+            folder = os.path.dirname(_full(r["root"], rel))
+            with db.read() as c:
+                held = _held(c, r["folder_id"], "/".join(rel.split("/")[:-1]))
+                own = {rel.split("/")[-1].casefold(), _as_photo(rel.split("/")[-1], v["rel"].split("/")[-1]).casefold()}
+                name, _ = _free_pair(folder, rel.split("/")[-1], v["rel"].split("/")[-1], set(), lambda n: n.casefold() not in own and held(n))
+            rel = "/".join(rel.split("/")[:-1] + [name])
         dst = _full(r["root"], rel)
         parent = "/".join(rel.split("/")[:-1])
         with db.read() as c:
@@ -260,17 +375,20 @@ def restore(db, ids, *, as_op: bool = True) -> dict:
             failed.append({"id": r["id"], "error": str(ex)})
             continue
         done.append({"id": r["id"], "folder": r["folder_id"], "rel": rel, "trash_rel": r["trash_rel"]})
+        names[r["id"]] = rel.split("/")[-1]
         _tidy_trash(r["root"], r["trash_rel"])
         if len(done) % 200 == 0:
             _mark_restored(db, done[-200:])
     _mark_restored(db, done[len(done) - len(done) % 200:])
     op = None
+    shown = sum(1 for r, photo in pairs if photo is None and r["id"] in names)
     if done:
         with db.write() as c:
             if as_op:
-                op = record(c, "restore", f"Put back {len(done)} file{'s' if len(done) != 1 else ''} from the Trash", done)
+                op = record(c, "restore", f"Put back {shown} file{'s' if shown != 1 else ''} from the Trash", done)
+            scan.pair_live(c, _touched(done))
             _recount(c)
-    return {"op": op, "restored": len(done), "failed": failed}
+    return {"op": op, "restored": shown, "failed": failed}
 
 
 def empty(db, ids=None) -> dict:
@@ -279,9 +397,10 @@ def empty(db, ids=None) -> dict:
     from send2trash import send2trash
     with db.read() as c:
         if ids is None:
-            rows = c.execute("SELECT f.id, f.trash_rel, d.path AS root FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.missing=2").fetchall()
+            rows = c.execute("SELECT f.id, f.trash_rel, f.motion, d.path AS root FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.missing=2").fetchall()
         else:
-            rows = [r for r in (_row(c, int(i)) for i in list(ids)[:MAX_ITEMS]) if r and r["missing"] == 2]
+            rows = [r for r, _ in _with_motion(c, [r for r in (_row(c, int(i)) for i in list(ids)[:MAX_ITEMS]) if r and r["missing"] == 2])
+                    if r["missing"] == 2]
     gone, failed = [], []
     for r in rows:
         p = _full(r["root"], r["trash_rel"])
@@ -311,14 +430,16 @@ def empty(db, ids=None) -> dict:
                 os.rmdir(os.path.join(root, TRASH))  # nothing else left in it
             except OSError:
                 pass
+    videos = {r["motion"] for r in rows if r["motion"]}
+    shown = sum(1 for i in gone if i not in videos)  # a Live Photo counts as one
     if gone or backups:
         with db.write() as c:
             c.executemany("DELETE FROM files WHERE id=?", [(i,) for i in gone])
-            what = [f"{len(gone)} file{'s' if len(gone) != 1 else ''} from the Trash"] if gone else []
+            what = [f"{shown} file{'s' if shown != 1 else ''} from the Trash"] if gone else []
             what += [f"{backups} original{'s' if backups != 1 else ''} kept for undoing edits"] if backups else []
             record(c, "empty", f"Sent {' and '.join(what)} to the Recycle Bin", {"count": len(gone), "backups": backups})
             _recount(c)
-    return {"emptied": len(gone), "backups": backups, "failed": failed}
+    return {"emptied": shown, "backups": backups, "failed": failed}
 
 
 def _tidy_trash(root: str, trash_rel: str) -> None:
@@ -354,7 +475,9 @@ def undo(db, op_id: int) -> dict:
         with db.read() as c:
             roots = {r["id"]: r["path"] for r in c.execute("SELECT id, path FROM folders")}
         back, failed = 0, []
-        for it in reversed(data):
+        for it in [i for i in reversed(data) if "with" not in i] + [i for i in reversed(data) if "with" in i]:
+            if "with" in it and it["with"] in failed:
+                continue  # its photo couldn't go back: it stays with it
             cur = None
             with db.read() as c:
                 cur = c.execute("SELECT folder_id, rel FROM files WHERE id=?", (it["id"],)).fetchone()
@@ -381,7 +504,7 @@ def undo(db, op_id: int) -> dict:
         with db.read() as c:
             states = {r[0]: r[1] for r in c.execute(f"SELECT id, missing FROM files WHERE id IN ({','.join('?' * len(ids))})", ids)} if ids else {}
         r = restore(db, ids, as_op=False)
-        back = sum(1 for i in ids if states.get(i) == 0)  # put back already
+        back = sum(1 for i in ids if states.get(i) in PRESENT)  # put back already
         result = {"undone": r["restored"] + back, "failed": [f["id"] for f in r["failed"]], "gone": [i for i in ids if i not in states]}
         if not result["undone"] and not result["failed"]:
             with db.write() as c:
@@ -410,6 +533,7 @@ def undo(db, op_id: int) -> dict:
     with db.write() as c:
         if not result.get("failed"):  # a part that failed can be tried again
             c.execute("UPDATE ops SET undone=? WHERE id=?", (time.time(), op["id"]))
+        scan.pair_live(c, _touched(data))
         _recount(c)
     if result.get("failed") and not result.get("undone"):
         raise OpError("Nothing could be undone: the files changed since (moved again, or something else took their place).")

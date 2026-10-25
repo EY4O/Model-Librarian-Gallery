@@ -27,40 +27,41 @@ def overview(lib, days: int | None = 30, models=None, *, fresh: bool = False) ->
 
 def _overview(lib, days: int | None = 30, models=None) -> dict:
     since = time.time() - days * 86400 if days else 0
-    base = "FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.missing=0 AND d.online=1 AND f.mtime >= ?"
+    base = "FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.missing=0 AND d.online=1 AND f.shot >= ?"
     a = [since]
     out: dict = {"days": days}
     with lib.db.read() as c:
+        from .library import FILE_IS
         t = c.execute(f"SELECT COUNT(*) n, SUM(f.kind='image') images, SUM(f.kind='video') videos, COALESCE(SUM(f.size), 0) size,"
-                      f" SUM(f.meta=1) with_data {base}", a).fetchone()
-        out["totals"] = {k: t[k] or 0 for k in ("n", "images", "videos", "size", "with_data")}
+                      f" SUM(f.meta=1) with_data, SUM({FILE_IS['photo']}) photos, SUM({FILE_IS['illustration']}) illustrations {base}", a).fetchone()
+        out["totals"] = {k: t[k] or 0 for k in ("n", "images", "videos", "size", "with_data", "photos", "illustrations")}
         # the timeline: per day for a short range, per week (from Monday) for a longer one
         week = not days or days > 62
-        bucket = f"date(f.mtime, 'unixepoch', 'localtime', 'weekday 0', '-6 days')" if week else DAY
+        bucket = f"date(f.shot, 'unixepoch', 'localtime', 'weekday 0', '-6 days')" if week else DAY
         out["timeline"] = {"by": "week" if week else "day", "points": [dict(r) for r in c.execute(
             f"SELECT {bucket} AS at, SUM(f.kind='image') images, SUM(f.kind='video') videos {base} GROUP BY at ORDER BY at", a)]}
         # what it was made with: each file under its checkpoint's family (the model stored with what made it)
         made_with = c.execute(
             f"SELECT {bucket} AS at, g.model AS model, COUNT(*) n FROM files f JOIN folders d ON d.id=f.folder_id LEFT JOIN generations g ON g.file_id=f.id"
-            f" WHERE f.missing=0 AND d.online=1 AND f.mtime >= ? GROUP BY at, g.model ORDER BY at", a).fetchall()
+            f" WHERE f.missing=0 AND d.online=1 AND f.shot >= ? GROUP BY at, g.model ORDER BY at", a).fetchall()
         model_files = {r[0]: r[1] for r in c.execute("SELECT name, MIN(file) FROM uses WHERE kind IN ('checkpoint', 'unet') GROUP BY name")}
-        uses = f"FROM uses u JOIN files f ON f.id=u.file_id JOIN folders d ON d.id=f.folder_id WHERE f.missing=0 AND d.online=1 AND f.mtime >= ?"
+        uses = f"FROM uses u JOIN files f ON f.id=u.file_id JOIN folders d ON d.id=f.folder_id WHERE f.missing=0 AND d.online=1 AND f.shot >= ?"
         out["checkpoints"] = [dict(r) for r in c.execute(
-            f"SELECT u.name, COUNT(DISTINCT u.file_id) n, MAX(f.mtime) last {uses} AND u.kind IN ('checkpoint', 'unet')"
+            f"SELECT u.name, COUNT(DISTINCT u.file_id) n, MAX(f.shot) last {uses} AND u.kind IN ('checkpoint', 'unet')"
             f" GROUP BY u.name COLLATE NOCASE ORDER BY n DESC LIMIT ?", (*a, TOP))]
         out["loras"] = [dict(r) for r in c.execute(
-            f"SELECT u.name, COUNT(DISTINCT u.file_id) n, AVG(u.strength) strength, MAX(f.mtime) last {uses} AND u.kind='lora'"
+            f"SELECT u.name, COUNT(DISTINCT u.file_id) n, AVG(u.strength) strength, MAX(f.shot) last {uses} AND u.kind='lora'"
             f" GROUP BY u.name COLLATE NOCASE ORDER BY n DESC LIMIT ?", (*a, TOP))]
         out["models_used"] = c.execute(f"SELECT COUNT(DISTINCT lower(u.name)) {uses} AND u.kind IN ('checkpoint', 'unet')", a).fetchone()[0]
         out["loras_used"] = c.execute(f"SELECT COUNT(DISTINCT lower(u.name)) {uses} AND u.kind='lora'", a).fetchone()[0]
         out["characters"] = [dict(r) for r in c.execute(
             "SELECT ch.id, ch.name, COUNT(*) n FROM file_characters fc JOIN characters ch ON ch.id=fc.character_id JOIN files f ON f.id=fc.file_id"
-            " JOIN folders d ON d.id=f.folder_id WHERE fc.state IN ('auto','confirmed') AND f.missing=0 AND d.online=1 AND f.mtime >= ?"
+            " JOIN folders d ON d.id=f.folder_id WHERE fc.state IN ('auto','confirmed') AND f.missing=0 AND d.online=1 AND f.shot >= ?"
             " GROUP BY ch.id ORDER BY n DESC LIMIT ?", (*a, TOP))]
         out["prompt_tags"] = [dict(r) for r in c.execute(  # a file's parts are stored once each: COUNT(*) counts files
             f"SELECT p.tag AS name, COUNT(*) n FROM prompt_tags p JOIN files f ON f.id=p.file_id JOIN folders d ON d.id=f.folder_id"
-            f" WHERE f.missing=0 AND d.online=1 AND f.mtime >= ? GROUP BY p.tag ORDER BY n DESC LIMIT ?", (*a, 15))]
-        gen = f"FROM generations g JOIN files f ON f.id=g.file_id JOIN folders d ON d.id=f.folder_id WHERE f.missing=0 AND d.online=1 AND f.mtime >= ?"
+            f" WHERE f.missing=0 AND d.online=1 AND f.shot >= ? GROUP BY p.tag ORDER BY n DESC LIMIT ?", (*a, 15))]
+        gen = f"FROM generations g JOIN files f ON f.id=g.file_id JOIN folders d ON d.id=f.folder_id WHERE f.missing=0 AND d.online=1 AND f.shot >= ?"
         out["settings"] = {}
         for col in ("sampler", "scheduler", "steps", "cfg"):
             out["settings"][col] = [{"name": r[0], "n": r[1]} for r in c.execute(
@@ -81,7 +82,7 @@ def _overview(lib, days: int | None = 30, models=None) -> dict:
         used = {r[0].lower() for r in c.execute("SELECT DISTINCT name FROM uses")}
         # colours: how much of the pictures each colour family covers (each picture counts once in all)
         col_rows = c.execute(f"SELECT {bucket} AS at, k.family, SUM(k.ratio) s FROM colors k JOIN files f ON f.id=k.file_id JOIN folders d ON d.id=f.folder_id"
-                             f" WHERE f.missing=0 AND d.online=1 AND f.mtime >= ? GROUP BY at, k.family ORDER BY at", a).fetchall()
+                             f" WHERE f.missing=0 AND d.online=1 AND f.shot >= ? GROUP BY at, k.family ORDER BY at", a).fetchall()
     resolve = families.Resolver(models)
     fam_of = {}
     totals: dict[str, int] = {}

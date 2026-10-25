@@ -17,12 +17,15 @@ from PIL.PngImagePlugin import PngInfo
 from . import fileops, scan
 from .fileops import OpError
 
-EDITABLE = {".png", ".jpg", ".jpeg", ".webp"}
+EDITABLE = {".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif", ".tif", ".tiff"}
+TIFF_KEEP = (0x010E, 0x010F, 0x0110, 0x0131, 0x0132, 0x013B, 0x8298)  # description, make, model, software, date, artist, copyright
 ROTATE = {90: Image.Transpose.ROTATE_270, 180: Image.Transpose.ROTATE_180, 270: Image.Transpose.ROTATE_90}  # clockwise, as shown
 
 
-def _edited(src: str, rotate: int, flip: bool, crop) -> tuple[Image.Image, dict, str]:
-    """The picture as the viewer showed it (EXIF orientation applied), flipped, then turned clockwise, then cropped."""
+def _edited(src: str, rotate: int, flip: bool, crop, of=None) -> tuple[Image.Image, dict, str]:
+    """The picture as the viewer showed it (EXIF orientation applied), flipped, then turned clockwise, then cropped.
+    `of`: the size the crop was measured on (the viewer's picture, turned): scaled to the real one, so a crop
+    made on a preview (HEIC, TIFF) or on a picture saved smaller meanwhile lands in the same place."""
     with Image.open(src) as im:
         if getattr(im, "n_frames", 1) > 1:
             raise OpError("Animated pictures can't be edited here.")
@@ -34,7 +37,11 @@ def _edited(src: str, rotate: int, flip: bool, crop) -> tuple[Image.Image, dict,
         if rotate:
             out = out.transpose(ROTATE[rotate])
         if crop:
-            x, y, w, h = (int(round(float(v))) for v in crop)
+            crop = [float(v) for v in crop]
+            if of and float(of[0]) > 0 and float(of[1]) > 0:
+                sx, sy = out.width / float(of[0]), out.height / float(of[1])
+                crop = [crop[0] * sx, crop[1] * sy, crop[2] * sx, crop[3] * sy]
+            x, y, w, h = (int(round(v)) for v in crop)
             x, y = max(0, min(x, out.width - 1)), max(0, min(y, out.height - 1))
             w, h = max(1, min(w, out.width - x)), max(1, min(h, out.height - y))
             out = out.crop((x, y, x + w, y + h))
@@ -63,8 +70,24 @@ def _save(im: Image.Image, info: dict, fmt: str, dest: str) -> None:
         if info.get("xmp"):
             kw["xmp"] = info["xmp"]
         im.save(dest, "WEBP", quality=95, method=4, **kw, **extra)
+    elif fmt == "HEIF":  # an iPhone photo stays one (pillow-heif)
+        kw = {"exif": exif.tobytes()} if len(exif) else {}
+        if info.get("xmp"):
+            kw["xmp"] = info["xmp"]
+        im.save(dest, "HEIF", quality=95, **kw, **extra)
+    elif fmt == "TIFF":  # a scan stays lossless; its own layout tags (size, strips) are the new picture's, only EXIF carries over
+        kept = Image.Exif()
+        for tag in TIFF_KEEP:
+            if tag in exif:
+                kept[tag] = exif[tag]
+        sub = exif.get_ifd(0x8769)
+        if sub:
+            kept[0x8769] = dict(sub)
+        # libtiff (which compresses) can't write the EXIF block that holds the date taken: with one, uncompressed
+        comp = info.get("compression") if not sub and info.get("compression") not in (None, "raw") else None
+        im.save(dest, "TIFF", **({"compression": comp} if comp else {}), **({"exif": kept.tobytes()} if len(kept) else {}), **extra)
     else:
-        raise OpError("Only PNG, JPEG and WebP pictures can be edited here.")
+        raise OpError("Only PNG, JPEG, WebP, HEIC and TIFF pictures can be edited here.")
 
 
 def _refresh(db, fid: int, path: str) -> None:
@@ -78,7 +101,7 @@ def _refresh(db, fid: int, path: str) -> None:
         c.execute("DELETE FROM colors WHERE file_id=?", (fid,))  # cropped: its colours are worked out again
 
 
-def apply(db, fid: int, rotate=0, flip=False, crop=None, copy=False) -> dict:
+def apply(db, fid: int, rotate=0, flip=False, crop=None, copy=False, of=None) -> dict:
     rotate = int(rotate or 0) % 360
     if rotate % 90:
         raise OpError("Turns go in quarters.")
@@ -92,9 +115,11 @@ def apply(db, fid: int, rotate=0, flip=False, crop=None, copy=False) -> dict:
         raise OpError("That file isn't reachable right now.")
     src = fileops._full(r["root"], r["rel"])
     if os.path.splitext(src)[1].lower() not in EDITABLE:
-        raise OpError("Only PNG, JPEG and WebP pictures can be edited here.")
+        raise OpError("Only PNG, JPEG, WebP, HEIC and TIFF pictures can be edited here.")
     st = os.stat(src)
-    im, info, fmt = _edited(src, rotate, bool(flip), crop)
+    if of is not None and (not isinstance(of, (list, tuple)) or len(of) != 2):
+        raise OpError("A crop's size is [width, height].")
+    im, info, fmt = _edited(src, rotate, bool(flip), crop, of)
     folder = {"id": r["folder_id"], "path": r["root"]}
     if copy:
         parent = "/".join(r["rel"].split("/")[:-1])

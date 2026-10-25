@@ -3,7 +3,7 @@
 // scrolls the same at 200 files or 250,000. Day headings come from a per-day count (one small request),
 // so every tile's place is known without fetching the pages above it.
 
-import { $, LOOK_COLORS, LOOK_ICONS, TOKEN, api, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lookIcon, media, menu, plural, stars, store, toast } from "./util.js";
+import { $, KINDS, LOOK_COLORS, LOOK_ICONS, TOKEN, aiOnly, api, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lib, lookIcon, media, menu, plural, stars, store, toast, who } from "./util.js";
 import { renderStats } from "./stats.js";
 import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
 import * as org from "./organize.js";
@@ -56,6 +56,7 @@ function renderChips() {
   $("chips").replaceChildren(...state.chips.map((c, i) => h("span.chip", { title: chipText(c) },
     h("span.k", {}, c.key), c.key === "color" && colorOf(c.value) ? h("i.chip-sw", { style: { background: colorOf(c.value) } }) : null, h("span.v", {}, c.value),
     h("button.x", { type: "button", "aria-label": `Remove ${chipText(c)}`, onclick: () => { state.chips.splice(i, 1); searchChanged(); $("q").focus(); } }, icon("remove")))));
+  renderSide();  // a shortcut to one part of a mixed library lights up while it's the search
   $("q-clear").hidden = !state.chips.length && !state.text;
   $("q").placeholder = state.chips.length ? "" : "Search prompts, models, tags…";
   $("f-fav").setAttribute("aria-pressed", String(state.chips.some((c) => c.key === "is" && c.value === "fav")));
@@ -171,7 +172,10 @@ async function loadFolders() {
 function renderSide() {
   const total = state.folders.reduce((s, f) => s + (f.online ? f.file_count : 0), 0);
   $("all-count").textContent = total ? total.toLocaleString() : "";
-  for (const v of ["all", "recent", "random", "stats", "review", "trash", "duplicates", "history", "settings"]) $(`view-${v}`).classList.toggle("sel", state.view === v);
+  // a shortcut to one part of a mixed library is what's selected while it's the whole search (is:photo...), not All
+  const part = state.view === "all" && !state.text && state.chips.length === 1 && state.chips[0].key === "is" ? state.chips[0].value : null;
+  for (const b of $("kind-nav").querySelectorAll("[data-is]")) b.classList.toggle("sel", b.dataset.is === part);
+  for (const v of ["all", "recent", "random", "stats", "review", "trash", "duplicates", "history", "settings"]) $(`view-${v}`).classList.toggle("sel", state.view === v && !(v === "all" && part && !$("kind-nav").hidden));
   $("view-characters").classList.toggle("sel", state.view === "characters" || state.view === "character");
   const items = state.folders.map((f) => {
     const sel = state.view === "folder" && state.folder === f.id;
@@ -314,6 +318,7 @@ function selectView(view, arg = null) {
 }
 
 const settingsCtx = {
+  setKinds: (kinds) => applyKinds(kinds),
   addFolder: async () => { await addFolder(); if (state.view === "settings") renderSettings($("stats"), settingsCtx); },
   rescan: (f) => rescan(f),
   removeFolder: async (f) => { await removeFolder(f); renderSettings($("stats"), settingsCtx); },
@@ -539,6 +544,8 @@ function tileFor(item) {
     el.append(img);
   }
   if (item.kind === "video") el.append(h("span.badge", {}, icon("play"), fmtDur(item.duration)));
+  else if (item.motion) el.append(h("span.badge.live", { title: "A Live Photo" }, "LIVE"));
+  if (item.kind === "video" ? playable(item) : item.motion) hoverPlay(el, item);
   const sh = state.show;
   const ext = (item.name.split(".").pop() || "").toUpperCase();
   el.append(h("span.t-tr", {}, sh.ext && ext ? h("span.t-ext", {}, ext) : null,
@@ -551,7 +558,7 @@ function tileFor(item) {
   }
   const made = [item.model, item.lora ? `${item.lora}${item.lora_strength != null ? ` ${fmtNum(item.lora_strength)}` : ""}${item.loras > 1 ? ` +${item.loras - 1}` : ""}` : null].filter(Boolean);
   el.append(h("span.name", {}, h("span.n1", {}, item.name), sh.made && made.length ? h("span.n2", {}, made.join(" · ")) : null));
-  el.title = `${item.name}\n${item.width && item.height ? `${item.width} × ${item.height} · ` : ""}${fmtSize(item.size)} · ${fmtDate(item.mtime)}`;
+  el.title = `${item.name}\n${item.width && item.height ? `${item.width} × ${item.height} · ` : ""}${fmtSize(item.size)} · ${fmtDate(item.shot || item.mtime)}`;
   return el;
 }
 
@@ -567,7 +574,7 @@ function thumbSize() {
 function infoLine(item, ext) {
   const k = state.show.infoKind;
   if (k === "size") return fmtSize(item.size);
-  if (k === "date") return fmtDate(item.mtime);
+  if (k === "date") return fmtDate(item.shot || item.mtime);
   if (k === "model") return item.model || "No checkpoint recorded";
   if (k === "type") return item.kind === "video" ? `${ext} video` : `${ext} image`;
   return item.width && item.height ? `${item.width} × ${item.height}` : "";
@@ -937,10 +944,18 @@ function openViewer(i) {
   $("v-prev").disabled = i <= 0;
   $("v-next").disabled = i >= state.total - 1;
   const src = media("file", item.id);
-  const el = item.kind === "video" ? h("video", { src, controls: true, autoplay: true, loop: true }) : h("img", { src, alt: item.name });
+  const el = item.kind === "video" && playable(item) ? h("video", { src, controls: true, autoplay: true, loop: true })
+    : item.kind === "video" ? h("img.v-poster", { src: media("thumb", item.id) + "&s=768", alt: item.name })  // AVI, 3GP: the window can't play them
+    : h("img", { src, alt: item.name });
   el.addEventListener("error", () => $("v-media").replaceChildren(h("div.v-broken", {}, h("p", {}, `This ${item.kind === "video" ? "video" : "picture"} can't be shown.`),
     h("p.note", {}, item.size ? "It may be damaged, or only partly saved." : "The file is empty (0 bytes)."))));
   $("v-media").replaceChildren(el);
+  $("v-media").onmouseenter = $("v-media").onmouseleave = null;
+  if (item.kind === "video" && !playable(item)) {
+    $("v-media").append(h("p.v-unplayable", {}, `${(item.ext || "").replace(".", "").toUpperCase()} videos can't play here: Show in Explorer, then open it in its own app.`));
+  } else if (item.motion) {
+    livePhoto($("v-media"), el, item);
+  }
   viewerReset(item, el);
   renderMarks(item);
   loadDetails(item);
@@ -1031,7 +1046,7 @@ function renderDetails(info) {
     } else if (g.source && g.source !== "comfyui") {
       gen.push(section("Made with", h("p.note", {}, { a1111: "Automatic1111 / Forge", novelai: "NovelAI", invokeai: "InvokeAI" }[g.source] || g.source)));
     }
-  } else {
+  } else if (aiOnly()) {  // a photo or an illustration has nothing to say here
     gen.push(section("What made it", h("p.note", {}, "No generation data in this file. It may have been saved without it, or edited since.")));
   }
   const gi = g && g.info;
@@ -1045,18 +1060,19 @@ function renderDetails(info) {
   }
   const ext = info.name.split(".").pop().toUpperCase();
   const parts = [h("header.v-head", {}, h("h2.v-fname", {}, info.name),
-    h("p.v-sub", {}, [info.width && info.height ? `${info.width} × ${info.height}` : "", info.kind === "video" ? fmtDur(info.duration) : "", fmtSize(info.size), ext, fmtDate(info.mtime)]
+    h("p.v-sub", {}, [info.width && info.height ? `${info.width} × ${info.height}` : "", info.kind === "video" ? fmtDur(info.duration) : "", fmtSize(info.size), ext, fmtDate(info.taken || info.mtime)]
       .filter(Boolean).join(" · ")), swatches(info))];
   parts.push(section("Note", noteEditor(info)));
   parts.push(section("Tags", tagEditor(info)));
   parts.push(section("Albums", albumEditor(info)));
-  parts.push(section("Characters", characterEditor(info)));
+  parts.push(section(who(), characterEditor(info)));
   parts.push(...gen);
   const rows = [
     ["Type", `${info.kind === "video" ? "Video" : "Image"} · ${info.name.split(".").pop().toUpperCase()}`],
     ["Dimensions", info.width && info.height ? `${info.width} × ${info.height}` : "—"],
     info.kind === "video" ? ["Length", fmtDur(info.duration) || "—"] : null,
     ["Size", fmtSize(info.size)],
+    info.taken ? ["Taken", fmtDate(info.taken)] : null,
     ["Modified", fmtDate(info.mtime)],
   ].filter(Boolean);
   parts.push(section("File", h("dl", {}, rows.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]))));
@@ -1100,7 +1116,7 @@ function characterEditor(info) {
   const render = (list) => {
     const known = new Set(list.map((c) => c.id));
     const others = (state.characters || []).filter((c) => !known.has(c.id));
-    const pick = h("select.pick", { "aria-label": "Add a character" }, h("option", { value: "" }, "+ Character"),
+    const pick = h("select.pick", { "aria-label": `Add a ${who(false, false)}` }, h("option", { value: "" }, `+ ${who(false)}`),
       others.map((c) => h("option", { value: c.id }, c.name)));
     pick.onchange = () => { if (pick.value) change(Number(pick.value), "confirm"); };
     wrap.replaceChildren(...[...list.map((c) => h("span.chip.tag.char." + c.state, { title: `${STATE_TIP[c.state] || ""}${c.source === "workflow" ? " (by the workflow's Gallery Info node)" : ""}` },
@@ -1108,7 +1124,7 @@ function characterEditor(info) {
       c.state === "review" ? h("button.x", { type: "button", "aria-label": `Yes, ${c.name} is in it`, title: "Yes", onclick: () => change(c.id, "confirm") }, icon("check")) : null,
       h("button.x", { type: "button", "aria-label": `${c.name} isn't in it`, title: `Not ${c.name}`, onclick: () => change(c.id, "reject") }, icon("remove")))),
       others.length ? pick : null,
-      !list.length && !others.length ? h("button.link.dim", { type: "button", onclick: () => editCharacter(null, pageCtx) }, "New character…") : null].filter(Boolean));
+      !list.length && !others.length ? h("button.link.dim", { type: "button", onclick: () => editCharacter(null, pageCtx) }, `New ${who(false, false)}…`) : null].filter(Boolean));
   };
   const change = async (cid, verdict) => {
     try {
@@ -1193,7 +1209,40 @@ const vz = { fit: true, scale: 1, x: 0, y: 0, nw: 0, nh: 0, rot: 0, flip: false,
 const ZMIN = 0.05, ZMAX = 8;
 const vImg = () => $("v-media").querySelector("img");
 const shownDims = () => (vz.rot % 180 ? [vz.nh, vz.nw] : [vz.nw, vz.nh]);
-const editable = (item) => !!item && item.kind === "image" && /\.(png|jpe?g|webp)$/i.test(item.name) && state.view !== "trash";
+const editable = (item) => !!item && item.kind === "image" && /\.(png|jpe?g|webp|heic|heif|tiff?)$/i.test(item.name) && state.view !== "trash";
+const UNPLAYABLE = /\.(avi|3gp|3g2)$/i;  // video types Edge WebView2 can't play: their poster is shown instead
+const playable = (item) => !UNPLAYABLE.test(item.name);
+
+// a Live Photo in the viewer: its few seconds of motion play while the pointer is over the picture (shown whole)
+function livePhoto(box, img, item) {
+  box.append(h("span.v-live", { title: "A Live Photo: hover to play it" }, "LIVE"));
+  let v = null;
+  box.onmouseenter = () => {
+    if (!vz.fit || vz.edited || v) return;
+    v = h("video.v-motion", { src: media("file", item.motion), autoplay: true, loop: true, playsinline: true });
+    v.muted = true;
+    v.addEventListener("error", () => { v?.remove(); v = null; }, { once: true });
+    box.append(v);
+  };
+  box.onmouseleave = () => { v?.remove(); v = null; };
+}
+
+// in the grid: a video, or a Live Photo's motion, plays silently while the pointer rests on its tile
+function hoverPlay(el, item) {
+  let timer = null;
+  el.addEventListener("mouseenter", () => {
+    timer = setTimeout(() => {
+      if (el.querySelector("video.t-hover")) return;
+      const v = h("video.t-hover", { src: media("file", item.motion || item.id), autoplay: true, loop: true, playsinline: true });
+      v.muted = true;
+      v.addEventListener("playing", () => v.classList.add("on"), { once: true });
+      v.addEventListener("error", () => v.remove(), { once: true });
+      const img = el.querySelector("img");
+      if (img) img.after(v); else el.prepend(v);
+    }, 250);
+  });
+  el.addEventListener("mouseleave", () => { clearTimeout(timer); el.querySelector("video.t-hover")?.remove(); });
+}
 
 function viewerReset(item, el) {
   Object.assign(vz, { fit: true, scale: 1, x: 0, y: 0, nw: 0, nh: 0, rot: 0, flip: false, crop: null, edited: false, item });
@@ -1347,7 +1396,8 @@ async function saveEdit(copy) {
   const crop = c && (c.x > 0.5 || c.y > 0.5 || c.w < W - 0.5 || c.h < H - 0.5) ? [c.x, c.y, c.w, c.h].map(Math.round) : null;
   if (!crop && !vz.rot && !vz.flip) return cancelEdit();
   try {
-    const r = await api(`/file/${item.id}/edit`, { method: "POST", body: { rotate: vz.rot, flip: vz.flip, crop, copy } });
+    // of: what the crop was measured on (a preview for HEIC and TIFF): the server scales it to the real picture
+    const r = await api(`/file/${item.id}/edit`, { method: "POST", body: { rotate: vz.rot, flip: vz.flip, crop, of: [W, H], copy } });
     cancelEdit();
     if (!copy) { // the new picture, not the cached one
       const img = vImg();
@@ -1484,13 +1534,54 @@ function step(d) {
 }
 
 // ---------------------------------------------------------------- status
-let lastStatus = null, pollTimer = null, lastFiles = -1, lastMeta = -1, lastOffline = 0, toldUpdate = null;
+let lastStatus = null, pollTimer = null, lastFiles = -1, lastMeta = -1, lastOffline = 0, toldUpdate = null, lastDated = 0, askedKind = false, redatedAt = 0;
+
+// what the library is for decides the words (People, Characters or both), the sidebar's shortcuts, and what Statistics and the details show
+function applyKinds(kinds) {
+  lib.kinds = kinds;
+  document.body.dataset.kinds = (kinds || ["ai"]).join(" ");
+  $("characters-label").textContent = who();
+  const nav = $("kind-nav");  // a library for more than one: a shortcut to each part of it
+  nav.hidden = !kinds || kinds.length < 2;
+  const part = { ai: "ai", photo: "photos", illustration: "illustrations" };
+  for (const b of nav.querySelectorAll("[data-is]")) b.hidden = !(kinds || []).includes(part[b.dataset.is]);
+  if (!$("viewer").hidden && shown) loadDetails(shown);
+}
+
+// asked once per library, the first time it opens in a version that knows about kinds: one or more
+function askKind() {
+  const boxes = KINDS.map(([k, label, text]) => h("label.kind-choice", {}, h("input", { type: "checkbox", value: k }), h("span.kc", {}, h("b", {}, label), h("span", {}, text))));
+  const go = h("button.btn.primary", { type: "submit", disabled: true }, "Done");
+  for (const b of boxes) b.querySelector("input").addEventListener("change", () => { go.disabled = !boxes.some((x) => x.querySelector("input").checked); });
+  const dlg = h("dialog.dialog.kind-ask", { "aria-label": "What's this library for?" }, h("form", { method: "dialog", onsubmit: async (e) => {
+    e.preventDefault();
+    const kinds = boxes.map((b) => b.querySelector("input")).filter((i) => i.checked).map((i) => i.value);
+    try {
+      const r = await api("/library/kind", { method: "POST", body: { kinds } });
+      applyKinds(r.kinds);
+      dlg.close();
+    } catch (ex) { toast(ex.message, true); }
+  } },
+    h("h2", {}, "What's this library for?"),
+    h("p.dialog-text", {}, "Tick one or more. It decides what the Gallery shows: what made each file, the day each photo was taken, Characters or People. You can change it any time in Settings."),
+    h("div.kind-choices", {}, boxes),
+    h("div.row.end", {}, go)));
+  dlg.addEventListener("keydown", (e) => { if (e.key !== "Escape") e.stopPropagation(); });
+  dlg.addEventListener("cancel", (e) => e.preventDefault());  // a choice, not something to dismiss
+  dlg.addEventListener("close", () => dlg.remove());
+  document.body.append(dlg);
+  dlg.showModal();
+}
+
+for (const b of $("kind-nav").querySelectorAll("[data-is]")) b.onclick = () => openFromStats([{ key: "is", value: b.dataset.is }]);
 
 async function poll() {
   clearTimeout(pollTimer);
   try {
     const st = await api("/status");
     lastStatus = st;
+    if (JSON.stringify(st.kinds) !== JSON.stringify(lib.kinds)) applyKinds(st.kinds);
+    if (st.kinds === null && !askedKind) { askedKind = true; askKind(); }
     const busy = st.scanning || st.queued || st.thumbs_pending || st.meta_pending;
     $("status-dot").classList.toggle("busy", !!busy);
     $("status").textContent = st.scanning ? `Indexing ${baseName(st.scanning.path)}: ${plural(st.scanning.seen || 0, "file")} found`
@@ -1501,7 +1592,10 @@ async function poll() {
     $("status-right").textContent = st.thumbs_failed ? `${plural(st.thumbs_failed, "file")} without a thumbnail` : "";
     const searching = !!queryString();
     if (st.offline !== lastOffline) { lastOffline = st.offline; loadFolders(); } // a folder went (or came back)
-    if (st.files !== lastFiles || (searching && st.meta_pending !== lastMeta)) {
+    // dates taken found since: files moved to their day (while a big photo library is read, every 10 s, then once at the end)
+    const redated = st.dates_moved !== lastDated && (!st.dates_pending || Date.now() - redatedAt > 10000);
+    if (redated) { lastDated = st.dates_moved; redatedAt = Date.now(); }
+    if (st.files !== lastFiles || redated || (searching && st.meta_pending !== lastMeta)) {
       lastFiles = st.files;
       await loadFolders();
       if ($("viewer").hidden && !isPage()) reload(false); // never pull the list from under an open file

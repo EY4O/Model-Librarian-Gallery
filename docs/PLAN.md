@@ -166,6 +166,16 @@ A library is a folder that carries its own index, so it can live on an external 
 - **Bringing marks:** a new library can take the ratings, favourites, tags, albums (with their icons), characters (with their rules and your decisions), notes and folder looks of the library it was made from, for the same files by fingerprint, once its folder is indexed. One step in History.
 - **Phases:** 1, the portable library; 2, leaving Eagle (above, Eagle bridge) with colour sets. Still to come: gathering outside folders in, and XMP sidecars.
 
+## Photos and illustrations
+
+The Gallery started with AI generations; it's for photos and illustrations too. Each library says what it's for, one or more of the three (asked once, changeable in Settings), and shows what fits: what made each file, the day it was taken, Characters, People. Each file is what's been read of it: generation data makes it AI, else a date taken (EXIF, a recorded date, a phone's name) a photo, else an illustration; `is:ai`, `is:photo` and `is:illustration` find each, a library for more than one has a shortcut to each part in the sidebar and a count of each in Statistics, and People and characters are one list, each entry marked as a person or a character.
+
+- **Phase 1 (1.4.0):** library kinds; People in photo libraries (tagged by hand, the Characters tool underneath); iPhone HEIC (with `pillow-heif`) and Live Photos (in a photo library: the photo and its short .MOV, under 20 MB, as one item, playing on hover, moved, trashed and restored together under one name), TIFF, BMP, AVIF, AVI and 3GP; the date taken (EXIF, a video's recorded date, the date in a file's name), which the grid groups and sorts by, else the modified date; videos playing on hover. HEIC and TIFF reach the viewer as a large WebP made once; AVI and 3GP show their poster.
+- **Phase 2:** importing from a phone, a camera card or a folder into a library, in Year\Month folders, skipping what's there already.
+- **Phase 3:** illustrations: the artist and the source of each picture (searchable), previews of PSD, Krita, Clip Studio and SVG files, and new downloads offered for filing.
+- **Phase 4:** saving an image from the browser into a library, through the Chrome extension, with its page and artist.
+- **Not planned for now:** camera details, places from GPS, camera RAW, face recognition.
+
 ## Updates
 
 The portable folder can bring itself up to date from the repository's GitHub Releases. The switch is off by default (it's network use), and **Check now** works without it.

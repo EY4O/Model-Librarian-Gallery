@@ -34,6 +34,7 @@ def server(sample_dir, tmp_path_factory):
         with urllib.request.urlopen(req) as r:
             return json.load(r)
 
+    api("/library/kind", {"kind": "ai"})  # said once: these tests don't meet the question (test_empty_library does)
     api("/folders", {"path": sample_dir})
     deadline = time.time() + 90
     while time.time() < deadline:
@@ -153,6 +154,12 @@ def test_videos_have_posters_and_play(server):
             await e.click("#view-btn")
             await e.js("document.querySelector('.view-panel .seg button[data-v=\"video\"]').click(); true")
             await e.wait("document.querySelector('.tile .badge') && document.getElementById('count').textContent.startsWith('" + str(len(videos)) + "')")
+            # resting on a video's tile plays it there, silently; leaving it stops
+            await e.js("document.querySelector('.tile').dispatchEvent(new MouseEvent('mouseenter')); true")
+            await e.wait("document.querySelector('.tile video.t-hover')?.readyState >= 2", timeout=20)
+            assert await e.js("document.querySelector('.tile video.t-hover').muted")
+            await e.js("document.querySelector('.tile').dispatchEvent(new MouseEvent('mouseleave')); true")
+            await e.wait("!document.querySelector('.tile video.t-hover')")
             await e.click(".tile")
             await e.wait("document.querySelector('#v-media video')?.readyState >= 2", timeout=20)
     asyncio.run(go())
@@ -165,9 +172,24 @@ def test_empty_library_offers_to_add_a_folder(tmp_path):
     try:
         async def go():
             async with page(url, width=900, height=640) as e:
+                # a new library asks once what it's for (one or more); for photos and illustrations: People & characters,
+                # and a shortcut in the sidebar to each part
+                await e.wait("document.querySelector('dialog.kind-ask')?.open")
+                assert await e.js("[...document.querySelectorAll('.kind-choice b')].map(b => b.textContent).join()") == "AI generations,Photos,Illustrations"
+                assert await e.js("document.querySelector('.kind-ask button[type=submit]').disabled")  # nothing ticked yet
+                await e.js("for (const v of ['photos', 'illustrations']) document.querySelector(`.kind-choice input[value=${v}]`).click(); true")
+                await e.js("document.querySelector('.kind-ask button[type=submit]').click(); true")
+                await e.wait("!document.querySelector('dialog.kind-ask') && document.getElementById('characters-label').textContent === 'People & characters'")
+                assert await e.js("document.body.dataset.kinds") == "photos illustrations"
+                assert await e.js("!document.getElementById('kind-nav').hidden")
+                assert await e.js("[...document.querySelectorAll('#kind-nav [data-is]')].filter(b => !b.hidden).map(b => b.dataset.is).join()") == "photo,illustration"
                 await e.wait("!document.getElementById('empty').hidden")
                 assert await e.js("document.querySelector('#empty h2').textContent") == "Add a folder to start"
                 assert await e.js("!!document.querySelector('#empty .btn.primary')")
+            async with page(url, width=900, height=640) as e:  # asked once: not again
+                await e.wait("document.getElementById('characters-label').textContent === 'People & characters'")
+                await asyncio.sleep(1.5)
+                assert not await e.js("!!document.querySelector('dialog.kind-ask')")
         asyncio.run(go())
     finally:
         p.terminate()

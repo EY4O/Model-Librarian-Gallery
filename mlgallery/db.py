@@ -205,6 +205,25 @@ MIGRATIONS = [
     ALTER TABLE files ADD COLUMN colors INTEGER NOT NULL DEFAULT 0;  -- 0 not worked out yet, 1 done
     CREATE INDEX files_colors_todo ON files (colors) WHERE colors = 0;
     """,
+    # 10: photos and illustrations: the date a picture was taken, Live Photos, and what a library is for (dates.py)
+    """
+    ALTER TABLE files ADD COLUMN taken REAL;        -- when it was taken (EXIF, a video's recorded date, a date in its name), if known
+    ALTER TABLE files ADD COLUMN shot REAL;         -- the date it's grouped and sorted by: taken, or else modified
+    ALTER TABLE files ADD COLUMN dated INTEGER NOT NULL DEFAULT 0;  -- 0 its date taken not looked for yet, 1 done
+    ALTER TABLE files ADD COLUMN motion INTEGER;    -- a Live Photo: the file id of its short video (which has missing = 3)
+    UPDATE files SET shot = mtime;
+    CREATE TRIGGER files_shot_default AFTER INSERT ON files WHEN NEW.shot IS NULL
+    BEGIN UPDATE files SET shot = COALESCE(NEW.taken, NEW.mtime) WHERE id = NEW.id; END;
+    CREATE INDEX files_shot ON files (missing, shot DESC, id DESC);  -- the grid's order, ties and all (as files_list was)
+    DROP INDEX files_list;   -- the grid went by mtime: nothing lists by it any more
+    DROP INDEX files_mtime;
+    CREATE INDEX files_dated_todo ON files (dated, mtime DESC) WHERE dated = 0;  -- the date reader's queue, newest first
+    CREATE INDEX files_mov ON files (folder_id) WHERE ext = '.mov';  -- Live Photos: the videos that may be one's
+    CREATE INDEX files_motion ON files (motion) WHERE motion IS NOT NULL;
+    CREATE TABLE library_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- kind: what it's for (ai, photos, illustrations; comma separated)
+    ALTER TABLE characters ADD COLUMN who TEXT NOT NULL DEFAULT 'character';  -- character, or person (in photos)
+    ANALYZE;  -- the new index has statistics, so the planner keeps using the right one for each sort (name, size...)
+    """,
 ]
 CACHE = 256  # cached query results kept (each tied to the index as it was)
 

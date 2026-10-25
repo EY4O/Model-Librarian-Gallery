@@ -354,7 +354,8 @@ def bring_marks(db, source_db: str, name: str) -> dict:
         s_albums = q("SELECT af.file_id, a.name, a.icon, a.color, a.cover, af.source, af.removed FROM album_files af JOIN albums a ON a.id=af.album_id"
                      " WHERE (af.source != 'workflow' OR af.removed = 1) AND af.file_id IN (%s)", sid_to)
         s_notes = q("SELECT file_id, note, source FROM file_notes WHERE file_id IN (%s)", sid_to)
-        s_chars = src.execute("SELECT id, name, aliases, cover, created FROM characters").fetchall()
+        has_who = any(r[1] == "who" for r in src.execute("PRAGMA table_info(characters)"))
+        s_chars = src.execute(f"SELECT id, name, aliases, cover, created, {'who' if has_who else chr(39) + 'character' + chr(39)} AS who FROM characters").fetchall()
         s_rules = src.execute("SELECT character_id, kind, value, strength, muted FROM character_rules").fetchall()
         s_decided = q("SELECT file_id, character_id, state, source FROM file_characters WHERE state IN ('confirmed', 'rejected') AND file_id IN (%s)", sid_to)
         s_folders = src.execute("SELECT path, icon, color FROM folders WHERE icon IS NOT NULL OR color IS NOT NULL").fetchall()
@@ -416,8 +417,8 @@ def bring_marks(db, source_db: str, name: str) -> dict:
             if have:
                 cid_of[ch["id"]] = have[0]  # a character of the same name here: its own rules stay
                 continue
-            cid = c.execute("INSERT INTO characters (name, aliases, cover, created) VALUES (?,?,?,?)",
-                            (ch["name"], ch["aliases"], cover(ch["cover"]), ch["created"] or now)).lastrowid
+            cid = c.execute("INSERT INTO characters (name, aliases, cover, created, who) VALUES (?,?,?,?,?)",
+                            (ch["name"], ch["aliases"], cover(ch["cover"]), ch["created"] or now, ch["who"] or "character")).lastrowid
             cid_of[ch["id"]] = cid
             rec["new_characters"].append(cid)
             for r in s_rules:

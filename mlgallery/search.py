@@ -6,7 +6,7 @@
     tag:dusk                   a tag (exactly)          album:coast   an album (exactly)
     character:aurelia          a character (by name or alias; matched or confirmed)   review:aurelia  is:review
     rating:4  rating:>=3  rating:2-4  rating:0 (unrated)
-    is:fav  is:video  is:image  has:prompt  has:workflow  no:prompt
+    is:fav  is:video  is:image  is:ai  is:photo  is:illustration  has:prompt  has:workflow  no:prompt
     sampler:euler  scheduler:karras  (exactly; sampler:dpmpp* for every name starting so)
     seed:1234  steps:8  steps:20-30  cfg:7  size:1024x1024  neg:blurry (words in the negative prompt)
     after:2026-10-01  before:2026-10-23  on:2026-10-23  (by when the file was made, your local time; after:yesterday, on:2026-10 too)
@@ -150,7 +150,7 @@ def build(q: str, db=None) -> tuple[list[str], list]:
             if not span:
                 where.append("0")
                 continue
-            where.append("f.mtime >= ? AND f.mtime < ?")
+            where.append("f.shot >= ? AND f.shot < ?")
             args += span
         elif key in ("character", "review"):
             states = ("auto", "confirmed") if key == "character" else ("review",)
@@ -199,6 +199,9 @@ def build(q: str, db=None) -> tuple[list[str], list]:
             elif v in ("image", "video"):
                 where.append("f.kind = ?")
                 args.append(v)
+            elif v in ("ai", "photo", "illustration", "photos", "illustrations", "generated"):  # what each file is (library.FILE_IS)
+                from .library import FILE_IS
+                where.append("(" + FILE_IS[{"photos": "photo", "illustrations": "illustration", "generated": "ai"}.get(v, v)] + ")")
             elif v == "rated":
                 where.append("f.id IN (SELECT file_id FROM marks WHERE rating > 0)")
             elif v == "review":
@@ -243,13 +246,13 @@ def build(q: str, db=None) -> tuple[list[str], list]:
             if span is None:
                 where.append("0")
             elif key == "after":
-                where.append("f.mtime >= ?")
+                where.append("f.shot >= ?")
                 args.append(span[0])
             elif key == "before":
-                where.append("f.mtime < ?")
+                where.append("f.shot < ?")
                 args.append(span[0])
             else:
-                where.append("f.mtime >= ? AND f.mtime < ?")
+                where.append("f.shot >= ? AND f.shot < ?")
                 args += span
         elif key in ("seed", "steps"):
             r = _range(v)

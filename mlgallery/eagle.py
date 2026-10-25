@@ -151,7 +151,7 @@ def plan_import(db, path: str, progress=None) -> dict:
     names = folder_names(lib)
     paths = folder_paths(lib)
     with db.read() as c:
-        have = {(r["fp"], r["size"]): r["id"] for r in c.execute("SELECT id, fp, size FROM files WHERE missing=0 AND fp IS NOT NULL")}
+        have = {(r["fp"], r["size"]): r["id"] for r in c.execute("SELECT id, fp, size FROM files WHERE missing IN (0, 3) AND fp IS NOT NULL")}
     sizes = {s for _, s in have}
     matched, missing = [], []
     tags, albums = set(), set()

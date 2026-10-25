@@ -1,6 +1,6 @@
 // Model Librarian Gallery: characters - the list, one character's page, the editor, and To review.
 
-import { api, ask, fmtNum, h, icon, media, plural, stacks, toast } from "./util.js";
+import { api, ask, fmtNum, h, has, icon, media, mixedWho, plural, stacks, toast, who } from "./util.js";
 
 const KIND = { lora: "LORA", word: "WORD", tag: "TAG" };
 const KIND_HELP = {
@@ -45,21 +45,25 @@ export async function renderCharacters(root, ctx) {
   try { data = await api("/characters"); } catch (e) { toast(e.message, true); return; } finally { root.removeAttribute("aria-busy"); }
   const cards = data.characters.map((c) => h("button.c-card", { type: "button", onclick: () => ctx.show("character", c.id) },
     thumb(c.cover, c.name),
-    h("span.c-name", {}, c.name),
+    h("span.c-name", {}, c.name, mixedWho() ? h("span.c-who", {}, c.who === "person" ? "Person" : "Character") : null),
     h("span.c-n", {}, plural(c.n, "file")),
     c.review ? h("span.c-review", { title: "Waiting for a yes or no" }, `${c.review} to review`) : null));
   root.replaceChildren(...[
-    h("header.st-head", {}, h("h1", {}, "Characters"),
+    h("header.st-head", {}, h("h1", {}, who()),
       h("div.row", {}, data.review ? h("button.btn", { type: "button", onclick: () => ctx.show("review") }, `To review (${data.review.toLocaleString()})`) : null,
-        h("button.btn.primary", { type: "button", onclick: () => editCharacter(null, ctx) }, icon("plus"), "New character"))),
+        h("button.btn.primary", { type: "button", onclick: () => editCharacter(null, ctx) }, icon("plus"), `New ${who(false, false)}`))),
     data.suggestions.length ? h("section.st-card", { "aria-label": "From your workflows" },
       h("div.st-card-head", {}, h("h2", {}, "From your workflows"), h("span", {}, "Names your Gallery Info nodes used that aren't characters yet")),
       h("div.c-sugg", {}, data.suggestions.map((s) => h("button.btn", { type: "button", title: `Make ${s.name} a character (${plural(s.n, "file")})`,
         onclick: () => editCharacter(null, ctx, { name: s.name }) }, icon("plus"), s.name, h("span.lg-n", {}, s.n.toLocaleString()))))) : null,
     cards.length ? h("div.c-grid", {}, cards)
-      : h("div.c-empty", {}, h("h2", {}, "No characters yet"),
-        h("p", {}, "A character is a name plus what gives it away: its LoRA, its trigger words, or prompt tags. The Gallery then finds every image it's in, and asks you about the ones it isn't sure of."),
-        h("button.btn.primary", { type: "button", onclick: () => editCharacter(null, ctx) }, "New character")),
+      : h("div.c-empty", {}, h("h2", {}, `No ${who(true, false)} yet`),
+        h("p", {}, mixedWho()
+          ? "Someone in your photos (a person) or someone made up (a character): a name you add to files, plus, for a character, what gives it away (its LoRA, trigger words or prompt tags). Each gets a page with every file they're in, and the Gallery asks you about the ones it isn't sure of."
+          : has("photos")
+            ? "A person is a name you add to photos (in a photo's details, or by selecting several). Each one gets a page with every photo they're in. A tag can also find them, and the Gallery asks you about the photos it isn't sure of."
+            : "A character is a name plus what gives it away: its LoRA, its trigger words, or prompt tags. The Gallery then finds every image it's in, and asks you about the ones it isn't sure of."),
+        h("button.btn.primary", { type: "button", onclick: () => editCharacter(null, ctx) }, `New ${who(false, false)}`)),
   ].filter(Boolean));
 }
 
@@ -86,18 +90,18 @@ export async function renderCharacter(root, id, ctx) {
   };
   const rulesNow = () => c.rules.map((r) => ({ kind: r.kind, value: r.value, strength: r.strength, muted: r.muted }));
   root.replaceChildren(...[
-    h("div.c-crumb", {}, h("button.link", { type: "button", onclick: () => ctx.show("characters") }, "Characters"), " / ", c.name),
+    h("div.c-crumb", {}, h("button.link", { type: "button", onclick: () => ctx.show("characters") }, who()), " / ", c.name),
     h("header.c-head", {},
       h("div.c-portrait", {}, thumb(c.cover, c.name)),
       h("div.c-title", {},
-        h("h1", {}, c.name),
+        h("h1", {}, c.name, mixedWho() ? h("span.c-who", {}, c.who === "person" ? "Person" : "Character") : null),
         c.aliases.length ? h("p.c-aliases", {}, `Also: ${c.aliases.join(", ")}`) : null,
         h("p.c-facts", {}, [plural(c.n, "file"), c.counts.confirmed ? `${c.counts.confirmed.toLocaleString()} confirmed by you or a workflow` : "", dates].filter(Boolean).join(" · ")),
         h("div.row", {},
           h("button.btn.primary", { type: "button", onclick: filter, disabled: !c.n }, icon("grid"), "Show all files"),
           h("button.btn", { type: "button", onclick: () => editCharacter(c, ctx) }, "Edit"),
           h("button.btn.danger.c-del", { type: "button", onclick: async () => {
-            if (!await ask(`Delete the character ${c.name}?`, "Its rules and your yes and no answers go; the files themselves are untouched.", { ok: "Delete the character", danger: true })) return;
+            if (!await ask(`Delete the ${who(false, false)} ${c.name}?`, "Its rules and your yes and no answers go; the files themselves are untouched.", { ok: `Delete the ${who(false, false)}`, danger: true })) return;
             await api(`/characters/${id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
             ctx.refresh();
             ctx.show("characters");
@@ -226,10 +230,16 @@ export function editCharacter(c, ctx, preset = {}) {
   };
   lora.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); useLora(); } });
   const err = h("p.form-err", { role: "alert" });
-  const dlg = h("dialog.dialog", { "aria-label": isNew ? "New character" : `Edit ${c.name}` },
+  // a library for photos and more: someone in your photos, or a character (made up, from a LoRA)
+  const was = (c && c.who) || "character";  // (a new one: c is null)
+  const whoPick = h("div.field-row", { role: "radiogroup", "aria-label": "Who" }, h("span", {}, "Who"),
+    h("div.row", {}, [["person", "A person"], ["character", "A character"]].map(([v, label]) =>
+      h("label.check", {}, h("input", { type: "radio", name: "who", value: v, checked: v === was }), ` ${label}`))));
+  const dlg = h("dialog.dialog", { "aria-label": isNew ? `New ${who(false, false)}` : `Edit ${c.name}` },
     h("form", { method: "dialog", onsubmit: async (e) => {
       e.preventDefault();
       const body = { name: name.value.trim(), aliases: aliases.value.split(",").map((s) => s.trim()).filter(Boolean), rules };
+      if (mixedWho()) body.who = whoPick.querySelector("input:checked").value;
       try {
         const saved = await api(isNew ? "/characters" : `/characters/${c.id}`, { method: "POST", body });
         dlg.close();
@@ -237,8 +247,9 @@ export function editCharacter(c, ctx, preset = {}) {
         ctx.show("character", saved.id);
       } catch (ex) { err.textContent = ex.message; }
     } },
-      h("h2", {}, isNew ? "New character" : `Edit ${c.name}`),
+      h("h2", {}, isNew ? `New ${who(false, false)}` : `Edit ${c.name}`),
       h("label.field-row", {}, h("span", {}, "Name"), name),
+      mixedWho() ? whoPick : null,
       h("label.field-row", {}, h("span", {}, "Also known as"), aliases),
       h("div.field-row", {}, h("span", {}, "LoRA"), h("div.inline", {}, lora, loraList, h("button.btn", { type: "button", onclick: useLora }, "Use"))),
       words,

@@ -11,7 +11,7 @@ import time
 
 import json
 
-from . import bulk, colors, families, fileops
+from . import bulk, colors, dates, families, fileops
 from . import characters as chars
 from . import metadata
 from . import scan as scanner
@@ -23,8 +23,8 @@ from .mllink import ModelLibrary
 from .watch import Watcher
 
 SORTS = {
-    "newest": "f.mtime DESC, f.id DESC",
-    "oldest": "f.mtime ASC, f.id ASC",
+    "newest": "f.shot DESC, f.id DESC",
+    "oldest": "f.shot ASC, f.id ASC",
     "name": "f.name COLLATE NOCASE ASC, f.id ASC",
     "name_desc": "f.name COLLATE NOCASE DESC, f.id DESC",
     "largest": "f.size DESC, f.id DESC",
@@ -36,10 +36,15 @@ SORTS = {
     "trashed": "f.trashed DESC, f.id DESC",  # the Trash, last deleted first
 }
 BACKUPS = 7  # daily copies of the index kept
-ITEM = ("f.id, f.name, f.rel, f.kind, f.width, f.height, f.size, f.mtime, f.duration, f.thumb, f.folder_id, f.meta,"
+KINDS = ("ai", "photos", "illustrations")  # AI generations, photos, illustrations (downloaded or your own): one or more
+WHO = ("character", "person")  # an entry in Characters / People: someone made up, or someone in your photos
+# what each file is, from what's been read of it: generation data, else a date taken (camera, phone), else neither
+FILE_IS = {"ai": "f.meta = 1", "photo": "f.meta <> 1 AND f.taken IS NOT NULL", "illustration": "f.meta <> 1 AND f.taken IS NULL"}
+TRASHED_MOTION = "SELECT motion FROM files WHERE missing=2 AND motion IS NOT NULL"  # Live Photo videos in the Trash with their photo
+ITEM = ("f.id, f.name, f.rel, f.ext, f.kind, f.width, f.height, f.size, f.mtime, f.taken, f.shot, f.motion, f.duration, f.thumb, f.folder_id, f.meta,"
         " COALESCE(m.rating, 0) AS rating, COALESCE(m.favorite, 0) AS favorite")
 RECENT = 500  # how many files Recently viewed keeps
-DAY = "date(f.mtime, 'unixepoch', 'localtime')"
+DAY = "date(f.shot, 'unixepoch', 'localtime')"  # the day it was taken, else modified
 
 
 def similar(items: list[tuple[int, str, str]], within: int = 3, bucket_cap: int = 400) -> list[list[int]]:
@@ -93,6 +98,7 @@ class Library:
         self.db = Database(os.path.join(data_dir, "library.db"))
         self.thumbs = Thumbnails(self.db, os.path.join(data_dir, "thumbs"), self.settings)
         self.meta = metadata.MetaReader(self.db)
+        self.dater = dates.Dater(self.db, self.settings)
         self.watcher = Watcher(self)
         self.models = ModelLibrary(self.settings)
         self._scan_lock = threading.Lock()
@@ -118,6 +124,7 @@ class Library:
         threading.Thread(target=self._warm, name="warm", daemon=True).start()
         self.thumbs.start()
         self.meta.start()
+        self.dater.start()
         self.watcher.start()
         threading.Thread(target=self._scan_loop, name="scanner", daemon=True).start()
         if rescan:
@@ -127,6 +134,7 @@ class Library:
         self._stop.set()
         self.thumbs.stop()
         self.meta.stop()
+        self.dater.stop()
         self.watcher.stop()
         with self._queue_cv:
             self._queue_cv.notify_all()
@@ -213,7 +221,8 @@ class Library:
     def _from(self, folder: int | None, kind: str | None, q: str = "", sort: str = "newest") -> tuple[str, list]:
         """FROM ... WHERE ... for a view: a folder or everything, a kind, a search, Recently viewed, the Trash.
         Every condition is on files itself or an indexed lookup, so counting and paging stay quick."""
-        where, args = ["f.missing=2" if sort == "trashed" else "f.missing=0"], []
+        # (a Live Photo in the Trash is one item there: its video, in the Trash with it, isn't listed)
+        where, args = [f"f.missing=2 AND f.id NOT IN ({TRASHED_MOTION})" if sort == "trashed" else "f.missing=0"], []
         if folder:
             where.append("f.folder_id=?")
             args.append(int(folder))
@@ -429,14 +438,15 @@ class Library:
                 "SELECT fc.character_id, SUM(fc.state IN ('auto','confirmed')), SUM(fc.state='review') FROM file_characters fc"
                 " JOIN files f ON f.id=fc.file_id WHERE f.missing=0 GROUP BY fc.character_id")}
             rows = []
-            for ch in c.execute("SELECT id, name, aliases, cover FROM characters ORDER BY name COLLATE NOCASE").fetchall():
+            for ch in c.execute("SELECT id, name, aliases, cover, who FROM characters ORDER BY name COLLATE NOCASE").fetchall():
                 latest = None
                 if not ch["cover"]:
                     r = c.execute("SELECT fc.file_id FROM file_characters fc JOIN files f ON f.id=fc.file_id WHERE fc.character_id=? AND fc.state IN ('auto','confirmed')"
-                                  " AND f.missing=0 ORDER BY fc.state='confirmed' DESC, f.mtime DESC LIMIT 1", (ch["id"],)).fetchone()
+                                  " AND f.missing=0 ORDER BY fc.state='confirmed' DESC, f.shot DESC LIMIT 1", (ch["id"],)).fetchone()
                     latest = r[0] if r else None
                 n, review = counts.get(ch["id"], (0, 0))
-                rows.append({"id": ch["id"], "name": ch["name"], "aliases": ch["aliases"], "cover": ch["cover"], "n": n or 0, "review": review or 0, "latest": latest})
+                rows.append({"id": ch["id"], "name": ch["name"], "aliases": ch["aliases"], "cover": ch["cover"], "who": ch["who"], "n": n or 0,
+                             "review": review or 0, "latest": latest})
             sugg = chars.suggestions(c)
         out = []
         for r in rows:
@@ -447,8 +457,13 @@ class Library:
             out.append(d)
         return {"characters": out, "review": sum(d["review"] for d in out), "suggestions": sugg}
 
-    def character_save(self, cid: int | None, name: str, aliases=(), rules=None, cover=...) -> int:
-        """Create (cid None) or change a character; its files are matched again."""
+    def character_save(self, cid: int | None, name: str, aliases=(), rules=None, cover=..., who=None) -> int:
+        """Create (cid None) or change a character (or a person: who); its files are matched again. A new one with no
+        who given is a person in a library that's only for photos, else a character."""
+        if who is not None and who not in WHO:
+            raise ValueError("Someone is a character or a person.")
+        if cid is None and who is None:
+            who = "person" if self.kinds == ["photos"] else "character"
         if not isinstance(name or "", str):
             raise ValueError("A character's name is text.")
         name = (name or "").strip()[:100]
@@ -460,11 +475,13 @@ class Library:
             if clash and clash[0] != cid:
                 raise ValueError(f"There's already a character called {name}.")
             if cid is None:
-                cid = c.execute("INSERT INTO characters (name, aliases, created) VALUES (?,?,?)", (name, json.dumps(aliases), time.time())).lastrowid
+                cid = c.execute("INSERT INTO characters (name, aliases, created, who) VALUES (?,?,?,?)", (name, json.dumps(aliases), time.time(), who)).lastrowid
             else:
                 if not c.execute("SELECT 1 FROM characters WHERE id=?", (cid,)).fetchone():
                     raise KeyError(cid)
                 c.execute("UPDATE characters SET name=?, aliases=? WHERE id=?", (name, json.dumps(aliases), cid))
+                if who is not None:
+                    c.execute("UPDATE characters SET who=? WHERE id=?", (who, cid))
             if cover is not ...:
                 c.execute("UPDATE characters SET cover=? WHERE id=?", (int(cover) if cover else None, cid))
             if rules is not None:
@@ -493,7 +510,7 @@ class Library:
         """A character's page: its rules (with how they do), the LoRAs and strengths, what it's made with, over time."""
         cid = int(cid)
         with self.db.read() as c:
-            ch = c.execute("SELECT id, name, aliases, cover FROM characters WHERE id=?", (cid,)).fetchone()
+            ch = c.execute("SELECT id, name, aliases, cover, who FROM characters WHERE id=?", (cid,)).fetchone()
             if not ch:
                 return None
             out = dict(ch)
@@ -503,9 +520,9 @@ class Library:
             out["counts"] = {k: counts.get(k, 0) for k in ("auto", "confirmed", "review", "rejected")}
             out["n"] = out["counts"]["auto"] + out["counts"]["confirmed"]
             if not out["cover"]:
-                r = c.execute(f"SELECT f.id {files} AND fc.state IN ('auto','confirmed') ORDER BY fc.state='confirmed' DESC, f.mtime DESC LIMIT 1", (cid,)).fetchone()
+                r = c.execute(f"SELECT f.id {files} AND fc.state IN ('auto','confirmed') ORDER BY fc.state='confirmed' DESC, f.shot DESC LIMIT 1", (cid,)).fetchone()
                 out["cover"] = r[0] if r else None
-            first_last = c.execute(f"SELECT MIN(f.mtime), MAX(f.mtime) {files} AND fc.state IN ('auto','confirmed')", (cid,)).fetchone()
+            first_last = c.execute(f"SELECT MIN(f.shot), MAX(f.shot) {files} AND fc.state IN ('auto','confirmed')", (cid,)).fetchone()
             out["first"], out["last"] = first_last[0], first_last[1]
             out["rules"] = chars.rule_stats(c, cid)
             counted = f"{files} AND fc.state IN ('auto','confirmed')"
@@ -525,7 +542,7 @@ class Library:
                 m["family"] = resolve.family(m["name"])
                 m["color"] = families.color(m["family"]) if m["family"] else None
             out["timeline"] = [dict(r) for r in c.execute(
-                f"SELECT strftime('%Y-%m', f.mtime, 'unixepoch', 'localtime') AS month, COUNT(*) n {counted} GROUP BY month ORDER BY month", (cid,))]
+                f"SELECT strftime('%Y-%m', f.shot, 'unixepoch', 'localtime') AS month, COUNT(*) n {counted} GROUP BY month ORDER BY month", (cid,))]
         return out
 
     def character_review(self, cid: int, file_ids, verdict: str) -> None:
@@ -547,7 +564,7 @@ class Library:
                 "SELECT fc.file_id, fc.character_id, ch.name AS character, fc.source, f.name, f.kind, f.thumb, f.width, f.height, f.mtime"
                 " FROM file_characters fc JOIN characters ch ON ch.id=fc.character_id JOIN files f ON f.id=fc.file_id JOIN folders d ON d.id=f.folder_id"
                 " WHERE fc.state='review' AND f.missing=0 AND d.online=1" + (" AND fc.character_id=?" if cid else "") +
-                " ORDER BY ch.name COLLATE NOCASE, f.mtime DESC LIMIT ?", ((int(cid), limit) if cid else (limit,))).fetchall()
+                " ORDER BY ch.name COLLATE NOCASE, f.shot DESC LIMIT ?", ((int(cid), limit) if cid else (limit,))).fetchall()
         return [dict(r) for r in rows]
 
     def trigger_words(self, lora: str) -> list[str]:
@@ -603,7 +620,7 @@ class Library:
     def file_path(self, file_id: int) -> str | None:
         """Where the file is now (in the Trash: its place in .mlg-trash)."""
         with self.db.read() as c:
-            r = c.execute("SELECT f.rel, f.trash_rel, f.missing, d.path FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.id=? AND f.missing IN (0, 2)",
+            r = c.execute("SELECT f.rel, f.trash_rel, f.missing, d.path FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.id=? AND f.missing IN (0, 2, 3)",
                           (int(file_id),)).fetchone()
         if not r:
             return None
@@ -630,7 +647,7 @@ class Library:
         with self.db.read() as c:
             return [dict(r) for r in c.execute(
                 "SELECT al.id, al.name, al.cover, al.icon, al.color, (SELECT COUNT(*) FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0) n,"
-                " (SELECT af.file_id FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0 ORDER BY f.mtime DESC LIMIT 1) latest"
+                " (SELECT af.file_id FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0 ORDER BY f.shot DESC LIMIT 1) latest"
                 " FROM albums al ORDER BY al.name COLLATE NOCASE")]
 
     def album_save(self, aid: int | None, name: str, cover=...) -> dict:
@@ -737,11 +754,35 @@ class Library:
                 pass
         return today
 
+    # ---------------------------------------------------------------- what the library is for
+    @property
+    def kinds(self) -> list[str] | None:
+        """What it's for, one or more of KINDS; None until you've said (the Gallery asks once). It decides what the
+        screens show: what made each file and model statistics (ai), Live Photos and People (photos)..."""
+        with self.db.read() as c:
+            r = c.execute("SELECT value FROM library_meta WHERE key='kind'").fetchone()
+        got = [k for k in KINDS if r and k in r[0].split(",")]
+        return got or None
+
+    def set_kinds(self, kinds) -> list[str]:
+        kinds = [kinds] if isinstance(kinds, str) else list(kinds or [])
+        if not kinds or any(k not in KINDS for k in kinds):
+            raise ValueError(f"A library is for one or more of: {', '.join(KINDS)}.")
+        kinds = [k for k in KINDS if k in kinds]
+        with self.db.write() as c:
+            c.execute("INSERT INTO library_meta (key, value) VALUES ('kind', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (",".join(kinds),))
+            scanner.pair_live(c)  # Live Photos are a photo library's: paired, or apart again
+            c.execute("UPDATE folders SET file_count=(SELECT COUNT(*) FROM files f WHERE f.folder_id=folders.id AND f.missing=0)")
+        return kinds
+
+    set_kind = set_kinds  # one kind, or several
+
     def status(self) -> dict:
         with self.db.read() as c:
             total = c.execute("SELECT COUNT(*) FROM files WHERE missing=0").fetchone()[0]
-            trash = c.execute("SELECT COUNT(*) FROM files WHERE missing=2").fetchone()[0]
+            trash = c.execute(f"SELECT COUNT(*) FROM files f WHERE f.missing=2 AND f.id NOT IN ({TRASHED_MOTION})").fetchone()[0]
             offline = c.execute("SELECT COUNT(*) FROM folders WHERE online=0").fetchone()[0]
         return {"files": total, "offline": offline, "scanning": self.scanning, "last_scan": self.last_scan,
                 "queued": len(self._queue), "thumbs_pending": self.thumbs.pending(), "thumbs_failed": self.thumbs.failed,
-                "meta_pending": self.meta.pending(), "trash": trash}
+                "meta_pending": self.meta.pending(), "trash": trash, "kinds": self.kinds,
+                "dates_pending": self.dater.pending(), "dates_moved": self.dater.moved}

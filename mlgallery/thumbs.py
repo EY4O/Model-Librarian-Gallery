@@ -16,6 +16,8 @@ import time
 
 BG = (27, 28, 33)  # transparent parts are shown on the grid's own colour
 MAX_RATIO = 4      # a very long image is cropped to 4:1 around its middle, not shrunk to a sliver
+VIEW_PX = 3840     # the long side of what the viewer shows for a picture the window can't show itself
+NOT_IN_BROWSER = (".heic", ".heif", ".tif", ".tiff")  # pictures Edge WebView2 can't show: the viewer gets display()
 
 
 _N, _K = 32, 8
@@ -63,6 +65,11 @@ def _fit(im, size: int):
 
 def _flatten(im):
     from PIL import Image
+    if im.mode.startswith("I"):  # a 16- or 32-bit grey scan: scaled down to 8 bits by its own range (clipped, it'd be white)
+        im = im.convert("I")
+        lo, hi = im.getextrema()
+        span = max(1, hi - lo)
+        return im.point(lambda v: (v - lo) * 255 / span).convert("L").convert("RGB")
     if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
         im = im.convert("RGBA")
         bg = Image.new("RGB", im.size, BG)
@@ -208,6 +215,30 @@ class Thumbnails:
         state = self.make(row)
         self._record([(state, row["id"])])
         return dest if state == 1 else None
+
+    def display(self, file_id: int) -> str | None:
+        """For a picture the window can't show itself (HEIC, TIFF): a large WebP of it to show instead, made once
+        and kept with the thumbnails (by fingerprint, so an edited file gets a new one)."""
+        row = self._row(file_id)
+        if not row or not row["fp"]:
+            return None
+        dest = os.path.join(self.dir, row["fp"][:2], f"{row['fp']}_view.webp")
+        if os.path.isfile(dest):
+            return dest
+        rel = row["trash_rel"] if row["missing"] == 2 and row["trash_rel"] else row["rel"]
+        try:
+            from PIL import Image, ImageOps
+            with Image.open(os.path.join(row["path"], *rel.split("/"))) as im:
+                im.seek(0)
+                im = _flatten(ImageOps.exif_transpose(im))
+                im.thumbnail((VIEW_PX, VIEW_PX), Image.LANCZOS)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            tmp = dest + f".{threading.get_ident()}.tmp"
+            im.save(tmp, "WEBP", quality=90, method=4)
+            os.replace(tmp, dest)
+        except Exception:
+            return None
+        return dest
 
     def _row(self, file_id: int):
         with self.db.read() as c:

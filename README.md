@@ -2,7 +2,7 @@
 
 <h1 align="center">Model Librarian Gallery</h1>
 
-<p align="center"><b>Browse every image and video you've generated, and see what made each one.</b></p>
+<p align="center"><b>Browse every image and video you've generated, photographed or collected, and see what made each one.</b></p>
 
 <p align="center">
   <a href="https://github.com/EY4O/Model-Librarian-Gallery/blob/main/LICENSE"><img src="https://img.shields.io/github/license/EY4O/Model-Librarian-Gallery?color=blue" alt="License"></a>
@@ -10,7 +10,7 @@
   <a href="https://ko-fi.com/looneth"><img src="https://img.shields.io/badge/Ko--fi-Support-FF813F?logo=ko-fi&logoColor=white" alt="Support on Ko-fi"></a>
 </p>
 
-A Windows app for large libraries of AI generations: it indexes the folders you choose where they are (nothing is copied), reads the prompt, settings, models and workflow saved in each file, and lets you search, rate, tag, sort and count them, in a fast grid grouped by day. It works on its own, and works better next to [Model Librarian](https://github.com/EY4O/ComfyUI-Model-Librarian) and ComfyUI.
+A Windows app for large libraries of AI generations, photos and illustrations: it indexes the folders you choose where they are (nothing is copied), reads the prompt, settings, models and workflow saved in each generation and the date each photo was taken, and lets you search, rate, tag, sort and count them, in a fast grid grouped by day. It works on its own, and works better next to [Model Librarian](https://github.com/EY4O/ComfyUI-Model-Librarian) and ComfyUI.
 
 ![The library: a day-by-day grid of generations, with search and filters](docs/images/hero.png)
 
@@ -20,12 +20,14 @@ A Windows app for large libraries of AI generations: it indexes the folders you 
 
 - ⚡ **Fast at any size** — a virtual grid that scrolls the same at 200 files or 250,000; searches and filters answer in a fraction of a second.
 - 🖼️ **Grid or Waterfall** — square tiles or each picture at its own shape, a zoom bar (Ctrl + wheel), names and an info line under the tiles, and a viewer where the picture fills the stage: zoom, pan, actual size.
-- ✂️ **Light editing** — flip, rotate and crop in the viewer; the prompt and workflow the file carries are kept, Save as copy keeps the original, or replace it (undoable).
+- ✂️ **Light editing** — flip, rotate and crop in the viewer (PNG, JPEG, WebP, HEIC, TIFF); the prompt, workflow and EXIF the file carries are kept, Save as copy keeps the original, or replace it (undoable).
+- 📷 **Photos and illustrations too** — each library is for AI generations, photos, illustrations, or any mix of them (with a sidebar shortcut to each part, and `is:ai`, `is:photo`, `is:illustration`), and shows what fits: iPhone HEIC (in a photo library, Live Photos are one item that plays on hover), TIFF, BMP, AVIF, AVI and 3GP alongside PNG, JPEG, WebP and MP4; grouped by the day each photo was taken (EXIF, a video's recorded date, or the date in its name), and People in a photo library (People & characters, each marked, in a mixed one).
+- ▶️ **Videos play on hover** — rest on a video's tile and it plays there, silently.
 - 🧬 **What made it** — the prompt, settings, checkpoint, LoRAs with their strengths and the ComfyUI workflow of every image and video (ComfyUI, A1111 / Forge, NovelAI, InvokeAI and more), read by Model Librarian's own readers.
-- 🔍 **Search that knows generations** — words in prompts and names, plus `model:`, `lora:`, `tag:`, `character:`, `color:`, `rating:4`, `is:fav`, `seed:`, `after:` and more, suggested as you type.
+- 🔍 **Search that knows generations** — words in prompts and names, plus `model:`, `lora:`, `tag:`, `character:`, `color:`, `rating:4`, `is:fav`, `is:photo`, `seed:`, `after:` and more, suggested as you type.
 - 🎨 **Colour sets** — each picture's main colours as swatches, like Eagle's: hover for the value and share, click to copy it or find every picture with that colour (`color:#140d17`, `color:red`).
 - 📊 **Statistics** — what you made with over time (by model family, in Model Librarian's colours), the colours you make most, your most used checkpoints, LoRAs, prompt parts and settings, and the models you have but never use.
-- 👤 **Characters** — a name plus its LoRA, trigger words or tags finds every image it's in; anything uncertain waits in **To review** for a yes or no.
+- 👤 **Characters and People** — a name plus its LoRA, trigger words or tags finds every image it's in; anything uncertain waits in **To review** for a yes or no. In a photo library they're People, tagged by hand.
 - 🗂️ **Organise with Undo** — ratings, favourites, tags, albums, moving and deleting many files at once; every change is in **History** and Ctrl+Z undoes it. Deleting goes to the Gallery's own Trash first.
 - 🎨 **Your sidebar** — give any folder or album an icon (or a number, or an emoji) and a colour, from its right-click menu.
 - ♻️ **Duplicates** — exact copies, and the same picture saved twice in another format or size.

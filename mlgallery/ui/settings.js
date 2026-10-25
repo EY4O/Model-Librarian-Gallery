@@ -1,6 +1,6 @@
 // Model Librarian Gallery: Settings - the library, folders, thumbnails, videos, Model Librarian, ComfyUI, the data folder, updates.
 
-import { api, ask, askText, baseName, fmtDate, fmtSize, h, plural, toast } from "./util.js";
+import { KINDS, api, ask, askText, baseName, fmtDate, fmtSize, h, lib, plural, toast } from "./util.js";
 import { done } from "./organize.js";
 
 const field = (label, control, note) => h("div.set-row", {}, h("label.set-label", {}, label), h("div.set-control", {}, control, note ? h("p.note", {}, note) : null));
@@ -33,7 +33,7 @@ export async function renderSettings(root, ctx) {
   const comfyNote = h("p.note", {}, "Open in ComfyUI sends a file's workflow there; Model Librarian (1.23 or newer) opens it in a new tab.");
   root.replaceChildren(
     h("header.st-head", {}, h("h1", {}, "Settings"), h("span.st-none", {}, `Model Librarian Gallery ${s.version}`)),
-    libraries(lb, () => renderSettings(root, ctx)),
+    libraries(lb, () => renderSettings(root, ctx), ctx),
     h("section.st-card.set", { "aria-label": "Folders" },
       h("div.st-card-head", {}, h("h2", {}, "Folders"), h("button.btn.small", { type: "button", onclick: ctx.addFolder }, "Add a folder")),
       folders.length ? h("ol.set-folders", {}, folders.map((f) => h("li", {},
@@ -226,7 +226,7 @@ async function pickFolder(title, ok) {
   }
 }
 
-function libraries(lb, again) {
+function libraries(lb, again, ctx) {
   const cur = lb.current;
   const open = async (body, what) => {
     try {
@@ -260,6 +260,19 @@ function libraries(lb, again) {
     field("Open now", h("div", {}, h("div", {}, cur.root ? cur.name : "This PC's library"), cur.root ? h("code", {}, cur.root) : null, brought),
       cur.root ? "Its index, thumbnails and backups are in the hidden .mlgallery folder inside it. Copy or move the whole folder to another drive or PC and open it there: its files keep their ratings, tags and albums."
         : "Its index is kept on this PC. A library of your own keeps its index inside its folder instead, so you can take it anywhere, on an external drive for example: New library."),
+    field("What it's for", h("div.kind-set", { role: "group", "aria-label": "What this library is for" }, KINDS.map(([k, label, text]) =>
+      h("label.check", { title: text }, h("input", { type: "checkbox", value: k, checked: (lib.kinds || ["ai"]).includes(k), onchange: async (e) => {
+        const box = e.target.closest(".kind-set");
+        const kinds = [...box.querySelectorAll("input:checked")].map((i) => i.value);
+        if (!kinds.length) { e.target.checked = true; return toast("A library is for one thing at least.", true); }
+        try {
+          const r = await api("/library/kind", { method: "POST", body: { kinds } });
+          ctx.setKinds(r.kinds);
+          toast("Saved: the screens follow it now.");
+          again();
+        } catch (ex) { toast(ex.message, true); }
+      } }), ` ${label}`))),
+      "Tick one or more: what made each file and model statistics (AI generations), Live Photos, dates taken and People (Photos), Characters (AI generations, Illustrations). A library for more than one gets a shortcut to each part in the sidebar."),
     field("Other libraries", rows.length ? h("ol.set-folders", {}, rows) : h("p.st-none", {}, "None yet."),
       lb.can_switch ? "Opening one closes this window and opens the Gallery again with it." : "This Gallery runs as a server only, so it can't switch: start it with --library and the library's folder."));
 }

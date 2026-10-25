@@ -150,7 +150,7 @@ def test_the_window_opens_where_it_was(tmp_path):
     assert _window_place(str(tmp_path)) == SIZE  # the first time: the usual size, centred
     hwnd = user32.CreateWindowExW(0, "STATIC", "Model Librarian Gallery", 0x00CF0000 | 0x10000000, 120, 90, 1000, 700, None, None, None, None)
     try:
-        assert winshell.to_front(hwnd)  # opened by another Gallery, it still comes to the front
+        winshell.to_front(hwnd)  # (in front, or its taskbar button flashing: Windows decides; it never raises)
         _save_window_place(hwnd, str(tmp_path))
         assert _window_place(str(tmp_path)) == {"x": 120, "y": 90, "width": 1000, "height": 700, "maximized": False}
         user32.ShowWindow(ctypes.c_void_p(hwnd), 3)  # maximised: that, and the size it goes back to

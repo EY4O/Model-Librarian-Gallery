@@ -1,7 +1,11 @@
 // Model Librarian Gallery: the Statistics screen. One request (/api/stats) per range; every bar and row
 // opens the library filtered to the files behind it.
 
-import { api, baseName, dayLabel, fmtNum, fmtSize, h, plural, stacks, store, toast } from "./util.js";
+import { api, baseName, dayLabel, fmtNum, fmtSize, h, has, lib, plural, stacks, store, toast, who } from "./util.js";
+
+// photos and illustrations: files over time, one series (no model families)
+const asFiles = (mw) => ({ by: mw.by, series: [{ name: "Files", color: "#7c8cff", n: mw.series.reduce((a, s) => a + s.n, 0) }],
+  points: mw.points.map((p) => ({ at: p.at, Files: Object.entries(p).reduce((a, [k, v]) => (k === "at" ? a : a + v), 0) })) });
 
 const RANGES = [["7", "7 days"], ["30", "30 days"], ["90", "90 days"], ["365", "1 year"], ["all", "All time"]];
 const KIND = { checkpoint: "CKPT", unet: "UNET", lora: "LORA" };
@@ -28,6 +32,7 @@ export async function renderStats(root, { open }) {
   if (me !== gen) return;
   if (data.stale) setTimeout(() => { if (me === gen && root.isConnected && !root.hidden) renderStats(root, { open }); }, 3000); // a fresh count is on its way
   const go = (...chips) => open([...chips, ...sinceChip()]);
+  const ai = has("ai");  // models, LoRAs, prompts and settings only mean something for AI generations
   root.replaceChildren(...[
     h("header.st-head", {},
       h("h1", {}, "Statistics"),
@@ -35,25 +40,26 @@ export async function renderStats(root, { open }) {
         { type: "button", "aria-pressed": String(v === range), onclick: () => { range = v; store.set("statsRange", v); renderStats(root, { open }); } }, label)))),
     data.totals.n ? null : h("p.st-empty", {}, range === "all" ? "Nothing indexed yet: add a folder to see statistics." : "Nothing made in this time range."),
     kpis(data),
-    data.totals.n && data.made_with.series.length ? timeline(data.made_with, go, {
-      title: "Made with, over time", sub: "by the model family each file was made with", caption: "Files made over time, by model family" }) : null,
+    data.totals.n && data.made_with.series.length ? (ai ? timeline(data.made_with, go, {
+      title: "Made with, over time", sub: "by the model family each file was made with", caption: "Files made over time, by model family" })
+      : timeline(asFiles(data.made_with), go, { title: "Over time", sub: has("photos") ? "by the day each was taken (else modified)" : "how many files", caption: "Files over time" })) : null,
     data.totals.n && data.colors && data.colors.series.length ? timeline(data.colors, go, {
       title: "Colours, over time", sub: "the colours of your pictures, as shares of each column", caption: "The colours of the pictures over time, in percent",
       full: true, fmt: (v) => `${fmtNum(v)}%`, pick: (s) => go({ key: "color", value: s.name }) }) : null,
     data.totals.n ? stacks([
-      card("Checkpoints", "Most used", bars(data.checkpoints, { kind: "ckpt", label: (r) => [r.family ? h("span.fam", { style: { color: r.color, borderColor: r.color + "88" } }, r.family.toUpperCase()) : null, r.name],
+      ai && card("Checkpoints", "Most used", bars(data.checkpoints, { kind: "ckpt", label: (r) => [r.family ? h("span.fam", { style: { color: r.color, borderColor: r.color + "88" } }, r.family.toUpperCase()) : null, r.name],
         fill: (r) => r.color, onclick: (r) => go({ key: "model", value: r.name }),
         empty: "No checkpoint recorded in these files." })),
-      card("LoRAs", "Most used, with their average strength", bars(data.loras, { kind: "lora", label: (r) => r.name,
+      ai && card("LoRAs", "Most used, with their average strength", bars(data.loras, { kind: "lora", label: (r) => r.name,
         extra: (r) => (r.strength != null ? `avg ${fmtNum(r.strength)}` : ""), onclick: (r) => go({ key: "lora", value: r.name }), empty: "No LoRAs used." })),
-      data.characters.length ? card("Characters", "In the most files", bars(data.characters, { kind: "char", label: (r) => r.name,
+      data.characters.length ? card(who(), "In the most files", bars(data.characters, { kind: "char", label: (r) => r.name,
         onclick: (r) => go({ key: "character", value: r.name }) })) : null,
-      card("Prompt", "The parts of your prompts used most", bars(data.prompt_tags, { kind: "tag", label: (r) => r.name,
+      ai && card("Prompt", "The parts of your prompts used most", bars(data.prompt_tags, { kind: "tag", label: (r) => r.name,
         onclick: (r) => go({ key: "text", value: `"${r.name.replaceAll('"', "")}"` }), empty: "No prompts in these files." })),
-      settingsCard(data, go),
+      ai && settingsCard(data, go),
       storageCard(data, go),
-      libraryCard(data, go),
-    ]) : null,
+      ai && libraryCard(data, go),
+    ].filter(Boolean)) : null,
   ].filter(Boolean));
 }
 
@@ -65,11 +71,15 @@ function kpis(d) {
   const t = d.totals;
   const pct = t.n ? Math.round((t.with_data / t.n) * 100) : 0;
   const tile = (label, value, note) => h("div.kpi", {}, h("span.k", {}, label), h("span.v", {}, value), note ? h("span.n", {}, note) : null);
+  const ai = has("ai");  // generation data, checkpoints and LoRAs: only AI generations have them
+  const mixed = lib.kinds && lib.kinds.length > 1;  // a library for more than one: what its files are
   return h("div.kpis", {},
-    tile("Made", t.n.toLocaleString(), `${plural(t.images, "image")} · ${plural(t.videos, "video")}`),
-    tile("With generation data", `${pct}%`, `${t.with_data.toLocaleString()} of ${t.n.toLocaleString()}`),
-    tile("Checkpoints used", d.models_used.toLocaleString(), d.checkpoints[0] ? `most: ${d.checkpoints[0].name}` : null),
-    tile("LoRAs used", d.loras_used.toLocaleString(), d.loras[0] ? `most: ${d.loras[0].name}` : null),
+    tile(ai && !mixed ? "Made" : "Files", t.n.toLocaleString(), `${plural(t.images, "image")} · ${plural(t.videos, "video")}`),
+    mixed && tile("What they are", [has("ai") ? `${t.with_data.toLocaleString()} AI` : null, has("photos") ? `${t.photos.toLocaleString()} photos` : null,
+      has("illustrations") ? `${t.illustrations.toLocaleString()} illustrations` : null].filter(Boolean).join(" · "), "AI: generation data; photos: a date taken"),
+    ai && tile("With generation data", `${pct}%`, `${t.with_data.toLocaleString()} of ${t.n.toLocaleString()}`),
+    ai && tile("Checkpoints used", d.models_used.toLocaleString(), d.checkpoints[0] ? `most: ${d.checkpoints[0].name}` : null),
+    ai && tile("LoRAs used", d.loras_used.toLocaleString(), d.loras[0] ? `most: ${d.loras[0].name}` : null),
     tile("On disk", fmtSize(t.size || 0), d.drives.length ? `all folders: ${d.drives.map((x) => `${x.drive} ${fmtSize(x.size)}`).join(" · ")}` : null));
 }
 
