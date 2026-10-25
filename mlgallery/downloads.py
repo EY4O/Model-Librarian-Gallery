@@ -18,7 +18,10 @@ import time
 from . import credits, fileops, scan
 
 LISTED = 2000          # downloads listed at most, newest first
+EXT_FOLDER = "Model Librarian Gallery"  # Downloads\<this>: where the Chrome extension saves, each picture with its note
+SIDECAR = ".mlg.json"  # <picture's name><this>: the note (the page, the artist, the title, the tags)
 SETTLE = 2.0           # seconds a download must have been left alone (a browser still writing it isn't offered)
+NOTE_WAIT = 15.0       # ... and one in the extension's folder without its note yet, this long (the note follows the picture)
 FOLDERID_DOWNLOADS = "{374DE290-123F-4565-9164-39C4925E467B}"
 
 
@@ -42,6 +45,41 @@ def downloads_folder() -> str | None:
             pass
     home = os.path.join(os.path.expanduser("~"), "Downloads")
     return home if os.path.isdir(home) else None
+
+
+NOTE_MAX = 64 * 1024  # a note is a few hundred bytes: anything much bigger isn't one
+
+
+def read_note(path: str) -> dict | None:
+    """The note the Chrome extension saved beside a picture: {page, src, site, post, artist, artist_url, title,
+    description, tags} (only what's there, checked and capped). Only in its own folder (Downloads\\Model Librarian
+    Gallery): a note beside a file anywhere else could have been put there by any site."""
+    if os.path.basename(os.path.dirname(os.path.abspath(path))).lower() != EXT_FOLDER.lower():
+        return None
+    try:
+        if os.path.getsize(path + SIDECAR) > NOTE_MAX:
+            return None
+        with open(path + SIDECAR, encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:  # missing, unreadable, not JSON, nested too deep: no note
+        return None
+    if not isinstance(raw, dict):
+        return None
+    text = lambda k, n=300: str(raw.get(k) or "").strip()[:n] or None  # noqa: E731
+    tags = [str(t).strip()[:100] for t in raw.get("tags") or [] if isinstance(t, (str, int)) and str(t).strip()][:64] if isinstance(raw.get("tags"), list) else []
+    return {k: v for k, v in {"page": credits.clean_url(raw.get("page")), "src": credits.clean_url(raw.get("src")), "site": text("site", 40),
+                              "post": text("post", 80), "artist": credits.clean_name(raw.get("artist"), junk=False),
+                              "artist_url": credits.clean_url(raw.get("artist_url")), "title": text("title"), "description": text("description", 3000),
+                              "tags": tags}.items() if v}
+
+
+def from_note(note: dict) -> dict:
+    """What a note says about where a picture is from and who made it, as a credit (where it was downloaded from)."""
+    got = credits.from_url(note.get("page")) if note.get("page") else {}
+    out = {**got, **{k: note[k] for k in ("site", "post", "artist") if note.get(k)}}
+    if note.get("page"):
+        out["url"] = note["page"]
+    return {k: v for k, v in out.items() if v}
 
 
 def key_of(path: str) -> str:
@@ -73,7 +111,8 @@ class Inbox:
         lib_folders = [f["path"] for f in self.lib.folders()]
         out, seen = [], set()
         dl = downloads_folder() if s.get("inbox_downloads") else None
-        for path, is_dl in ([(dl, True)] if dl else []) + [(p, False) for p in s.get("inbox_folders") or [] if isinstance(p, str)]:
+        ext = os.path.join(dl, EXT_FOLDER) if dl and os.path.isdir(os.path.join(dl, EXT_FOLDER)) else None  # (the Chrome extension's)
+        for path, is_dl in ([(dl, True)] if dl else []) + ([(ext, True)] if ext else []) + [(p, False) for p in s.get("inbox_folders") or [] if isinstance(p, str)]:
             k = os.path.normcase(os.path.abspath(path))
             if k in seen:
                 continue
@@ -124,6 +163,7 @@ class Inbox:
         now = time.time()
         out = []
         for folder in folders:
+            ext_dir = os.path.basename(folder.rstrip("\\/")).lower() == EXT_FOLDER.lower()
             try:
                 with os.scandir(folder) as it:
                     for e in it:
@@ -137,6 +177,8 @@ class Inbox:
                         d = gone.get(os.path.normcase(e.path))
                         if d and d[0] == st.st_size and abs(d[1] - st.st_mtime) < 1:
                             continue
+                        if ext_dir and now - st.st_mtime < NOTE_WAIT and not os.path.isfile(e.path + SIDECAR):
+                            continue  # the extension's, its note not written yet: in a moment
                         out.append({"key": key_of(e.path), "path": e.path, "name": name, "size": st.st_size, "mtime": st.st_mtime,
                                     "kind": kind, "folder": folder})
             except OSError:
@@ -175,12 +217,19 @@ class Inbox:
         """What's known about one download: its fingerprint, and who made it / where it's from."""
         k = (e["path"], e["size"], e["mtime"])
         got = self._found.get(k)
+        if got is not None and "note" not in got and os.path.isfile(e["path"] + SIDECAR):
+            got = None  # its note came after it: read again, with it
         if got is None:
             try:
                 fp = scan.fingerprint(e["path"], e["size"])
             except OSError:
                 fp = None
             got = {"fp": fp, "found": credits.found(e["path"], e["name"], e["name"], e["kind"])}
+            note = read_note(e["path"])  # saved by the Chrome extension: the page it's from, its artist, title and tags
+            if note:
+                got["note"] = note
+                if from_note(note):
+                    got["found"]["note"] = from_note(note)  # (its own source: what Windows says later doesn't replace it)
             if len(self._found) > 5000:
                 self._found.clear()
             self._found[k] = got
@@ -207,6 +256,7 @@ class Inbox:
                             "artist": w["artist"], "artist_from": w["artist_from"], "artist_id": aid,
                             "site": w["site"], "site_name": credits.SITES.get(w["site"] or "", w["site"]), "url": w["url"],
                             "have": {"id": dup["id"], "path": os.path.join(dup["path"], *dup["rel"].split("/")), "trash": dup["missing"] == 2} if dup else None,
+                            "title": (a.get("note") or {}).get("title"), "tags": len((a.get("note") or {}).get("tags") or []),
                             "suggest": self._suggest(c, aid, w["artist"], last)})
         return {"total": len(es), "offset": offset, "items": out, "folders": self.folders()}
 
@@ -272,7 +322,8 @@ class Inbox:
                 except (OSError, fileops.OpError) as ex:
                     failed.append({"key": e["key"], "name": e["name"], "error": str(ex)})
                     continue
-                moved.append({"from": e["path"], "to_folder": d["id"], "to_rel": rel, "found": about["found"], "fp": about["fp"], "size": e["size"]})
+                moved.append({"from": e["path"], "to_folder": d["id"], "to_rel": rel, "found": about["found"], "fp": about["fp"], "size": e["size"],
+                              "note": about.get("note")})
         if not moved:
             raise fileops.OpError(failed[0]["error"] if failed else "Nothing was filed.")
         folder = {"id": d["id"], "path": d["path"]}
@@ -302,14 +353,31 @@ class Inbox:
                 credits.store(c, r[0], m.pop("found"))  # shown at once (the file, its name, its download; its folder's read next)
                 if artist is not None:
                     credits.set_user(c, r[0], artist=artist)
+                if m.get("note"):
+                    m["added_tags"], m["added_note"] = _apply_note(c, r[0], m["note"])
                 done.append(m)
             credits.resolve(c, [m["id"] for m in done])
+            for m in done:  # the artist's page, from the note: one of their links (if they're who it's filed as: not one you typed instead)
+                url = (m.get("note") or {}).get("artist_url")
+                row = c.execute("SELECT a.id, a.name, a.aliases FROM files f JOIN artists a ON a.id=f.artist_id WHERE f.id=?", (m["id"],)).fetchone() if url else None
+                said = credits.norm((m.get("note") or {}).get("artist") or "")
+                aid = row["id"] if row and said and said in {credits.norm(x) for x in [row["name"], *json.loads(row["aliases"] or "[]")]} else None
+                if aid:
+                    links = json.loads(c.execute("SELECT links FROM artists WHERE id=?", (aid,)).fetchone()[0] or "[]")
+                    if url not in links:
+                        c.execute("UPDATE artists SET links=? WHERE id=?", (json.dumps((links + [url])[:16]), aid))
             c.execute("INSERT INTO library_meta (key, value) VALUES ('inbox_last', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                       (json.dumps({"folder": d["id"], "sub": sub}),))
             n = len(done)
             op = fileops.record(c, "file", f"Filed {n} download{'s' if n != 1 else ''} in {os.path.basename(dest) or dest}",
-                                [{k: m[k] for k in ("id", "from", "to_folder", "to_rel", "was") if k in m} for m in done]) if done else None
+                                [{k: m[k] for k in ("id", "from", "to_folder", "to_rel", "was", "note", "added_tags", "added_note") if k in m} for m in done]) if done else None
             fileops._recount(c)
+        for m in done:  # its note has been read into the index: it goes (Undo writes it back beside the download)
+            if m.get("note"):
+                try:
+                    os.remove(m["from"] + SIDECAR)
+                except OSError:
+                    pass
         self._listing = None
         self.lib.thumbs.nudge()
         self.lib.meta.nudge()
@@ -338,6 +406,8 @@ class Inbox:
             try:
                 send2trash(e["path"])
                 gone += 1
+                if os.path.isfile(e["path"] + SIDECAR):  # (its note with it)
+                    send2trash(e["path"] + SIDECAR)
             except OSError as ex:
                 failed.append({"key": e["key"], "name": e["name"], "error": str(ex)})
         self._listing = None
@@ -371,6 +441,23 @@ class Inbox:
         return out
 
 
+def _apply_note(c, fid: int, note: dict) -> tuple[list[str], bool]:
+    """A note's tags (marked as from the site: taking one off keeps it off) and its title as the picture's note
+    (unless it has one already). -> (the tags it added, whether it added the note)."""
+    from . import metadata
+    added = []
+    for t in metadata._split(note.get("tags") or []):
+        tid = metadata.tag_id(c, t)
+        if c.execute("INSERT OR IGNORE INTO file_tags (file_id, tag_id, source) VALUES (?, ?, 'site')", (fid, tid)).rowcount:
+            added.append(t)
+    text = "\n\n".join(x for x in (note.get("title"), note.get("description")) if x)
+    noted = bool(text) and not c.execute("SELECT 1 FROM file_notes WHERE file_id=?", (fid,)).fetchone()
+    if noted:
+        c.execute("INSERT INTO file_notes (file_id, note, source) VALUES (?, ?, 'site')", (fid, text[:4000]))
+    metadata.refresh_search(c, fid)
+    return added, noted
+
+
 def undo(db, data) -> dict:
     """A filing undone: each download back where it was (under a free name, if that's taken now), out of the index."""
     with db.read() as c:
@@ -390,8 +477,20 @@ def undo(db, data) -> dict:
         except (OSError, fileops.OpError):
             failed.append(it["id"])
             continue
+        if it.get("note"):  # its note back beside it, for filing again
+            try:
+                with open(dst + SIDECAR, "w", encoding="utf-8") as f:
+                    json.dump(it["note"], f, ensure_ascii=False)
+            except OSError:
+                pass
         with db.write() as c:
             was = it.get("was")
+            if was:  # (a record it took over: what the note gave it goes again, and only that)
+                from .metadata import tag_id
+                c.executemany("DELETE FROM file_tags WHERE file_id=? AND tag_id=? AND source='site'", [(it["id"], tag_id(c, t)) for t in it.get("added_tags") or []])
+                if it.get("added_note"):
+                    c.execute("DELETE FROM file_notes WHERE file_id=? AND source='site'", (it["id"],))
+                c.execute("DELETE FROM credits WHERE file_id=? AND src='note'", (it["id"],))
             if not was:
                 c.execute("DELETE FROM files WHERE id=?", (it["id"],))
             else:  # the record it took over goes back where it was, missing as it was

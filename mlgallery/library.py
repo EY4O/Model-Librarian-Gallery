@@ -401,7 +401,7 @@ class Library:
                 if not row:
                     continue
                 # a tag from the workflow is only hidden, so re-reading the file doesn't bring it back
-                c.execute("UPDATE file_tags SET removed=1 WHERE file_id=? AND tag_id=? AND source='workflow'", (fid, row["id"]))
+                c.execute("UPDATE file_tags SET removed=1 WHERE file_id=? AND tag_id=? AND source IN ('workflow', 'site')", (fid, row["id"]))
                 c.execute("DELETE FROM file_tags WHERE file_id=? AND tag_id=? AND source='user'", (fid, row["id"]))
             c.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM file_tags)")
             metadata.refresh_search(c, fid)

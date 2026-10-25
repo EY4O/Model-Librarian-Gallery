@@ -237,7 +237,7 @@ MIGRATIONS = [
     );
     CREATE TABLE credits (
         file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-        src TEXT NOT NULL,                     -- user, file, download, name, folder: for each field, the first of these that has it wins
+        src TEXT NOT NULL,                     -- user, (note: 1.7.0), file, download, name, folder: for each field, the first of these that has it wins
         artist TEXT,                           -- the name as found or typed ('' from you: no artist)
         site TEXT,                             -- pixiv, x, deviantart, danbooru...
         post TEXT,                             -- the picture's id there

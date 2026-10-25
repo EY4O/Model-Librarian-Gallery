@@ -143,7 +143,7 @@ export function editArtist(a, ctx, preset = {}) {
 }
 
 // ---------------------------------------------------------------- in a picture's details
-const FROM = { user: "typed by you", file: "from the file", download: "from where it was downloaded", name: "from its name", folder: "from its folder" };
+const FROM = { user: "typed by you", note: "from the page it was saved from", file: "from the file", download: "from where it was downloaded", name: "from its name", folder: "from its folder" };
 
 // the artist and the source of one file, with where each came from; yours to change
 export function creditEditor(info, { onFilter, onChanged }) {

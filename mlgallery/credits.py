@@ -1,7 +1,8 @@
 """Who made a picture and where it's from: found in the file, where it was downloaded from, its name and its folder.
 
     user      what you typed (an artist, a source; or that it has no artist)    for each field (the artist, the source)
-    file      the file's own details: EXIF Artist, XMP creator, IPTC by-line,    the first of these that has it wins
+    note      what the Chrome extension noted as it saved it (the post, its artist) the first of these that has it wins
+    file      the file's own details: EXIF Artist, XMP creator, IPTC by-line,
               a PNG's Author; a source link written in it
     download  where Windows says it was downloaded from (the page and the picture's address, kept with the file)
     name      the name a site gives its downloads (12345678_p0.png from Pixiv, __..._drawn_by_artist__<md5> from
@@ -24,10 +25,11 @@ from urllib.parse import parse_qs, urlsplit
 
 from .characters import norm
 
-SRC = ("user", "file", "download", "name", "folder")  # who wins, first to last
+SRC = ("user", "note", "file", "download", "name", "folder")  # who wins, first to last
 SITES = {"pixiv": "Pixiv", "x": "X", "deviantart": "DeviantArt", "danbooru": "Danbooru", "gelbooru": "Gelbooru", "safebooru": "Safebooru",
          "yandere": "yande.re", "konachan": "Konachan", "e621": "e621", "artstation": "ArtStation", "bluesky": "Bluesky", "tumblr": "Tumblr",
-         "instagram": "Instagram", "newgrounds": "Newgrounds", "furaffinity": "Fur Affinity", "reddit": "Reddit", "civitai": "Civitai"}
+         "instagram": "Instagram", "newgrounds": "Newgrounds", "furaffinity": "Fur Affinity", "reddit": "Reddit", "civitai": "Civitai",
+         "pawchive": "Pawchive"}
 NAME_CAP, URL_CAP = 100, 2000
 JUNK = {"", "unknown", "anonymous", "none", "n/a", "artist", "author", "owner", "camera owner", "copyright", "user", "admin", "administrator"}
 
@@ -183,6 +185,9 @@ def from_url(url: str | None) -> dict:
     if host.endswith("reddit.com") or host == "redd.it":
         m = re.search(r"/comments/(\w+)", path)
         return hit("reddit", m.group(1) if m else None)
+    if host == "pawchive.pw":  # /<service>/user/<id>/post/<id> (an archive of Patreon, Fanbox... posts: the artist is on the page)
+        m = re.match(r"/[a-z]+/user/[^/]+/post/([^/]+)", path)
+        return hit("pawchive", m.group(1) if m else None)
     if host.endswith("civitai.com"):
         m = re.match(r"/images/(\d+)", path)
         return hit("civitai", m.group(1) if m else None)

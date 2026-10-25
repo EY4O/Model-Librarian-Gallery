@@ -8,7 +8,7 @@ import * as org from "./organize.js";
 
 const PAGE = 60;
 const pic = (kind, key) => `/api/inbox/${kind}/${key}?t=${encodeURIComponent(TOKEN)}`;
-const FROM = { file: "from the file", download: "from where it was downloaded", name: "from its name" };
+const FROM = { note: "from the page it was saved from", file: "from the file", download: "from where it was downloaded", name: "from its name" };
 
 export async function renderDownloads(root, ctx) {
   const sel = new Set();
@@ -87,10 +87,11 @@ export async function renderDownloads(root, ctx) {
       h("label.dl-pick", { title: "Select" }, h("input", { type: "checkbox", checked: picked, onchange: toggle, "aria-label": `Select ${it.name}` })),
       h("button.dl-thumb", { type: "button", title: "Look closer", onclick: () => preview({ name: it.name, kind: it.kind, src: pic("file", it.key) }) }, img),
       h("div.dl-body", {},
-        h("p.dl-name", { title: it.name }, it.name),
+        h("p.dl-name", { title: it.title ? `${it.title}\n${it.name}` : it.name }, it.title || it.name),
         h("p.dl-sub", {}, `${fmtSize(it.size)} · ${fmtDate(it.mtime)}`),
         it.artist ? h("p.dl-artist", { title: FROM[it.artist_from] || "" }, it.artist, h("span.credit-from", {}, ` ${FROM[it.artist_from] || ""}`)) : h("p.dl-artist.dim", {}, "Artist not known"),
-        it.site ? h("p.dl-site", {}, it.url ? h("button.link", { type: "button", title: it.url, onclick: () => openLink(it.url) }, it.site_name) : it.site_name) : null,
+        it.site ? h("p.dl-site", {}, it.url ? h("button.link", { type: "button", title: it.url, onclick: () => openLink(it.url) }, it.site_name) : it.site_name,
+          it.tags ? h("span.credit-from", {}, ` · ${plural(it.tags, "tag")}`) : null) : null,
         it.have ? h("p.dl-have", { title: it.have.path }, icon("check"), it.have.trash ? "In the library's Trash already" : "In the library already") : null,
         it.suggest ? h("p.dl-dest", { title: it.suggest.why ? `Suggested: ${it.suggest.why}` : "" }, "→ ", where(it.suggest, ctx.folders())) : null),
       h("div.dl-acts", {},

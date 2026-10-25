@@ -381,3 +381,107 @@ def test_any_name_you_type_is_yours(lib, media):
     r = bulk.apply(lib.db, [items(lib)["a.png"]["id"]], "artist", "Unknown")  # a placeholder when found, a name when you type it
     assert lib.files(q="artist:unknown")["total"] == 1
     assert fileops.history(lib.db)[0]["summary"] == "Set the artist of 1 file to Unknown" and r["op"]
+
+
+# ---------------------------------------------------------------- saved by the Chrome extension
+def ext_folder(lib, dl):
+    """Downloads\\Model Librarian Gallery: where the extension saves (offered like a downloads folder; notes trusted only here)."""
+    ext = dl / "Model Librarian Gallery"
+    ext.mkdir(exist_ok=True)
+    lib.inbox.add_folder(str(ext))
+    return ext
+
+
+def noted(path, **note):
+    import json
+    with open(str(path) + ".mlg.json", "w", encoding="utf-8") as fh:
+        json.dump(note, fh)
+
+
+def test_a_picture_saved_from_the_browser_comes_with_its_page(inbox, media, tmp_path):
+    import json
+    lib, f, dl = inbox
+    a = image(ext_folder(lib, dl) / "98765_p0.png", seed=4)
+    with open(str(a) + ".mlg.json", "w", encoding="utf-8") as fh:
+        json.dump({"page": "https://www.pixiv.net/artworks/98765", "site": "pixiv", "post": "98765", "artist": "Mika Art",
+                   "artist_url": "https://www.pixiv.net/users/42", "title": "Harbour at dusk", "description": "A study.",
+                   "tags": ["landscape", "harbour", "landscape"]}, fh)
+    settled(a)
+    it = lib.inbox.items()["items"][0]
+    assert it["artist"] == "Mika Art" and it["site"] == "pixiv" and it["title"] == "Harbour at dusk" and it["tags"] == 3
+    assert lib.inbox.items()["total"] == 1  # the note isn't offered itself
+    r = lib.inbox.file([it["key"]], f["id"], "")
+    fid = items(lib)["98765_p0.png"]["id"]
+    info = lib.info(fid)
+    assert info["credit"]["artist"]["name"] == "Mika Art" and info["credit"]["url"] == "https://www.pixiv.net/artworks/98765"
+    assert sorted(t["name"] for t in info["tags"]) == ["harbour", "landscape"] and {t["source"] for t in info["tags"]} == {"site"}
+    assert info["note"]["note"] == "Harbour at dusk\n\nA study." and info["note"]["source"] == "site"
+    assert lib.artists()["artists"][0]["links"] == ["https://www.pixiv.net/users/42"]
+    assert not os.path.exists(str(a) + ".mlg.json")  # read into the index
+    lib.set_tags(fid, remove=["harbour"])  # a site's tag taken off stays off
+    assert [t["name"] for t in lib.info(fid)["tags"]] == ["landscape"]
+    fileops.undo(lib.db, r["op"])
+    assert os.path.isfile(a) and os.path.isfile(str(a) + ".mlg.json")  # back, with its note, to file again
+
+
+def test_the_extensions_folder_is_offered_too(inbox, media, monkeypatch, tmp_path):
+    from mlgallery import downloads
+    lib, f, dl = inbox
+    home = tmp_path / "Home Downloads"
+    (home / "Model Librarian Gallery").mkdir(parents=True)
+    a = image(home / "Model Librarian Gallery" / "saved.png", seed=5)
+    settled(a)
+    monkeypatch.setattr(downloads, "downloads_folder", lambda: str(home))
+    lib.settings.update({"inbox_downloads": True})
+    lib.inbox._listing = None
+    assert any(f_["path"].endswith("Model Librarian Gallery") for f_ in lib.inbox.folders())
+    assert "saved.png" in [i["name"] for i in lib.inbox.items()["items"]]
+
+
+def test_pawchive_addresses():
+    assert credits.from_url("https://pawchive.pw/patreon/user/21429170/post/173387261") == {
+        "site": "pawchive", "post": "173387261", "url": "https://pawchive.pw/patreon/user/21429170/post/173387261"}
+
+
+
+def test_what_the_note_says_isnt_replaced_by_what_windows_says_later(inbox, media):
+    lib, f, dl = inbox
+    a = image(ext_folder(lib, dl) / "illust.jpg", seed=6)
+    noted(a, page="https://x.com/realartist/status/1234", site="x", post="1234", artist="realartist")
+    downloaded(a, picture="https://pbs.twimg.com/media/GAbc.jpg")  # (says only "X": no post, no artist)
+    settled(a)
+    lib.inbox.file([lib.inbox.items()["items"][0]["key"]], f["id"], "")
+    index(lib, f)  # the background reader looks at it again
+    got = lib.info(items(lib)["illust.jpg"]["id"])["credit"]
+    assert got["artist"]["name"] == "realartist" and got["url"] == "https://x.com/realartist/status/1234" and got["artist_from"] == "note"
+
+
+def test_a_note_is_only_believed_in_the_extensions_folder(inbox, media):
+    lib, f, dl = inbox
+    a = image(dl / "planted.png", seed=7)  # (any site can put a file and a note in Downloads itself)
+    noted(a, artist="Someone Else", tags=["spam"])
+    b = image(ext_folder(lib, dl) / "broken.png", seed=8)
+    with open(str(b) + ".mlg.json", "w") as fh:
+        fh.write("[" * 200000)  # not a note: too deep to read
+    settled(a, b)
+    got = {i["name"]: i for i in lib.inbox.items()["items"]}
+    assert got["planted.png"]["artist"] is None and got["planted.png"]["tags"] == 0
+    assert got["broken.png"]["artist"] is None  # and the listing still works
+
+
+def test_a_note_that_comes_after_its_picture(inbox, media):
+    lib, f, dl = inbox
+    a = image(ext_folder(lib, dl) / "late.png", seed=9)
+    settled(a)
+    assert lib.inbox.items()["items"][0]["artist"] is None
+    noted(a, artist="Late Artist", page="https://www.pixiv.net/artworks/5")
+    assert lib.inbox.items()["items"][0]["artist"] == "Late Artist"
+
+
+def test_the_artists_page_goes_to_that_artist_only(inbox, media):
+    lib, f, dl = inbox
+    a = image(ext_folder(lib, dl) / "repost.jpg", seed=10)
+    noted(a, artist="repost_account", artist_url="https://x.com/repost_account", page="https://x.com/repost_account/status/9")
+    settled(a)
+    lib.inbox.file([lib.inbox.items()["items"][0]["key"]], f["id"], "", artist="Real Artist")  # you know better
+    assert {a_["name"]: a_["links"] for a_ in lib.artists()["artists"]} == {"Real Artist": []}

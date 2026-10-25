@@ -1228,7 +1228,7 @@ function noteEditor(info) {
   };
   box.addEventListener("blur", save);
   box.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); box.blur(); } });
-  const hint = h("span.note-hint", { "aria-live": "polite" }, info.note?.source === "eagle" ? "From Eagle" : "");
+  const hint = h("span.note-hint", { "aria-live": "polite" }, info.note?.source === "eagle" ? "From Eagle" : info.note?.source === "site" ? "From the page it was saved from" : "");
   return h("div.note-wrap", {}, box, hint);
 }
 
@@ -1528,7 +1528,8 @@ function tagEditor(info) {
   const list = h("datalist", { id: `tags-${info.id}` });
   input.setAttribute("list", list.id);
   const render = (tags) => {
-    wrap.replaceChildren(...tags.map((t) => h("span.chip.tag" + (t.source === "workflow" ? ".wf" : ""), { title: t.source === "workflow" ? "From the workflow's Gallery Info node" : "Your tag" },
+    wrap.replaceChildren(...tags.map((t) => h("span.chip.tag" + (t.source === "workflow" || t.source === "site" ? ".wf" : ""),
+      { title: t.source === "workflow" ? "From the workflow's Gallery Info node" : t.source === "site" ? "From the page it was saved from" : "Your tag" },
       filterLink("tag", t.name),
       h("button.x", { type: "button", "aria-label": `Remove the tag ${t.name}`, onclick: () => change({ remove: [t.name] }) }, icon("remove")))), input, list);
   };

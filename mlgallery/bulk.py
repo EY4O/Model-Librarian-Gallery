@@ -62,7 +62,7 @@ def apply(db, ids, action: str, value=None) -> dict:
                         c.execute("INSERT INTO file_tags (file_id, tag_id, source) VALUES (?, ?, 'user') ON CONFLICT (file_id, tag_id) DO UPDATE SET removed=0", (i, tid))
                         data.append({"file_id": i, "tag": name, "was": dict(cur) if cur else None})
                     elif cur and not cur["removed"]:
-                        if cur["source"] == "workflow":
+                        if cur["source"] in ("workflow", "site"):  # (taken off, it stays off: not found again)
                             c.execute("UPDATE file_tags SET removed=1 WHERE file_id=? AND tag_id=?", (i, tid))
                         else:
                             c.execute("DELETE FROM file_tags WHERE file_id=? AND tag_id=?", (i, tid))
