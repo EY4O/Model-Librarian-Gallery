@@ -146,6 +146,38 @@ def test_recent_libraries(tmp_path, home):
     assert [r["reachable"] for r in libraries.recent() if r["root"] == roots[-2]] == [False]
 
 
+def test_a_library_is_listed_once_wherever_it_was_opened(tmp_path, home):
+    on_r = tmp_path / "R" / "Drive Library"
+    on_r.mkdir(parents=True)
+    libraries.create(str(on_r))
+    libraries.remember(str(on_r))
+    on_s = tmp_path / "S" / "Drive Library"  # the drive came up as another letter
+    shutil.copytree(on_r, on_s)
+    shutil.rmtree(tmp_path / "R")
+    open_lib(on_s)
+    libraries.remember(str(on_s))
+    assert [r["root"] for r in libraries.recent()] == [str(on_s)]  # not the R: entry it can't reach any more
+    backup = tmp_path / "Backup of Drive Library"  # a copy that's still there: both listed
+    shutil.copytree(on_s, backup)
+    libraries.remember(str(backup))
+    assert [r["root"] for r in libraries.recent()] == [str(backup), str(on_s)]
+
+
+def test_libraries_from_before_get_an_id_and_old_lists_still_read(tmp_path, home):
+    old = tmp_path / "Old"
+    old.mkdir()
+    libraries.create(str(old))
+    libraries.update_info(str(old), id=None)  # made by 1.2/1.3
+    os.makedirs(home, exist_ok=True)
+    (home / "libraries.json").write_text(json.dumps({"last": str(old), "recent": [str(old), str(tmp_path / "Gone")]}), encoding="utf-8")
+    assert [r["root"] for r in libraries.recent()] == [str(old), str(tmp_path / "Gone")]  # paths alone, as 1.3 wrote them
+    open_lib(old)
+    lid = libraries.info(str(old))["id"]
+    assert len(lid) == 32
+    libraries.remember(str(old))
+    assert json.loads((home / "libraries.json").read_text(encoding="utf-8"))["recent"][0] == {"root": str(old), "id": lid}
+
+
 # ---------------------------------------------------------------- following it to another place
 def test_rebase_moves_only_the_folders_inside(tmp_path, home):
     root = media_lib(tmp_path / "Gen")

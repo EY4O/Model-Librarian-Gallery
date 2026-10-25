@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -46,6 +47,40 @@ def _own_taskbar_entry() -> None:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
         except Exception:
             pass
+
+
+SIZE = {"width": 1440, "height": 920}  # the first time, or when the last place isn't on a screen any more
+MIN_SIZE = (900, 600)
+
+
+def _window_place(home: str) -> dict:
+    """Where the window was last time on this PC (window.json): create_window's width, height, x, y, maximized."""
+    try:
+        with open(os.path.join(home, "window.json"), encoding="utf-8") as f:
+            w = json.load(f)
+        x, y, width, height = (int(w[k]) for k in ("x", "y", "width", "height"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return dict(SIZE)
+    width, height = max(width, MIN_SIZE[0]), max(height, MIN_SIZE[1])
+    place = {"width": width, "height": height, "maximized": bool(w.get("maximized"))}
+    try:
+        from .winshell import on_screen
+        if on_screen(x, y, width):
+            place.update(x=x, y=y)
+    except Exception:
+        pass  # centred, at its last size
+    return place
+
+
+def _save_window_place(hwnd, home: str) -> None:
+    if os.name != "nt" or not hwnd:
+        return
+    try:
+        from .config import write_atomic
+        from .winshell import placement
+        write_atomic(os.path.join(home, "window.json"), json.dumps(placement(hwnd)).encode("utf-8"))
+    except Exception:
+        pass
 
 
 def _pin_as_gallery(hwnd, pkg: str | None) -> None:
@@ -137,14 +172,27 @@ def main(argv=None) -> int:
         chosen = w.create_file_dialog(kind)
         return chosen[0] if chosen else None
 
+    def hwnd_of():
+        try:
+            return int(window["w"].native.Handle.ToInt64())  # the WinForms window itself
+        except Exception:
+            return None
+
     def quit_app():
         if window["w"]:
+            _save_window_place(hwnd_of(), pick["home"])  # destroy() isn't a close: the closing event doesn't come
             window["w"].destroy()
         else:
             stop.set()
 
     def relaunch(target: list[str]) -> None:
         """Start a Gallery with `target` (another library, or this one after an update); quit_app() follows."""
+        if os.name == "nt":
+            try:
+                from .winshell import allow_next_to_front
+                allow_next_to_front()  # this window is in front now: the next one may take its place
+            except Exception:
+                pass
         cmd, cwd = libraries.launch_command(target, browser=args.browser)
         subprocess.Popen(cmd, cwd=cwd, close_fds=True,
                          creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
@@ -184,16 +232,23 @@ def main(argv=None) -> int:
         else:
             import webview
             _own_taskbar_entry()
-            window["w"] = webview.create_window(APP_NAME, url, width=1440, height=920, min_size=(900, 600), background_color="#262626")
+            window["w"] = webview.create_window(APP_NAME, url, min_size=MIN_SIZE, background_color="#262626", **_window_place(pick["home"]))
 
             def shown():
-                try:
-                    hwnd = int(window["w"].native.Handle.ToInt64())  # the WinForms window itself
-                except Exception:
-                    hwnd = None
+                hwnd = hwnd_of()
                 _set_window_icon(hwnd)
                 _pin_as_gallery(hwnd, pkg)
+                if hwnd and os.name == "nt":
+                    try:
+                        from .winshell import to_front
+                        to_front(hwnd)  # opened by another Gallery (switching libraries) Windows would leave it behind
+                    except Exception:
+                        pass
+
+            def closing():
+                _save_window_place(hwnd_of(), pick["home"])
             window["w"].events.shown += shown
+            window["w"].events.closing += closing
             webview.start(private_mode=False, storage_path=os.path.join(pick["home"], "webview"))
     except KeyboardInterrupt:
         pass

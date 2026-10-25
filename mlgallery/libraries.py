@@ -18,6 +18,7 @@ import json
 import os
 import sqlite3
 import time
+import uuid
 
 from . import APP_NAME
 from .config import default_data_dir, write_atomic
@@ -126,7 +127,7 @@ def create(root: str, name: str | None = None, bring_from: dict | None = None) -
     d = data_dir(root)
     os.makedirs(d, exist_ok=True)
     _hide(d)
-    meta = {"v": 1, "name": (str(name or "").strip()[:100] or os.path.basename(root.rstrip("\\/")) or root), "created": time.time(), "root": root}
+    meta = {"v": 1, "id": uuid.uuid4().hex, "name": (str(name or "").strip()[:100] or os.path.basename(root.rstrip("\\/")) or root), "created": time.time(), "root": root}
     if bring_from:
         meta["bring_from"] = bring_from
     write_atomic(os.path.join(d, INFO), json.dumps(meta, indent=1).encode("utf-8"))
@@ -162,6 +163,8 @@ def prepare(lib) -> None:
     indexes its own folder (once: removing that folder afterwards sticks)."""
     if not lib.root:
         return
+    if not info(lib.root).get("id"):  # made by 1.2/1.3: an id, so the recent list knows it wherever it's opened from
+        update_info(lib.root, id=uuid.uuid4().hex)
     rebase(lib.db, lib.root)
     if not info(lib.root).get("opened"):
         with lib.db.write() as c:
@@ -188,19 +191,34 @@ def _save(d: dict) -> None:
     write_atomic(_recent_path(), json.dumps(d, indent=1).encode("utf-8"))
 
 
+def _entries(d: dict) -> list[dict]:
+    """The recent list as {root, id}: a path alone (1.2/1.3) has no id."""
+    out = []
+    for r in d.get("recent") or []:
+        if isinstance(r, str):
+            out.append({"root": r, "id": None})
+        elif isinstance(r, dict) and isinstance(r.get("root"), str):
+            out.append({"root": r["root"], "id": r["id"] if isinstance(r.get("id"), str) else None})
+    return out
+
+
 def remember(root: str | None) -> None:
-    """The library open now (None: this PC's library), first in the recent list and opened next time."""
+    """The library open now (None: this PC's library), first in the recent list and opened next time. The same
+    library seen before somewhere it isn't any more (another drive letter, a folder it was moved from) is dropped:
+    it's listed once, where it is now. A copy that's still there (a backup, say) stays listed as well."""
     d = _load()
-    rec = [r for r in d.get("recent") or [] if isinstance(r, str) and (root is None or _norm(r) != _norm(root))]
+    rec = _entries(d)
     if root:
-        rec.insert(0, root)
+        lid = info(root).get("id")
+        rec = [r for r in rec if _norm(r["root"]) != _norm(root) and not (lid and r["id"] == lid and not is_library(r["root"]))]
+        rec.insert(0, {"root": root, "id": lid})
     d.update(last=root, recent=rec[:RECENT])
     _save(d)
 
 
 def forget(root: str) -> None:
     d = _load()
-    d["recent"] = [r for r in d.get("recent") or [] if isinstance(r, str) and _norm(r) != _norm(root)]
+    d["recent"] = [r for r in _entries(d) if _norm(r["root"]) != _norm(root)]
     if d.get("last") and _norm(d["last"]) == _norm(root):
         d["last"] = None
     _save(d)
@@ -208,10 +226,9 @@ def forget(root: str) -> None:
 
 def recent() -> list[dict]:
     out = []
-    for r in _load().get("recent") or []:
-        if isinstance(r, str):
-            ok = is_library(r)
-            out.append({"root": r, "name": info(r)["name"] if ok else os.path.basename(r.rstrip("\\/")) or r, "reachable": ok})
+    for r in _entries(_load()):
+        root, ok = r["root"], is_library(r["root"])
+        out.append({"root": root, "name": info(root)["name"] if ok else os.path.basename(root.rstrip("\\/")) or root, "reachable": ok})
     return out
 
 

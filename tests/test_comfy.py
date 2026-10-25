@@ -137,3 +137,28 @@ def test_pinning_the_window_pins_the_gallery(tmp_path):
             assert winshell.read_window(hwnd) == want  # not "Python": the launcher, by the Gallery's name and icon
         finally:
             user32.DestroyWindow(ctypes.c_void_p(hwnd))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows windows")
+def test_the_window_opens_where_it_was(tmp_path):
+    import ctypes
+    import json
+    from mlgallery import winshell
+    from mlgallery.__main__ import SIZE, _save_window_place, _window_place
+    user32 = ctypes.windll.user32
+    user32.CreateWindowExW.restype = ctypes.c_void_p
+    assert _window_place(str(tmp_path)) == SIZE  # the first time: the usual size, centred
+    hwnd = user32.CreateWindowExW(0, "STATIC", "Model Librarian Gallery", 0x00CF0000 | 0x10000000, 120, 90, 1000, 700, None, None, None, None)
+    try:
+        assert winshell.to_front(hwnd)  # opened by another Gallery, it still comes to the front
+        _save_window_place(hwnd, str(tmp_path))
+        assert _window_place(str(tmp_path)) == {"x": 120, "y": 90, "width": 1000, "height": 700, "maximized": False}
+        user32.ShowWindow(ctypes.c_void_p(hwnd), 3)  # maximised: that, and the size it goes back to
+        _save_window_place(hwnd, str(tmp_path))
+        assert _window_place(str(tmp_path)) == {"x": 120, "y": 90, "width": 1000, "height": 700, "maximized": True}
+    finally:
+        user32.DestroyWindow(ctypes.c_void_p(hwnd))
+    (tmp_path / "window.json").write_text(json.dumps({"x": 40000, "y": 40000, "width": 300, "height": 200, "maximized": False}), encoding="utf-8")
+    assert _window_place(str(tmp_path)) == {"width": 900, "height": 600, "maximized": False}  # a screen that's gone: centred, never too small
+    (tmp_path / "window.json").write_text("not json", encoding="utf-8")
+    assert _window_place(str(tmp_path)) == SIZE

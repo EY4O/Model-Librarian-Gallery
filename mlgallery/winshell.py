@@ -146,6 +146,104 @@ def shortcut_identity(lnk: str) -> None:
                 _release(o)
 
 
+# ---------------------------------------------------------------- where the window was, and coming to the front
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+class _PLACEMENT(ctypes.Structure):
+    _fields_ = [("length", ctypes.c_uint), ("flags", ctypes.c_uint), ("showCmd", ctypes.c_uint),
+                ("ptMin", ctypes.c_long * 2), ("ptMax", ctypes.c_long * 2), ("normal", _RECT)]
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", _RECT), ("rcWork", _RECT), ("dwFlags", ctypes.c_ulong)]
+
+
+_U32 = None
+
+
+def _user32():
+    """user32 with argument types set: a handle of its own, so pywebview's calls through windll aren't changed."""
+    global _U32
+    if _U32:
+        return _U32
+    u = ctypes.WinDLL("user32")
+    u.MonitorFromWindow.restype = u.MonitorFromRect.restype = c_void_p
+    u.MonitorFromWindow.argtypes = [c_void_p, ctypes.c_ulong]
+    u.MonitorFromRect.argtypes = [POINTER(_RECT), ctypes.c_ulong]
+    u.GetForegroundWindow.restype = c_void_p
+    for name in ("GetWindowPlacement", "GetWindowRect", "SetForegroundWindow", "BringWindowToTop", "GetDpiForWindow"):
+        getattr(u, name).argtypes = [c_void_p] + ([c_void_p] if name in ("GetWindowPlacement", "GetWindowRect") else [])
+    u.GetWindowThreadProcessId.argtypes = [c_void_p, c_void_p]
+    u.GetMonitorInfoW.argtypes = [c_void_p, c_void_p]
+    _U32 = u
+    return u
+
+
+def placement(hwnd: int) -> dict:
+    """The window's normal (not maximised) place and size in logical pixels, and whether it's maximised:
+    what pywebview takes back (x, y, width, height, maximized)."""
+    u = _user32()
+    wp = _PLACEMENT()
+    wp.length = ctypes.sizeof(_PLACEMENT)
+    if not u.GetWindowPlacement(c_void_p(hwnd), byref(wp)):
+        raise OSError("no window placement")
+    maximized = wp.showCmd == 3 or (wp.showCmd == 2 and bool(wp.flags & 2))  # maximised, or minimised from maximised
+    if wp.showCmd == 1:  # shown normally: its real place on screen
+        r = _RECT()
+        u.GetWindowRect(c_void_p(hwnd), byref(r))
+    else:  # the place it goes back to, in work-area coordinates: moved by the taskbar when that's at the top or left
+        r = wp.normal
+        mi = _MONITORINFO()
+        mi.cbSize = ctypes.sizeof(_MONITORINFO)
+        if u.GetMonitorInfoW(u.MonitorFromWindow(c_void_p(hwnd), 2), byref(mi)):
+            dx, dy = mi.rcWork.left - mi.rcMonitor.left, mi.rcWork.top - mi.rcMonitor.top
+            r = _RECT(r.left + dx, r.top + dy, r.right + dx, r.bottom + dy)
+    scale = (u.GetDpiForWindow(c_void_p(hwnd)) or 96) / 96
+    return {"x": round(r.left / scale), "y": round(r.top / scale), "width": round((r.right - r.left) / scale),
+            "height": round((r.bottom - r.top) / scale), "maximized": maximized}
+
+
+def on_screen(x: int, y: int, width: int) -> bool:
+    """Is the top of a window at this logical place on a screen now (a monitor unplugged since, a smaller one)?"""
+    scale = (_user32().GetDpiForSystem() or 96) / 96
+    strip = _RECT(int((x + 40) * scale), int(y * scale), int((x + max(width - 40, 41)) * scale), int((y + 30) * scale))
+    return bool(_user32().MonitorFromRect(byref(strip), 0))  # MONITOR_DEFAULTTONULL
+
+
+def allow_next_to_front() -> None:
+    """Before this Gallery closes for another one (switching libraries, Restart now): let that window come to the front."""
+    ctypes.windll.user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
+
+
+def to_front(hwnd: int) -> bool:
+    """Bring a window just opened to the front. Windows only lets the program the user is in do that, so if it's
+    refused: borrow the front window's input queue for a moment (the usual way round), and if even that's refused,
+    flash the taskbar button so it's easy to find."""
+    u = _user32()
+    h = c_void_p(hwnd)
+    if u.SetForegroundWindow(h) and u.GetForegroundWindow() == hwnd:
+        return True
+    front = u.GetForegroundWindow()
+    theirs = u.GetWindowThreadProcessId(c_void_p(front), None) if front else 0
+    mine = ctypes.windll.kernel32.GetCurrentThreadId()
+    if theirs and theirs != mine and u.AttachThreadInput(theirs, mine, True):
+        try:
+            u.BringWindowToTop(h)
+            u.SetForegroundWindow(h)
+        finally:
+            u.AttachThreadInput(theirs, mine, False)
+    if u.GetForegroundWindow() == hwnd:
+        return True
+
+    class FLASHWINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_uint), ("hwnd", c_void_p), ("dwFlags", ctypes.c_ulong), ("uCount", ctypes.c_uint), ("dwTimeout", ctypes.c_ulong)]
+    fw = FLASHWINFO(ctypes.sizeof(FLASHWINFO), h, 0x3 | 0xC, 0, 0)  # caption and button, until it's brought up
+    u.FlashWindowEx(byref(fw))
+    return False
+
+
 def read_shortcut(lnk: str) -> str | None:
     with _Com():
         link, persist, store = _open_link(os.path.abspath(lnk), False)
