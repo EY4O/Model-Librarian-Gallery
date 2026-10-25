@@ -12,6 +12,7 @@
     after:2026-10-01  before:2026-10-23  on:2026-10-23  (by when the file was made, your local time; after:yesterday, on:2026-10 too)
     date:today  date:yesterday  date:7d  date:30d  date:2026-10  date:2026-10-23
     lora:aurelia@0.6-0.8  lora:aurelia@>=0.7  strength:0.7   (a LoRA used at that strength; strength: any LoRA)
+    color:#140d17  color:red   a colour that looks like it (5% of the picture or more), or of that family (10%; colors.py)
     -fog  -tag:dusk  -lora:aurelia   (a minus leaves out what follows it: words and filters alike)
 
 Unknown keys are treated as text. Every value is passed as a parameter, never pasted into the SQL.
@@ -24,7 +25,7 @@ import time
 
 TOKEN = re.compile(r'(-?)(?:(\w+):)?(?:"([^"]*)"?|(\S+))')
 KEYS = {"model", "lora", "tag", "rating", "is", "has", "no", "sampler", "scheduler", "seed", "steps", "neg", "vae", "ext",
-        "cfg", "size", "after", "before", "on", "character", "review", "album", "date", "strength"}
+        "cfg", "size", "after", "before", "on", "character", "review", "album", "date", "strength", "color", "colour"}
 
 
 def tokens(q: str) -> list[tuple[str | None, str]]:
@@ -163,6 +164,14 @@ def build(q: str, db=None) -> tuple[list[str], list]:
             else:
                 where.append(f"f.id IN (SELECT file_id FROM file_characters WHERE character_id IN ({_in(ids)}) AND state IN ({_in(states)}))")
                 args += [*ids, *states]
+        elif key in ("color", "colour"):
+            from . import colors
+            cond = colors.condition(v)
+            if not cond:
+                where.append("0")
+                continue
+            where.append(cond[0])
+            args += cond[1]
         elif key == "album":
             where.append("f.id IN (SELECT af.file_id FROM album_files af JOIN albums al ON al.id=af.album_id WHERE af.removed=0 AND al.name = ? COLLATE NOCASE)")
             args.append(v)

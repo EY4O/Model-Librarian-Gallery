@@ -35,7 +35,11 @@ export async function renderStats(root, { open }) {
         { type: "button", "aria-pressed": String(v === range), onclick: () => { range = v; store.set("statsRange", v); renderStats(root, { open }); } }, label)))),
     data.totals.n ? null : h("p.st-empty", {}, range === "all" ? "Nothing indexed yet: add a folder to see statistics." : "Nothing made in this time range."),
     kpis(data),
-    data.totals.n && data.made_with.series.length ? timeline(data, go) : null,
+    data.totals.n && data.made_with.series.length ? timeline(data.made_with, go, {
+      title: "Made with, over time", sub: "by the model family each file was made with", caption: "Files made over time, by model family" }) : null,
+    data.totals.n && data.colors && data.colors.series.length ? timeline(data.colors, go, {
+      title: "Colours, over time", sub: "the colours of your pictures, as shares of each column", caption: "The colours of the pictures over time, in percent",
+      full: true, fmt: (v) => `${fmtNum(v)}%`, pick: (s) => go({ key: "color", value: s.name }) }) : null,
     data.totals.n ? stacks([
       card("Checkpoints", "Most used", bars(data.checkpoints, { kind: "ckpt", label: (r) => [r.family ? h("span.fam", { style: { color: r.color, borderColor: r.color + "88" } }, r.family.toUpperCase()) : null, r.name],
         fill: (r) => r.color, onclick: (r) => go({ key: "model", value: r.name }),
@@ -121,15 +125,15 @@ function libraryCard(d, go) {
     total > lib.unused.length ? h("p.st-none", {}, `and ${(total - lib.unused.length).toLocaleString()} more (largest first)`) : null);
 }
 
-// the timeline: one column per day (or week), stacked by the model family each file was made with (Model
-// Librarian's colours); hover for the numbers, click for the files
-function timeline(d, go) {
-  const mw = d.made_with;
+// a timeline: one column per day (or week), stacked by series (model families in Model Librarian's colours,
+// or colour families); hover for the numbers, click a column for those files (a legend entry too, with `pick`).
+// `full`: each column is shares of 100, all the same height
+function timeline(mw, go, { title, sub, caption, full = false, fmt = (v) => v.toLocaleString(), pick = null }) {
   const series = mw.series;
   const pts = fill(mw);
   const val = (p, s) => p[s.name] || 0;
   const sum = (p) => series.reduce((t, s) => t + val(p, s), 0);
-  const nice = niceMax(Math.max(...pts.map(sum), 1));
+  const nice = full ? 100 : niceMax(Math.max(...pts.map(sum), 1));
   const tip = h("div.tl-tip", { role: "status", hidden: true });
   const swatch = (s) => h("i.sw", { style: { background: s.color } });
   const cols = pts.map((p) => {
@@ -149,20 +153,22 @@ function timeline(d, go) {
         [...parts].reverse().map((s) => h("span", { style: { flexGrow: val(p, s), background: s.color } }))));
   });
   function showTip(el, label, p, parts) {
-    tip.replaceChildren(h("strong", {}, label), ...parts.map((s) => h("span", {}, swatch(s), h("span.tt-name", {}, s.name), h("b", {}, val(p, s).toLocaleString()))),
-      parts.length > 1 ? h("span.tt-total", {}, `${sum(p).toLocaleString()} in all`) : null);
+    tip.replaceChildren(h("strong", {}, label), ...parts.map((s) => h("span", {}, swatch(s), h("span.tt-name", {}, s.name), h("b", {}, fmt(val(p, s))))),
+      parts.length > 1 && !full ? h("span.tt-total", {}, `${sum(p).toLocaleString()} in all`) : null);
     tip.hidden = false;
     const box = el.parentElement.getBoundingClientRect(), r = el.getBoundingClientRect();
     tip.style.left = `${Math.min(box.width - 190, Math.max(0, r.left - box.left + r.width / 2 - 90))}px`;
   }
   const ticks = [0, Math.floor(pts.length / 2), pts.length - 1].filter((v, i, a) => a.indexOf(v) === i);
-  const table = h("table.sr-only", {}, h("caption", {}, "Files made over time, by model family"),
+  const table = h("table.sr-only", {}, h("caption", {}, caption),
     h("tr", {}, h("th", {}, mw.by === "week" ? "Week of" : "Day"), series.map((s) => h("th", {}, s.name))),
     pts.filter(sum).map((p) => h("tr", {}, h("td", {}, p.at), series.map((s) => h("td", {}, val(p, s))))));
-  return card("Made with, over time", `${mw.by === "week" ? "Per week" : "Per day"}, by the model family each file was made with`,
-    h("div.tl-legend", {}, series.map((s) => h("span", {}, swatch(s), s.name, h("span.lg-n", {}, s.n.toLocaleString())))),
+  const legend = (s) => [swatch(s), s.name, h("span.lg-n", {}, fmt(s.n))];
+  return card(title, `${mw.by === "week" ? "Per week" : "Per day"}, ${sub}`,
+    h("div.tl-legend", {}, series.map((s) => pick ? h("button.lg-pick", { type: "button", title: `Show files with ${s.name}`, onclick: () => pick(s) }, ...legend(s))
+      : h("span", {}, ...legend(s)))),
     h("div.tl", {},
-      h("div.tl-axis", { "aria-hidden": "true" }, h("span", {}, nice.toLocaleString()), h("span", {}, Math.round(nice / 2).toLocaleString()), h("span", {}, "0")),
+      h("div.tl-axis", { "aria-hidden": "true" }, h("span", {}, full ? "100%" : nice.toLocaleString()), h("span", {}, full ? "50%" : Math.round(nice / 2).toLocaleString()), h("span", {}, full ? "0%" : "0")),
       h("div.tl-plot", {}, h("div.tl-grid", { "aria-hidden": "true" }, h("i"), h("i"), h("i")), h("div.tl-cols", {}, cols), tip)),
     h("div.tl-x", { "aria-hidden": "true" }, ticks.map((i) => h("span", { style: { left: `${((i + 0.5) / pts.length) * 100}%` } }, short(pts[i].at, mw.by)))),
     table);

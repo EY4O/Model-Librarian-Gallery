@@ -22,14 +22,15 @@ A Windows app for large libraries of AI generations: it indexes the folders you 
 - 🖼️ **Grid or Waterfall** — square tiles or each picture at its own shape, a zoom bar (Ctrl + wheel), names and an info line under the tiles, and a viewer where the picture fills the stage: zoom, pan, actual size.
 - ✂️ **Light editing** — flip, rotate and crop in the viewer; the prompt and workflow the file carries are kept, Save as copy keeps the original, or replace it (undoable).
 - 🧬 **What made it** — the prompt, settings, checkpoint, LoRAs with their strengths and the ComfyUI workflow of every image and video (ComfyUI, A1111 / Forge, NovelAI, InvokeAI and more), read by Model Librarian's own readers.
-- 🔍 **Search that knows generations** — words in prompts and names, plus `model:`, `lora:`, `tag:`, `character:`, `rating:4`, `is:fav`, `seed:`, `after:` and more, suggested as you type.
-- 📊 **Statistics** — what you made with over time (by model family, in Model Librarian's colours), your most used checkpoints, LoRAs, prompt parts and settings, and the models you have but never use.
+- 🔍 **Search that knows generations** — words in prompts and names, plus `model:`, `lora:`, `tag:`, `character:`, `color:`, `rating:4`, `is:fav`, `seed:`, `after:` and more, suggested as you type.
+- 🎨 **Colour sets** — each picture's main colours as swatches, like Eagle's: hover for the value and share, click to copy it or find every picture with that colour (`color:#140d17`, `color:red`).
+- 📊 **Statistics** — what you made with over time (by model family, in Model Librarian's colours), the colours you make most, your most used checkpoints, LoRAs, prompt parts and settings, and the models you have but never use.
 - 👤 **Characters** — a name plus its LoRA, trigger words or tags finds every image it's in; anything uncertain waits in **To review** for a yes or no.
 - 🗂️ **Organise with Undo** — ratings, favourites, tags, albums, moving and deleting many files at once; every change is in **History** and Ctrl+Z undoes it. Deleting goes to the Gallery's own Trash first.
 - 🎨 **Your sidebar** — give any folder or album an icon (or a number, or an emoji) and a colour, from its right-click menu.
 - ♻️ **Duplicates** — exact copies, and the same picture saved twice in another format or size.
 - 🔗 **Model Librarian and ComfyUI** — **Open in ComfyUI** opens a file's workflow in a new ComfyUI tab, **Save as recipe** puts it in Model Librarian's recipes, and the **Gallery Info** node tags images as they're made.
-- 🦅 **Eagle bridge** — bring an Eagle library's tags, folders, ratings and notes onto your files (it's only read), and send any selection to Eagle.
+- 🦅 **Leaving Eagle** — bring an Eagle library in as plain files, laid out by its folders, into a library of its own or this one, with its tags, ratings, notes, links and colours (Eagle's library is only read); or send any selection to Eagle.
 - 🔄 **Updates when you want them** — turn on **Updates** in Settings and the portable Gallery asks GitHub once a day for a new version, then installs it at its next start.
 - 💼 **A library you can take anywhere** — make any folder a library and its index, thumbnails and backups live inside it: copy it to an external drive and open it on any PC, whatever drive letter it gets.
 - 🛡️ **Your files stay yours** — indexing only reads; nothing leaves your PC.
@@ -107,6 +108,24 @@ The first start sets up the app's own Python in `.venv`; later starts open strai
 - Thumbnails are small WebP files kept by fingerprint, made in the background, newest first. Videos get a poster frame from ffmpeg.
 - The index is one SQLite file, backed up daily (the last 7 kept). Your files' own data can always be read again from them; your ratings, tags, albums and characters live in the index. This PC's library keeps it in `%LOCALAPPDATA%\Model Librarian Gallery`.
 - Hidden and system folders, and Eagle libraries (`*.library`), are never indexed.
+</details>
+
+<details>
+<summary><b>🦅 Leaving Eagle</b></summary>
+
+- **Settings → Eagle → Bring in an Eagle library** reads its `.library` folder (only reads: nothing in it changes) and asks where it goes: into a new library of its own, in a folder you pick, or into the library that's open.
+- Each item is copied out, checked against the original, laid out by its Eagle folder (`Characters\Aurelia\…`; an item in several goes into the first, items in none into `Unfiled`), under the name Eagle shows, keeping the date it was added to Eagle.
+- Its tags, star rating and note come along; its source link goes on a line of its own at the end of the note; every Eagle folder becomes an album too; Eagle's colours become its colour set. A file the library already has (the same bytes) just gets the marks, without a second copy.
+- It's one step in History: Undo takes the marks off and moves the copies to the Gallery's Trash. Once you're happy, delete the Eagle library yourself.
+</details>
+
+<details>
+<summary><b>🎨 Colour sets</b></summary>
+
+- Every picture gets a colour set: its main colours and how much of it each covers, worked out from its thumbnail in the background (pictures from Eagle start with Eagle's).
+- The viewer shows them as swatches under the file's name; hover for the value and share, click to find every picture with that colour or its family, or to copy its value.
+- `color:#140d17` finds pictures with a colour that looks like it (covering at least 5%); `color:red` (or orange, yellow, green, cyan, blue, purple, pink, brown, black, gray, white) a colour of that family covering at least 10%.
+- Statistics shows the colours of what you made, over time.
 </details>
 
 <details>

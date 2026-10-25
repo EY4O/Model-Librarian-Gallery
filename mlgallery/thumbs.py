@@ -279,35 +279,43 @@ class Thumbnails:
             time.sleep(0)
 
     def _fingerprint(self, ids: list[int]) -> None:
-        """The picture fingerprint of files whose thumbnail exists (read from the small thumbnail: quick)."""
+        """The picture fingerprint and the colour set of files whose thumbnail exists (read from the small
+        thumbnail: quick). A file brought in from Eagle already has Eagle's colours."""
         if not ids:
             return
         from PIL import Image
+        from . import colors
         size = int(self.settings.get("thumb_size"))
         with self.db.read() as c:
-            rows = c.execute(f"SELECT id, fp FROM files WHERE id IN ({','.join('?' * len(ids))}) AND phash IS NULL", ids).fetchall()
-        out = []
+            rows = c.execute(f"SELECT id, fp, phash, colors FROM files WHERE id IN ({','.join('?' * len(ids))}) AND (phash IS NULL OR colors=0)", ids).fetchall()
+        hashes, sets = [], []
         for r in rows:
             try:
                 with Image.open(cache_path(self.dir, r["fp"], size)) as im:
-                    out.append((phash(im), r["id"]))
+                    if r["phash"] is None:
+                        hashes.append((phash(im), r["id"]))
+                    if not r["colors"]:
+                        sets.append((r["id"], colors.palette(im)))
             except (OSError, ValueError):
                 continue
-        if out:
+        if hashes or sets:
             with self.db.write() as c:
-                c.executemany("UPDATE files SET phash=? WHERE id=?", out)
+                c.executemany("UPDATE files SET phash=? WHERE id=?", hashes)
+                for fid, pal in sets:
+                    colors.store(c, fid, pal)
 
     def backfill_fingerprints(self) -> None:
-        """Fingerprints for files that had thumbnails before fingerprints existed."""
+        """Fingerprints and colour sets for files that had thumbnails before those existed."""
+        todo = "thumb=1 AND (phash IS NULL OR colors=0) AND missing=0"
         while not self._stop.is_set():
             with self.db.read() as c:
-                ids = [r[0] for r in c.execute("SELECT id FROM files WHERE thumb=1 AND phash IS NULL AND missing=0 LIMIT 200")]
+                ids = [r[0] for r in c.execute(f"SELECT id FROM files WHERE {todo} LIMIT 200")]
             if not ids:
                 return
             before = len(ids)
             self._fingerprint(ids)
             with self.db.read() as c:
-                left = c.execute(f"SELECT COUNT(*) FROM files WHERE id IN ({','.join('?' * len(ids))}) AND phash IS NULL", ids).fetchone()[0]
+                left = c.execute(f"SELECT COUNT(*) FROM files WHERE id IN ({','.join('?' * len(ids))}) AND {todo}", ids).fetchone()[0]
             if left == before:  # thumbnails gone from the cache: they'll get one when the thumbnail is made again
                 with self.db.write() as c:
                     c.executemany("UPDATE files SET thumb=0 WHERE id=?", [(i,) for i in ids])

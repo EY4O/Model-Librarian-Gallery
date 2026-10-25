@@ -188,6 +188,23 @@ MIGRATIONS = [
     ALTER TABLE albums ADD COLUMN icon TEXT;
     ALTER TABLE albums ADD COLUMN color TEXT;
     """,
+    # 9: each picture's colour set (colors.py): its main colours, how much of it each covers, to find it by colour
+    """
+    CREATE TABLE colors (
+        file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        rank INTEGER NOT NULL,          -- 0 covers the most
+        hex TEXT NOT NULL,              -- #rrggbb
+        ratio REAL NOT NULL,            -- the share of the picture, 0..1
+        l REAL NOT NULL, a REAL NOT NULL, b REAL NOT NULL,  -- CIE Lab: colours that look alike are close
+        family TEXT NOT NULL,           -- red, orange, yellow, green, cyan, blue, purple, pink, brown, black, gray, white
+        cell INTEGER NOT NULL,          -- its cube in a coarse Lab grid: color:#hex looks in the few cubes around it
+        PRIMARY KEY (file_id, rank)
+    );
+    CREATE INDEX colors_family ON colors (family, ratio);
+    CREATE INDEX colors_cell ON colors (cell, ratio);
+    ALTER TABLE files ADD COLUMN colors INTEGER NOT NULL DEFAULT 0;  -- 0 not worked out yet, 1 done
+    CREATE INDEX files_colors_todo ON files (colors) WHERE colors = 0;
+    """,
 ]
 CACHE = 256  # cached query results kept (each tied to the index as it was)
 

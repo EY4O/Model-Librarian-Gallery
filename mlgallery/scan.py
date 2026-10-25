@@ -192,7 +192,8 @@ def _flush(db, now, touched: list, pending: list) -> None:
                 # findable by its name at once; reading its metadata fills in the rest
                 c.execute("INSERT INTO search (rowid, name, prompt, negative, models, tags) VALUES (?,?,'','','','')", (new, search_name(args[2])))
             elif op == "change":
-                c.execute("UPDATE files SET size=?, mtime=?, fp=?, width=?, height=?, last_seen=?, missing=0, thumb=0, meta=0, phash=NULL, trashed=NULL, trash_rel=NULL WHERE id=?", args)
+                c.execute("UPDATE files SET size=?, mtime=?, fp=?, width=?, height=?, last_seen=?, missing=0, thumb=0, meta=0, phash=NULL, colors=0, trashed=NULL, trash_rel=NULL WHERE id=?", args)
+                c.execute("DELETE FROM colors WHERE file_id=?", (args[-1],))  # another picture now: its colours are worked out again
             elif op == "move":
                 c.execute("UPDATE files SET folder_id=?, rel=?, name=?, ext=?, size=?, mtime=?, last_seen=?, missing=0, meta=0 WHERE id=?", args)
                 refresh_search(c, args[-1])

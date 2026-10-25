@@ -1,6 +1,6 @@
 // Model Librarian Gallery: Settings - the library, folders, thumbnails, videos, Model Librarian, ComfyUI, the data folder, updates.
 
-import { api, askText, baseName, fmtDate, fmtSize, h, plural, toast } from "./util.js";
+import { api, ask, askText, baseName, fmtDate, fmtSize, h, plural, toast } from "./util.js";
 import { done } from "./organize.js";
 
 const field = (label, control, note) => h("div.set-row", {}, h("label.set-label", {}, label), h("div.set-control", {}, control, note ? h("p.note", {}, note) : null));
@@ -54,8 +54,8 @@ export async function renderSettings(root, ctx) {
           : "Not found. It's the .sm_model_fetcher folder inside your models folder."),
       field("ComfyUI's address", h("div", {}, text("comfy_url", "http://127.0.0.1:8188", "ComfyUI address")), null), comfyNote),
     h("section.st-card.set", { "aria-label": "Eagle" },
-      h("div.st-card-head", {}, h("h2", {}, "Eagle"), h("button.btn.small", { type: "button", onclick: () => eagleImport(folders) }, "Bring in an Eagle library…")),
-      h("p.note.set-lede", {}, "Bringing in a library only reads it: its tags, folders (as albums), ratings and notes go onto the files the Gallery already has, matched by their bytes. Files it doesn't have can be copied out into one of your folders. Send to Eagle (in the selection's More menu) adds files to Eagle through Eagle itself."),
+      h("div.st-card-head", {}, h("h2", {}, "Eagle"), h("button.btn.small", { type: "button", onclick: () => eagleImport(folders, lb) }, "Bring in an Eagle library…")),
+      h("p.note.set-lede", {}, "Bringing in a library only reads it. Its files are copied out, laid out by Eagle folder, into a new library of their own or into this one, with their tags, folders (as albums), ratings, notes, source links and colours; a file this library already has just gets the marks. Send to Eagle (in the selection's More menu) adds files to Eagle through Eagle itself."),
       field("Eagle's address", text("eagle_url", "http://localhost:41595", "Eagle address"), "Eagle has to be running for Send to Eagle."),
       field("API token", secret("eagle_token", "Eagle API token"), "Only if your Eagle asks for one (Eagle: Preferences, Developer). Kept in the Gallery's settings on this PC.")),
     h("section.st-card.set", { "aria-label": "The Gallery's data" },
@@ -112,7 +112,26 @@ function updates(s, again, save) {
 }
 
 // ---------------------------------------------------------------- bring in an Eagle library
-async function eagleImport(folders) {
+async function follow(title, note, line) {
+  // a dialog that follows a job in the background (/eagle/read) until it's no longer `running`
+  const status = h("p", { "aria-live": "polite" }, line({ done: 0 }));
+  const dlg = h("dialog.dialog", { "aria-label": title }, h("form", { method: "dialog" }, h("h2", {}, title), status, h("p.note", {}, note)));
+  dlg.addEventListener("keydown", (e) => e.preventDefault());
+  document.body.append(dlg);
+  dlg.showModal();
+  let st;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 400));
+    st = await api("/eagle/read").catch(() => ({ state: "failed", error: "The Gallery stopped answering." }));
+    if (st.state === "reading" || st.state === "applying") status.textContent = line(st);
+    else break;
+  }
+  dlg.close();
+  dlg.remove();
+  return st;
+}
+
+async function eagleImport(folders, lb) {
   let path = "";
   try {
     path = (await api("/folders/pick", { method: "POST" })).path;
@@ -124,44 +143,71 @@ async function eagleImport(folders) {
   try {
     await api("/eagle/read", { method: "POST", body: { path } });
   } catch (e) { return toast(e.message, true); }
-  const status = h("p", { "aria-live": "polite" }, "Reading the library…");
-  const dlg = h("dialog.dialog", { "aria-label": "Reading the Eagle library" }, h("form", { method: "dialog" }, h("h2", {}, "Reading the Eagle library"), status,
-    h("p.note", {}, "Only reading: nothing in it changes.")));
-  dlg.addEventListener("keydown", (e) => e.preventDefault());
-  document.body.append(dlg);
-  dlg.showModal();
-  let st;
-  for (;;) {
-    await new Promise((r) => setTimeout(r, 400));
-    st = await api("/eagle/read").catch(() => ({ state: "failed", error: "The Gallery stopped answering." }));
-    if (st.state === "reading") status.textContent = `Reading the library… ${st.done.toLocaleString()} items so far`;
-    else break;
-  }
-  dlg.close();
-  dlg.remove();
+  const st = await follow("Reading the Eagle library", "Only reading: nothing in it changes.",
+    (x) => `Reading the library… ${(x.done || 0).toLocaleString()} items so far`);
   if (st.state !== "ready") return toast(st.error || "Reading the library didn't finish.", true);
   const s = st.summary;
   const online = folders.filter((f) => f.online);
-  const copy = h("input", { type: "checkbox", id: "eagle-copy", checked: s.missing > 0 && online.length > 0, disabled: !s.missing || !online.length });
+  // where it goes: a new library of its own (asked each time), or this library
+  const radio = (v) => h("input", { type: "radio", name: "eagle-where", value: v, id: `eagle-${v}`, checked: v === "new", onchange: () => show() });
+  const rNew = radio("new"), rHere = radio("here");
+  let newPath = "";
+  const chosen = h("code", {}, "No folder chosen yet");
+  const name = h("input", { type: "text", value: s.name, "aria-label": "Name", spellcheck: false });
   const into = h("select", { "aria-label": "Copy into" }, online.map((f) => h("option", { value: f.id }, baseName(f.path))));
+  const sub = h("input", { type: "text", value: `From Eagle - ${s.name}`, "aria-label": "Folder inside it", spellcheck: false });
+  for (const i of [name, sub]) i.addEventListener("keydown", (e) => e.stopPropagation());
+  const layout = `laid out by Eagle folder${s.unfiled ? ` (${plural(s.unfiled, "item")} in no folder go to Unfiled)` : ""}, under the names Eagle shows`;
+  const newBox = h("div.eagle-opt", {},
+    h("div.row", {}, h("button.btn.small", { type: "button", onclick: async () => {
+      const p = await pickFolder("Folder for the new library", "Use it");
+      if (p) { newPath = p; chosen.textContent = p; if (name.value === s.name) name.value = baseName(p); }
+    } }, "Choose a folder…"), chosen),
+    h("label.field-row", {}, h("span", {}, "Name"), name),
+    h("p.note", {}, `All ${plural(s.all, "item")} (${fmtSize(s.all_size)}) are copied into it, ${layout}. Pick an empty folder, on an external drive for example.`));
+  const hereBox = h("div.eagle-opt", {},
+    h("p.note", {}, `${plural(s.matched, "item")} this library has already get Eagle's marks; no second copy is made.`),
+    s.missing && online.length ? h("label.field-row", {}, h("span", {}, "Copy into"), into) : null,
+    s.missing && online.length ? h("label.field-row", {}, h("span", {}, "Folder"), sub) : null,
+    s.missing ? h("p.note", {}, online.length ? `${plural(s.missing, "item")} (${fmtSize(s.missing_size)}) it doesn't have are copied there, ${layout}.`
+      : `${plural(s.missing, "item")} it doesn't have can't be copied: none of this library's folders is reachable.`) : null);
+  const show = () => { newBox.hidden = !rNew.checked; hereBox.hidden = !rHere.checked; };
+  show();
   const err = h("p.form-err", { role: "alert" });
   const go = h("button.btn.primary", { type: "submit" }, "Bring it in");
   const box = h("dialog.dialog", { "aria-label": `Bring in ${s.name}` }, h("form", { method: "dialog", onsubmit: async (e) => {
     e.preventDefault();
+    if (rNew.checked && !newPath) { err.textContent = "Choose a folder for the new library."; return; }
     go.disabled = true;
+    const body = rNew.checked ? { target: "new", path: newPath, name: name.value.trim() }
+      : { target: "here", copy_to: s.missing && online.length ? Number(into.value) : null, sub: sub.value.trim() };
     try {
-      const r = await api("/eagle/apply", { method: "POST", body: copy.checked ? { copy_to: Number(into.value) } : {} });
-      box.close();
-      done(r, `From ${s.name}: ${plural(r.files, "file")} got ${plural(r.tags, "tag")}, ${plural(r.albums, "album place")} and ${plural(r.ratings, "rating")}${r.copied ? `; ${plural(r.copied, "file")} copied in` : ""}.`);
-    } catch (ex) { err.textContent = ex.message; go.disabled = false; }
+      await api("/eagle/apply", { method: "POST", body });
+    } catch (ex) { err.textContent = ex.message; go.disabled = false; return; }
+    box.close();
+    const end = await follow(`Bringing in ${s.name}`, "Copied and checked one by one; Eagle's library isn't changed.",
+      (x) => (x.total ? `Copying… ${(x.done || 0).toLocaleString()} of ${x.total.toLocaleString()}` : "Bringing in the tags, albums, ratings and notes…"));
+    if (end.state !== "done") return toast(end.error || "Bringing it in didn't finish.", true);
+    const r = end.result;
+    const marks = `${plural(r.tags, "tag")}, ${plural(r.albums, "album place")}, ${plural(r.ratings, "rating")} and ${plural(r.notes, "note")}`;
+    const failed = r.failed && r.failed.length ? ` ${plural(r.failed.length, "file")} couldn't be copied (${r.failed.slice(0, 3).join(", ")}${r.failed.length > 3 ? "…" : ""}).` : "";
+    if (r.library) {
+      const msg = `${r.library.name}: ${plural(r.copied, "file")} copied from ${s.name}, with ${marks}.${failed}`;
+      if (lb.can_switch && await ask(`${r.library.name} is ready`, `${msg} Open it now?`, { ok: "Open it" })) {
+        api("/libraries/open", { method: "POST", body: { path: r.library.root } }).then(() => toast(`Opening ${r.library.name}…`)).catch((ex) => toast(ex.message, true));
+      } else toast(msg);
+      return;
+    }
+    done(r, `From ${s.name}: ${plural(r.files, "file")} got ${marks}${r.copied ? `; ${plural(r.copied, "file")} copied in` : ""}.${failed}`);
   } },
     h("h2", {}, `Bring in ${s.name}`),
     h("ul.plan-list", {},
-      h("li", {}, h("b", {}, plural(s.matched, "item")), " the Gallery already has: they get the library's tags and ratings, and its folders as albums."),
-      h("li", {}, `${plural(s.tags, "tag")}, ${plural(s.album_count, "folder")}${s.albums.length ? ` (${s.albums.slice(0, 6).join(", ")}${s.album_count > 6 ? "…" : ""})` : ""}, ${plural(s.rated, "rating")}, ${plural(s.notes, "note")}.`),
-      s.missing ? h("li", {}, h("b", {}, plural(s.missing, "item")), ` (${fmtSize(s.missing_size)}) aren't in the Gallery.`) : null),
-    s.missing ? h("div.field-row", {}, h("label.check", { for: "eagle-copy" }, copy, " Copy them into"), into) : null,
-    h("p.note", {}, "Your own ratings and notes stay as they are. Eagle's library isn't changed: copied files are copies. It's one step in History: Undo takes the tags, albums, ratings and notes off again, and moves the copies to the Gallery's Trash."),
+      h("li", {}, `${plural(s.all, "item")}: ${plural(s.tags, "tag")}, ${plural(s.album_count, "folder")}${s.albums.length ? ` (${s.albums.slice(0, 6).join(", ")}${s.album_count > 6 ? "…" : ""})` : ""}, ${plural(s.rated, "rating")}, ${plural(s.notes, "note")}${s.urls ? `, ${plural(s.urls, "source link")}` : ""}.`),
+      h("li", {}, "Folders become albums too; notes keep their source link on a line of their own; Eagle's colours come along.")),
+    h("div.eagle-where", { role: "radiogroup", "aria-label": "Where it goes" },
+      h("label.check", { for: "eagle-new" }, rNew, " Into a new library of its own"), newBox,
+      h("label.check", { for: "eagle-here" }, rHere, ` Into this library${lb.current.root ? ` (${lb.current.name})` : ""}`), hereBox),
+    h("p.note", {}, "Your own ratings and notes stay as they are. Eagle's library isn't changed: copied files are copies. It's one step in History: Undo takes the marks off again, and moves the copies to the Gallery's Trash."),
     err,
     h("div.row.end", {}, h("button.btn", { type: "button", onclick: () => box.close() }, "Cancel"), go)));
   box.addEventListener("keydown", (e) => { if (e.key !== "Escape") e.stopPropagation(); });

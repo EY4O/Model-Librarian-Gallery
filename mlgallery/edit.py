@@ -73,8 +73,9 @@ def _refresh(db, fid: int, path: str) -> None:
     with Image.open(path) as im:
         w, h = im.size
     with db.write() as c:
-        c.execute("UPDATE files SET size=?, fp=?, width=?, height=?, thumb=0, meta=0, phash=NULL WHERE id=?",
+        c.execute("UPDATE files SET size=?, fp=?, width=?, height=?, thumb=0, meta=0, phash=NULL, colors=0 WHERE id=?",
                   (size, scan.fingerprint(path, size), w, h, fid))
+        c.execute("DELETE FROM colors WHERE file_id=?", (fid,))  # cropped: its colours are worked out again
 
 
 def apply(db, fid: int, rotate=0, flip=False, crop=None, copy=False) -> dict:

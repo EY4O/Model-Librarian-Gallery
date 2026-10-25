@@ -11,7 +11,7 @@ import time
 
 import json
 
-from . import bulk, families, fileops
+from . import bulk, colors, families, fileops
 from . import characters as chars
 from . import metadata
 from . import scan as scanner
@@ -343,6 +343,7 @@ class Library:
         with self.db.read() as c:
             n = c.execute("SELECT note, source FROM file_notes WHERE file_id=?", (fid,)).fetchone()
             out["note"] = dict(n) if n else None
+            out["colors"] = colors.of_file(c, fid)
             out["albums"] = [dict(r) for r in c.execute(
                 "SELECT al.id, al.name, af.source FROM album_files af JOIN albums al ON al.id=af.album_id WHERE af.file_id=? AND af.removed=0"
                 " ORDER BY al.name COLLATE NOCASE", (fid,))]
@@ -400,10 +401,12 @@ class Library:
                 (f"%{search._like(q)}%", max(1, min(200, int(limit)))))]
 
     def suggest(self, field: str, q: str = "", limit: int = 12) -> list[dict]:
-        """Names to complete model:, lora:, tag:, sampler: with, most used first."""
+        """Names to complete model:, lora:, tag:, sampler:, color: with, most used first."""
         like, n = f"%{search._like(q)}%", max(1, min(100, int(limit)))
         if field == "tag":
             return self.tags(q, n)
+        if field in ("color", "colour"):  # the colour families, with their swatch
+            return [{"name": k, "swatch": v} for k, v in colors.FAMILIES.items() if k.startswith(q.strip().lower())][:n]
         with self.db.read() as c:
             if field in ("model", "lora", "vae"):
                 kinds = {"model": ("checkpoint", "unet"), "lora": ("lora",), "vae": ("vae",)}[field]

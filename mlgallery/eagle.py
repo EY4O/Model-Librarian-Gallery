@@ -4,9 +4,11 @@ Import only reads. An Eagle library (`Name.library`) keeps each item in `images/
 file, a thumbnail and a metadata.json (tags, the folders it's in, a star rating, a note, its source URL);
 the library's own metadata.json holds the folder tree. The Gallery matches each item to a file it already
 has by fingerprint (the same bytes, wherever they are) and gives that file the item's tags, its folders as
-albums, its rating (unless you rated it here) and its note. Items it doesn't have can be copied out into one of
-your library folders first: copied, never moved, so Eagle's library stays exactly as it was. Nothing is ever
-written inside the Eagle library.
+albums, its rating (unless you rated it here), its note (with its source URL on a line of its own) and Eagle's
+colours. Items it doesn't have are copied out, laid out by their Eagle folder (an item in several goes into the
+first; items in none into Unfiled), under the name Eagle shows: into a folder of the open library, or into a new
+library of their own. Every copy is checked against the original (size and fingerprint); copied, never moved, so
+Eagle's library stays exactly as it was. Nothing is ever written inside the Eagle library.
 
 Export goes through Eagle's own local API (it must be running): the files are added with their tags, and the
 prompt and settings as the note, into the folder you pick. The Gallery never writes into Eagle's folders.
@@ -15,10 +17,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 
-from . import bulk, fileops, metadata, scan
+from . import bulk, colors, fileops, metadata, scan
 
 API = "http://localhost:41595"
 MAX_ITEMS = 100_000
@@ -66,6 +69,43 @@ def folder_names(lib: str) -> dict[str, str]:
     return out
 
 
+def folder_paths(lib: str) -> dict[str, list[str]]:
+    """Eagle folder id -> the names from the top down (["Characters", "Aurelia"]): where its items are copied to."""
+    out: dict[str, list[str]] = {}
+
+    def walk(nodes, parents=()):
+        for n in nodes or []:
+            if not isinstance(n, dict) or not n.get("id"):
+                continue
+            here = (*parents, str(n.get("name") or "").strip() or "Folder")
+            out[n["id"]] = list(here)
+            walk(n.get("children"), here)
+    walk(_read(os.path.join(lib, "metadata.json"), {}).get("folders"))
+    return out
+
+
+_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+
+
+def safe_name(name: str, fallback: str = "_") -> str:
+    """A name Windows takes as a file or folder name: no \\ / : * ? " < > | or control characters, no trailing
+    dot or space, not a device name (CON, NUL, ...), not a hidden dot-name."""
+    s = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", str(name or "")).strip().rstrip(". ").lstrip(".")
+    if not s:
+        return fallback
+    if s.split(".")[0].lower() in _RESERVED:
+        s = "_" + s
+    return s[:180]
+
+
+def note_with_url(note: str, url: str) -> str:
+    """Eagle's note, with its source URL on a line of its own at the end (the Gallery has no URL field)."""
+    note, url = (note or "").strip(), (url or "").strip()
+    if url and url not in note:
+        return f"{note}\n{url}" if note else url
+    return note
+
+
 def items(lib: str):
     """Every item in the library that isn't in Eagle's trash: {id, name, ext, file, tags, folders, star, note, url}."""
     base = os.path.join(lib, "images")
@@ -88,7 +128,8 @@ def items(lib: str):
         yield {"id": m.get("id") or d[:-5], "name": f"{name}.{ext}" if ext else name, "ext": ext, "file": f,
                "tags": [str(t) for t in m.get("tags") or [] if str(t).strip()], "folders": [str(x) for x in m.get("folders") or []],
                "star": int(star) if isinstance(star, (int, float)) and 1 <= star <= 5 else None,
-               "note": str(m.get("annotation") or "").strip(), "url": str(m.get("url") or "").strip()}
+               "note": str(m.get("annotation") or "").strip(), "url": str(m.get("url") or "").strip(),
+               "palette": colors.from_eagle(m.get("palettes"))}
 
 
 # ---------------------------------------------------------------- import
@@ -97,6 +138,7 @@ def plan_import(db, path: str, progress=None) -> dict:
     Only items whose size matches a file the Gallery has are fingerprinted (a quick read); the rest can't be one."""
     lib = library_root(path)
     names = folder_names(lib)
+    paths = folder_paths(lib)
     with db.read() as c:
         have = {(r["fp"], r["size"]): r["id"] for r in c.execute("SELECT id, fp, size FROM files WHERE missing=0 AND fp IS NOT NULL")}
     sizes = {s for _, s in have}
@@ -114,14 +156,15 @@ def plan_import(db, path: str, progress=None) -> dict:
         except OSError:
             continue
         it["albums"] = [names[x] for x in it["folders"] if x in names]
+        it["path"] = next((paths[x] for x in it["folders"] if x in paths), None)  # where its copy goes: its first Eagle folder
         tags.update(it["tags"])
         albums.update(it["albums"])
         rated += bool(it["star"])
+        it["size"] = size
         if fid:
             it["file_id"] = fid
             matched.append(it)
         elif scan.kind_of(it["name"]):
-            it["size"] = size
             missing.append(it)
     return {"library": lib, "name": os.path.basename(lib)[: -len(".library")], "matched": matched, "missing": missing,
             "tags": sorted(tags, key=str.lower), "albums": sorted(albums, key=str.lower), "rated": rated}
@@ -131,26 +174,56 @@ def summary(plan: dict) -> dict:
     return {"library": plan["library"], "name": plan["name"], "matched": len(plan["matched"]), "missing": len(plan["missing"]),
             "missing_size": sum(i["size"] for i in plan["missing"]), "tags": len(plan["tags"]), "albums": plan["albums"][:40],
             "album_count": len(plan["albums"]), "rated": plan["rated"],
-            "notes": sum(1 for i in plan["matched"] + plan["missing"] if i["note"])}
+            "notes": sum(1 for i in plan["matched"] + plan["missing"] if i["note"]),
+            "urls": sum(1 for i in plan["matched"] + plan["missing"] if i["url"]),
+            "unfiled": sum(1 for i in plan["matched"] + plan["missing"] if not i.get("path")),
+            "all": len(plan["matched"]) + len(plan["missing"]),
+            "all_size": sum(i.get("size") or 0 for i in plan["matched"] + plan["missing"])}
 
 
-def copy_in(db, plan: dict, folder_id: int, sub: str = "") -> int:
-    """Copy the items the Gallery doesn't have into one of your library folders (Eagle's own copies stay), index them."""
+def for_new_library(plan: dict) -> dict:
+    """The same import for a library that has none of the files yet: every item is copied."""
+    keep = ("file_id", "copied_rel")
+    return {**plan, "matched": [], "missing": [{k: v for k, v in it.items() if k not in keep}
+                                              for it in plan["matched"] + plan["missing"] if scan.kind_of(it["name"])]}
+
+
+def copy_in(db, plan: dict, folder_id: int, sub: str | None = None, progress=None) -> int:
+    """Copy the items the Gallery doesn't have into one of your library folders (Eagle's own copies stay), laid out
+    by Eagle folder, under the names Eagle shows; each copy checked against the original; then index them.
+    `sub`: the folder inside it (None: "From Eagle - <name>"; "": the library folder itself)."""
     with db.read() as c:
         d = c.execute("SELECT id, path, online FROM folders WHERE id=?", (int(folder_id),)).fetchone()
     if not d or not d["online"] or not os.path.isdir(d["path"]):
         raise EagleError("That library folder isn't reachable.")
-    sub = fileops._clean_sub(sub or f"From Eagle - {plan['name']}")
-    dest = os.path.join(d["path"], *sub.split("/"))
-    os.makedirs(dest, exist_ok=True)
+    sub = fileops._clean_sub(f"From Eagle - {safe_name(plan['name'])}" if sub is None else sub)
     taken: set[str] = set()
-    rels = []
-    for it in plan["missing"]:
-        name = fileops._free_name(dest, os.path.basename(it["file"]), taken)
+    rels, failed = [], []
+    for n, it in enumerate(plan["missing"]):
+        if progress:
+            progress(n)
+        parts = [safe_name(p, "Folder") for p in (it.get("path") or ["Unfiled"])]
+        rel_dir = "/".join(p for p in (sub, *parts) if p)
+        dest = os.path.join(d["path"], *rel_dir.split("/"))
+        os.makedirs(dest, exist_ok=True)
+        stem, ext = os.path.splitext(it["name"])
+        name = fileops._free_name(dest, safe_name(stem, "Untitled") + ext.lower(), taken)
         target = os.path.join(dest, name)
-        shutil.copy2(it["file"], target)
-        it["copied_rel"] = f"{sub}/{name}"
+        try:
+            shutil.copy2(it["file"], target)
+            size = os.path.getsize(it["file"])
+            if os.path.getsize(target) != size or scan.fingerprint(target, size) != scan.fingerprint(it["file"], size):
+                raise OSError("the copy doesn't match")
+        except OSError:
+            try:
+                os.remove(target)
+            except OSError:
+                pass
+            failed.append(it["name"])
+            continue
+        it["copied_rel"] = f"{rel_dir}/{name}"
         rels.append(it["copied_rel"])
+    plan["failed"] = failed
     scan.index_files(db, {"id": d["id"], "path": d["path"]}, rels)
     ids = {}
     with db.read() as c:
@@ -198,13 +271,16 @@ def apply_import(db, plan: dict) -> dict:
                     rated[-1]["file_id"] = fid
                     c.execute("INSERT OR REPLACE INTO marks (file_id, rating, favorite, source, updated) VALUES (?,?,?, 'user', ?)",
                               (fid, it["star"], m["favorite"] if m else 0, now))
-            if it["note"]:
+            if it.get("palette") and not c.execute("SELECT colors FROM files WHERE id=?", (fid,)).fetchone()[0]:
+                colors.store(c, fid, it["palette"])  # Eagle's colours, until (instead of) the Gallery working them out
+            note = note_with_url(it["note"], it.get("url"))
+            if note:
                 cur = c.execute("SELECT note, source FROM file_notes WHERE file_id=?", (fid,)).fetchone()
                 if cur and cur["source"] == "user":
                     continue  # yours win
                 noted.append({"file_id": fid, "was": dict(cur) if cur else None})
                 c.execute("INSERT INTO file_notes (file_id, note, source) VALUES (?, ?, 'eagle') ON CONFLICT (file_id) DO UPDATE SET note=excluded.note",
-                          (fid, it["note"][:4000]))
+                          (fid, note[:4000]))
         for fid in {i["file_id"] for i in plan["matched"]}:
             metadata.refresh_search(c, fid)
         n = len({i["file_id"] for i in plan["matched"]})

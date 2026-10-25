@@ -648,26 +648,59 @@ async def eagle_read_status(request):
 
 
 async def eagle_apply(request):
-    """Bring the read library's tags, albums, ratings and notes in (copying in what the Gallery doesn't have, if asked)."""
-    from . import eagle
+    """Bring the read Eagle library in, in the background (GET /api/eagle/read follows it):
+    {target: "here", copy_to: folder id, sub}: its marks onto the files this library has, the rest copied into that folder;
+    {target: "new", path, name}: a new library of its own in that folder, every item copied in, laid out by Eagle folder."""
+    import threading
+    import time
+    from . import eagle, libraries
     b = await _body(request)
     plan = _EAGLE.get("plan")
     if _EAGLE.get("state") != "ready" or not plan:
         return _err("Read an Eagle library first.", 409)
-    _EAGLE["state"] = "applying"  # a second click while this runs is refused, not done twice
     lib = _lib(request)
-    try:
-        copied = 0
-        if b.get("copy_to") and plan["missing"]:
-            copied = await asyncio.to_thread(eagle.copy_in, lib.db, plan, int(b["copy_to"]), b.get("sub") or "")
-        r = await asyncio.to_thread(eagle.apply_import, lib.db, plan)
-    except (eagle.EagleError, ValueError, OSError) as ex:
-        _EAGLE["state"] = "ready"
-        return _err(str(ex), 422)
-    _EAGLE.clear()
-    lib.thumbs.nudge()
-    lib.meta.nudge()
-    return web.json_response({**r, "copied": copied})
+    new = b.get("target") == "new"
+    made = None
+    if new:
+        path = str(b.get("path") or "")
+        if await asyncio.to_thread(libraries.find, path):
+            return _err("That folder is a library already: open it, then bring the Eagle library into it.", 422)
+        try:
+            made = await asyncio.to_thread(libraries.create, path, b.get("name") or plan["name"])
+        except (ValueError, OSError) as ex:
+            return _err(str(ex), 422)
+        work = eagle.for_new_library(plan)
+    else:
+        work = plan
+    copy_to = int(b["copy_to"]) if not new and b.get("copy_to") and plan["missing"] else None
+    _EAGLE.update(state="applying", done=0, total=len(work["missing"]) if new or copy_to else 0, error=None)  # a second click is refused
+
+    def run():
+        try:
+            if new:
+                from .db import Database
+                root = made["root"]
+                db = Database(os.path.join(libraries.data_dir(root), "library.db"))
+                with db.write() as c:
+                    fid = c.execute("INSERT INTO folders (path, added) VALUES (?, ?)", (os.path.normpath(root), time.time())).lastrowid
+                libraries.update_info(root, opened=time.time())
+                copied = eagle.copy_in(db, work, fid, "", progress=lambda n: _EAGLE.update(done=n))
+                r = eagle.apply_import(db, work)
+                result = {**r, "copied": copied, "failed": work.get("failed") or [], "library": {"root": root, "name": made["name"]}}
+            else:
+                copied = eagle.copy_in(lib.db, work, copy_to, b.get("sub") or None, progress=lambda n: _EAGLE.update(done=n)) if copy_to else 0
+                r = eagle.apply_import(lib.db, work)
+                result = {**r, "copied": copied, "failed": work.get("failed") or []}
+                lib.thumbs.nudge()
+                lib.meta.nudge()
+                lib.db.user_change()
+            _EAGLE.clear()
+            _EAGLE.update(state="done", result=result)
+        except Exception as ex:
+            _EAGLE.clear()
+            _EAGLE.update(state="failed", error=str(ex)[:300])
+    threading.Thread(target=run, name="eagle-import", daemon=True).start()
+    return web.json_response({"state": "applying", "total": _EAGLE["total"]})
 
 
 async def eagle_folders(request):

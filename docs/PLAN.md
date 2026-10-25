@@ -148,7 +148,11 @@ Each one is usable on its own and tested before the next starts. Tests use gener
 
 The Gallery indexes your folders where they are; Eagle keeps its own copy of each file in a library folder. They meet through a bridge instead of a shared format:
 
-- **Bring in an Eagle library** (Settings, Eagle) only reads its `metadata.json` files. Items whose bytes match a file the Gallery already has get its tags, its folders as albums ("Characters / Aurelia" for a nested one), its star ratings and its notes. Your own ratings and notes win. Items the Gallery doesn't have can be copied into one of your folders; the library is never changed. It's one step in History, so Undo takes it all back.
+- **Bring in an Eagle library** (Settings, Eagle) only reads its `metadata.json` files, then asks where it goes: a new library of its own (every item copied there) or the open library (items whose bytes match a file it has get the marks; the rest are copied into a folder of it). Copies are laid out by Eagle folder (the first, for an item in several; `Unfiled` for one in none), named as Eagle shows them (made safe for Windows, a clash gets " (2)"), dated as added to Eagle, and each checked against the original. Every item brings its tags, its folders as albums ("Characters / Aurelia" for a nested one), its star rating, its note with the source link on a line of its own, and Eagle's colours. Your own ratings and notes win. The library is never changed. It's one step in History, so Undo takes it all back (the copies go to the Gallery's Trash).
+
+## Colour sets
+
+Each picture's main colours (up to 8) and the share of it each covers, like Eagle's: worked out from its thumbnail (median cut, sampled without smoothing, near-twins merged), in the background next to the picture fingerprint, and again when the file changes; taken from Eagle for its items. Kept per colour with its CIE Lab value, a family name and a cube of a coarse Lab grid (indexed), so `color:#hex` (within a Lab distance of 22, covering 5%) and `color:<family>` (10%) are indexed lookups: on a made-up index of 250,000 files with 8 random colours each, a page of results takes 65–210 ms. Swatches in the viewer (find, or copy the value); colours over time in Statistics.
 - **Send to Eagle** (the selection's More menu) asks a running Eagle to add copies through its own API (`/api/item/addFromPaths`), into a folder you pick, with the Gallery's tags and characters, and the prompt and settings as the note. An API token is only needed if your Eagle asks for one.
 - Eagle libraries (`*.library`) are still never indexed as folders.
 
@@ -160,7 +164,7 @@ A library is a folder that carries its own index, so it can live on an external 
 - **Moving it:** folder paths are stored in full. When a library opens somewhere new (another drive letter, another folder), the folders inside it are re-anchored to where it is now. Files, marks and History refer to folders by number, so nothing else changes. Folders added from outside the library keep their full path.
 - **Opening one:** `--library DIR`, Settings (New library, Open library, the recent ones), or the portable Gallery kept inside a library's folder (the launcher passes its parent). Otherwise the last library opens, or this PC's library when that one isn't reachable. Switching closes the window and starts the Gallery again with the other library.
 - **Bringing marks:** a new library can take the ratings, favourites, tags, albums (with their icons), characters (with their rules and your decisions), notes and folder looks of the library it was made from, for the same files by fingerprint, once its folder is indexed. One step in History.
-- **Phases still to come:** leaving Eagle (an Eagle library's items copied out into a library as plain files, with their folders, tags, ratings, notes and dates), then gathering outside folders in and XMP sidecars.
+- **Phases:** 1, the portable library; 2, leaving Eagle (above, Eagle bridge) with colour sets. Still to come: gathering outside folders in, and XMP sidecars.
 
 ## Updates
 

@@ -174,6 +174,37 @@ def test_empty_library_offers_to_add_a_folder(tmp_path):
         p.wait(10)
 
 
+def test_colours(server):
+    url, api = server
+    first = api("/files")["items"][0]
+    want = api(f"/file/{first['id']}/info")["colors"]
+    assert want and all(0 < c["ratio"] <= 1 for c in want)
+
+    async def go():
+        async with page(url) as e:
+            await e.wait("document.querySelectorAll('.tile img.on').length >= 1")
+            await e.click(".tile")
+            await e.wait("document.querySelector('.v-panel .swatches .swatch')")
+            # a swatch per colour, like Eagle's: its value and share on hover
+            assert await e.js("document.querySelectorAll('.v-panel .swatch').length") == len(want)
+            tip = await e.js("document.querySelector('.v-panel .swatch').title")
+            assert tip == f"{want[0]['hex'].upper()} ({want[0]['ratio'] * 100:.1f}%)"
+            # click: find files with it, or copy it
+            await e.js("document.querySelector('.v-panel .swatch').click(); true")
+            await e.wait("document.querySelector('.menu')")
+            items = await e.js("[...document.querySelectorAll('.menu button')].map(b => b.textContent)")
+            assert items[0] == "Files with this colour" and items[-1] == f"Copy {want[0]['hex'].upper()}"
+            await e.js("document.querySelector('.menu button').click(); true")
+            await e.wait("document.getElementById('viewer').hidden && document.querySelector('#chips .chip .chip-sw')")
+            assert await e.js("document.querySelector('#chips .chip .k').textContent") == "color"
+            await e.wait(f"document.getElementById('count').textContent.length")
+            # and Statistics shows the colours over time
+            await e.js("document.getElementById('view-stats').click(); true")
+            await e.wait("[...document.querySelectorAll('.st-card h2')].some(x => x.textContent === 'Colours, over time')")
+            assert await e.js("document.querySelectorAll('.lg-pick').length") >= 2
+    asyncio.run(go())
+
+
 def test_settings_shows_the_library(tmp_path):
     from mlgallery import libraries
     root = tmp_path / "My Generations"

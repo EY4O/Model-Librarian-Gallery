@@ -35,8 +35,12 @@ const state = {
 
 // ---------------------------------------------------------------- the search
 const FIELDS = ["model", "lora", "tag", "sampler", "scheduler", "seed", "steps", "rating", "is", "has", "no", "neg", "vae", "ext",
-  "cfg", "size", "after", "before", "on", "date", "strength", "character", "review", "album"];
-const SUGGESTED = new Set(["model", "lora", "tag", "sampler", "scheduler", "vae"]);
+  "cfg", "size", "after", "before", "on", "date", "strength", "character", "review", "album", "color"];
+const SUGGESTED = new Set(["model", "lora", "tag", "sampler", "scheduler", "vae", "color"]);
+// the colour families' own swatches (as in colors.py), for color: chips
+const COLOR_FAMILIES = { red: "#e53935", orange: "#fb8c00", yellow: "#fdd835", green: "#43a047", cyan: "#00acc1", blue: "#1e88e5",
+  purple: "#8e24aa", pink: "#ec407a", brown: "#795548", black: "#212121", gray: "#9e9e9e", grey: "#9e9e9e", white: "#f5f5f5" };
+const colorOf = (v) => COLOR_FAMILIES[v.toLowerCase()] || (/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v) ? (v.startsWith("#") ? v : `#${v}`) : null);
 const quote = (v) => (/[\s"]/.test(v) ? `"${v.replaceAll('"', "")}"` : v);
 const chipText = (c) => `${c.key}:${quote(c.value)}`;
 const queryString = () => [...state.chips.map(chipText), state.text.trim()].filter(Boolean).join(" ");
@@ -45,12 +49,12 @@ const HINTS = [
   ["lora:name@0.6-0.8", "a LoRA used at that strength"], ["date:7d", "made in the last 7 days (or today, yesterday, 2026-10)"],
   ["sampler:", "a sampler"], ["seed:", "an exact seed"], ["rating:4", "rated 4 or more"], ["character:", "a character"],
   ["is:fav", "your favourites"], ["has:workflow", "a ComfyUI workflow is saved"], ["no:prompt", "no generation data"],
-  ["neg:", "words in the negative prompt"],
+  ["neg:", "words in the negative prompt"], ["color:", "a colour: red, blue… or #3a7bd5"],
 ];
 
 function renderChips() {
   $("chips").replaceChildren(...state.chips.map((c, i) => h("span.chip", { title: chipText(c) },
-    h("span.k", {}, c.key), h("span.v", {}, c.value),
+    h("span.k", {}, c.key), c.key === "color" && colorOf(c.value) ? h("i.chip-sw", { style: { background: colorOf(c.value) } }) : null, h("span.v", {}, c.value),
     h("button.x", { type: "button", "aria-label": `Remove ${chipText(c)}`, onclick: () => { state.chips.splice(i, 1); searchChanged(); $("q").focus(); } }, icon("remove")))));
   $("q-clear").hidden = !state.chips.length && !state.text;
   $("q").placeholder = state.chips.length ? "" : "Search prompts, models, tags…";
@@ -105,7 +109,7 @@ async function showSuggest() {
     suggestFor = key;
     const { items } = await api(`/suggest?field=${field}&q=${encodeURIComponent(q)}`).catch(() => ({ items: [] }));
     if (suggestFor !== key) return; // typed on meanwhile
-    renderSuggest(items.map((it) => ({ label: it.name, hint: it.n.toLocaleString(), pick: () => pickSuggestion(field, it.name, m[0]) })),
+    renderSuggest(items.map((it) => ({ label: it.name, hint: it.n != null ? it.n.toLocaleString() : "", swatch: it.swatch, pick: () => pickSuggestion(field, it.name, m[0]) })),
       items.length ? null : `No ${field === "model" ? "models" : field + "s"} matching "${q}" yet`);
   } else if (!input.value && document.activeElement === input) {
     suggestFor = null;
@@ -122,7 +126,7 @@ function renderSuggest(items, empty, title) {
   box.replaceChildren(...[
     title ? h("div.s-title", {}, title) : null,
     ...items.map((it, i) => h("button.s-item", { type: "button", role: "option", id: `sug-${i}`, onmousedown: (e) => { e.preventDefault(); it.pick(); } },
-      h("span", {}, it.label), h("span.s-hint", {}, it.hint))),
+      h("span", {}, it.swatch ? h("i.chip-sw.s-sw", { style: { background: it.swatch } }) : null, it.label), h("span.s-hint", {}, it.hint))),
     empty ? h("div.s-empty", {}, empty) : null].filter(Boolean));
   box.hidden = !items.length && !empty;
   box._items = items;
@@ -980,6 +984,21 @@ function promptBlock(text, cls = "") {
     long ? h("div.row.tight", {}, h("button.btn.small", { type: "button", onclick: (e) => { body.classList.toggle("clamp"); e.currentTarget.textContent = body.classList.contains("clamp") ? "Show all" : "Show less"; } }, "Show all")) : null);
 }
 
+// the picture's colour set, like Eagle's: a swatch per main colour; hover for its value and share, click to find or copy it
+function swatches(info) {
+  if (!info.colors || !info.colors.length) return null;
+  return h("div.swatches", { role: "list", "aria-label": "Colours" }, info.colors.map((c) => {
+    const hex = c.hex.toUpperCase();
+    const label = `${hex} (${(c.ratio * 100).toFixed(1)}%)`;
+    return h("button.swatch", { type: "button", role: "listitem", title: label, "aria-label": label, style: { background: c.hex },
+      onclick: (e) => menu(e.currentTarget, [
+        { label: `Files with this colour`, icon: "filter", onclick: () => { closeViewer(); addChip("color", c.hex); } },
+        { label: `Files with ${c.family} in them`, icon: "filter", onclick: () => { closeViewer(); addChip("color", c.family); } },
+        { label: `Copy ${hex}`, icon: "copy", onclick: () => copyText(hex, `${hex} copied`) },
+      ]) });
+  }));
+}
+
 function renderDetails(info) {
   const g = info.generation;
   const gen = []; // what made it
@@ -1027,7 +1046,7 @@ function renderDetails(info) {
   const ext = info.name.split(".").pop().toUpperCase();
   const parts = [h("header.v-head", {}, h("h2.v-fname", {}, info.name),
     h("p.v-sub", {}, [info.width && info.height ? `${info.width} × ${info.height}` : "", info.kind === "video" ? fmtDur(info.duration) : "", fmtSize(info.size), ext, fmtDate(info.mtime)]
-      .filter(Boolean).join(" · ")))];
+      .filter(Boolean).join(" · ")), swatches(info))];
   parts.push(section("Note", noteEditor(info)));
   parts.push(section("Tags", tagEditor(info)));
   parts.push(section("Albums", albumEditor(info)));

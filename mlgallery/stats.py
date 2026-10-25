@@ -79,6 +79,9 @@ def _overview(lib, days: int | None = 30, models=None) -> dict:
             x["size"] += r["size"]
         out["drives"] = sorted(drives.values(), key=lambda x: -x["size"])
         used = {r[0].lower() for r in c.execute("SELECT DISTINCT name FROM uses")}
+        # colours: how much of the pictures each colour family covers (each picture counts once in all)
+        col_rows = c.execute(f"SELECT {bucket} AS at, k.family, SUM(k.ratio) s FROM colors k JOIN files f ON f.id=k.file_id JOIN folders d ON d.id=f.folder_id"
+                             f" WHERE f.missing=0 AND d.online=1 AND f.mtime >= ? GROUP BY at, k.family ORDER BY at", a).fetchall()
     resolve = families.Resolver(models)
     fam_of = {}
     totals: dict[str, int] = {}
@@ -102,6 +105,7 @@ def _overview(lib, days: int | None = 30, models=None) -> dict:
                                                                    "n": totals.get(f, 0) if f != folded else sum(v for k, v in totals.items() if k not in shown and k != "No model recorded")}
                                                                   for f in series],
                         "points": [points[k] for k in sorted(points)]}
+    out["colors"] = _colors(col_rows, out["timeline"]["by"])
     for row in out["checkpoints"]:
         row["family"] = resolve.family(row["name"])
         row["color"] = families.color(row["family"]) if row["family"] else None
@@ -115,3 +119,22 @@ def _overview(lib, days: int | None = 30, models=None) -> dict:
         out["library"]["unused_size"] = sum(m["size"] or 0 for m in unused)
         out["library"]["unused"] = unused[:60]
     return out
+
+
+def _colors(rows, by: str) -> dict:
+    """The colour families over time, each day (or week) as shares of 100, and over the whole range."""
+    from . import colors
+    totals: dict[str, float] = {}
+    points: dict[str, dict] = {}
+    for r in rows:
+        totals[r["family"]] = totals.get(r["family"], 0) + r["s"]
+        pt = points.setdefault(r["at"], {"at": r["at"]})
+        pt[r["family"]] = pt.get(r["family"], 0) + r["s"]
+    for pt in points.values():
+        t = sum(v for k, v in pt.items() if k != "at") or 1
+        for k in [k for k in pt if k != "at"]:
+            pt[k] = round(100 * pt[k] / t, 1)
+    whole = sum(totals.values()) or 1
+    return {"by": by, "series": [{"name": f, "color": colors.FAMILIES.get(f, "#707070"), "n": round(100 * v / whole, 1)}
+                                 for f, v in sorted(totals.items(), key=lambda x: -x[1])],
+            "points": [points[k] for k in sorted(points)]}
