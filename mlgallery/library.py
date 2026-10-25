@@ -11,7 +11,7 @@ import time
 
 import json
 
-from . import bulk, colors, dates, families, fileops
+from . import bulk, colors, credits, dates, downloads, families, fileops
 from . import characters as chars
 from . import metadata
 from . import scan as scanner
@@ -99,6 +99,8 @@ class Library:
         self.thumbs = Thumbnails(self.db, os.path.join(data_dir, "thumbs"), self.settings)
         self.meta = metadata.MetaReader(self.db)
         self.dater = dates.Dater(self.db, self.settings)
+        self.credits = credits.CreditReader(self.db, wanted=lambda: "illustrations" in (self.kinds or []))
+        self.inbox = downloads.Inbox(self)
         self.watcher = Watcher(self)
         self.models = ModelLibrary(self.settings)
         self._scan_lock = threading.Lock()
@@ -125,6 +127,7 @@ class Library:
         self.thumbs.start()
         self.meta.start()
         self.dater.start()
+        self.credits.start()
         self.watcher.start()
         threading.Thread(target=self._scan_loop, name="scanner", daemon=True).start()
         if rescan:
@@ -135,6 +138,7 @@ class Library:
         self.thumbs.stop()
         self.meta.stop()
         self.dater.stop()
+        self.credits.stop()
         self.watcher.stop()
         with self._queue_cv:
             self._queue_cv.notify_all()
@@ -359,6 +363,7 @@ class Library:
             out["characters"] = [dict(r) for r in c.execute(
                 "SELECT ch.id, ch.name, fc.state, fc.source FROM file_characters fc JOIN characters ch ON ch.id=fc.character_id"
                 " WHERE fc.file_id=? AND fc.state <> 'rejected' ORDER BY ch.name COLLATE NOCASE", (fid,))]
+            out["credit"] = credits.of_file(c, fid)
         out.update(generation=gen, uses=uses, tags=tags, marks_source=src["source"] if src else None)
         return out
 
@@ -410,7 +415,7 @@ class Library:
                 (f"%{search._like(q)}%", max(1, min(200, int(limit)))))]
 
     def suggest(self, field: str, q: str = "", limit: int = 12) -> list[dict]:
-        """Names to complete model:, lora:, tag:, sampler:, color: with, most used first."""
+        """Names to complete model:, lora:, tag:, sampler:, color:, artist:, site: with, most used first."""
         like, n = f"%{search._like(q)}%", max(1, min(100, int(limit)))
         if field == "tag":
             return self.tags(q, n)
@@ -422,6 +427,14 @@ class Library:
                 return [dict(r) for r in c.execute(
                     f"SELECT name, COUNT(*) AS n FROM uses WHERE kind IN ({','.join('?' * len(kinds))}) AND name LIKE ? ESCAPE '\\'"
                     " GROUP BY name COLLATE NOCASE ORDER BY n DESC LIMIT ?", (*kinds, like, n))]
+            if field == "artist":
+                return [dict(r) for r in c.execute(
+                    "SELECT a.name, COUNT(f.id) AS n FROM artists a LEFT JOIN files f ON f.artist_id=a.id AND f.missing=0"
+                    " WHERE a.name LIKE ? ESCAPE '\\' GROUP BY a.id HAVING n > 0 OR a.auto = 0 ORDER BY n DESC, a.name COLLATE NOCASE LIMIT ?", (like, n))]
+            if field == "site":
+                return [{"name": r[0], "n": r[1]} for r in c.execute(
+                    "SELECT site, COUNT(DISTINCT file_id) n FROM credits WHERE COALESCE(site, '') <> '' AND site LIKE ? ESCAPE '\\'"
+                    " GROUP BY site ORDER BY n DESC LIMIT ?", (like, n))]
             if field in ("sampler", "scheduler"):
                 return [dict(r) for r in c.execute(
                     f"SELECT {field} AS name, COUNT(*) AS n FROM generations WHERE {field} LIKE ? ESCAPE '\\'"
@@ -611,6 +624,129 @@ class Library:
                 chars.undecide(c, int(cid), int(file_id))
         return self.info(file_id)["characters"]
 
+    # ---------------------------------------------------------------- artists
+    def artists(self) -> dict:
+        return self.db.cached_lazy(("artists-list",), self._artists)[0]
+
+    def _artists(self) -> dict:
+        with self.db.read() as c:
+            counts = dict(c.execute("SELECT artist_id, COUNT(*) FROM files WHERE artist_id IS NOT NULL AND missing=0 GROUP BY artist_id").fetchall())
+            sites: dict[int, list] = {}
+            for aid, site, n in c.execute(
+                    "SELECT f.artist_id, cr.site, COUNT(DISTINCT f.id) n FROM files f JOIN credits cr ON cr.file_id=f.id"
+                    " WHERE f.artist_id IS NOT NULL AND f.missing=0 AND COALESCE(cr.site, '') <> '' GROUP BY f.artist_id, cr.site ORDER BY n DESC"):
+                sites.setdefault(aid, []).append(site)
+            latest = dict(c.execute("SELECT artist_id, id FROM (SELECT artist_id, id, ROW_NUMBER() OVER (PARTITION BY artist_id ORDER BY shot DESC, id DESC) k"
+                                    " FROM files WHERE artist_id IS NOT NULL AND missing=0) WHERE k=1").fetchall())
+            out = []
+            for a in c.execute("SELECT id, name, aliases, links, cover, auto FROM artists ORDER BY name COLLATE NOCASE").fetchall():
+                n = counts.get(a["id"], 0)
+                if not n and a["auto"]:
+                    continue  # the Gallery's own, with its pictures in the Trash only
+                cover = a["cover"] or latest.get(a["id"])
+                out.append({"id": a["id"], "name": a["name"], "aliases": json.loads(a["aliases"] or "[]"), "links": json.loads(a["links"] or "[]"),
+                            "cover": cover, "n": n, "sites": [credits.SITES.get(s, s) for s in sites.get(a["id"], [])[:3]]})
+        return {"artists": out}
+
+    def artist(self, aid: int) -> dict | None:
+        """An artist's page: their other names and pages, where their pictures are from and where they're kept."""
+        aid = int(aid)
+        with self.db.read() as c:
+            a = c.execute("SELECT id, name, aliases, links, cover, auto FROM artists WHERE id=?", (aid,)).fetchone()
+            if not a:
+                return None
+            out = dict(a)
+            out["aliases"], out["links"] = json.loads(a["aliases"] or "[]"), json.loads(a["links"] or "[]")
+            live = "FROM files f JOIN folders d ON d.id=f.folder_id WHERE f.artist_id=? AND f.missing=0 AND d.online=1"
+            out["n"] = c.execute(f"SELECT COUNT(*) {live}", (aid,)).fetchone()[0]
+            if not out["cover"]:
+                r = c.execute(f"SELECT f.id {live} ORDER BY f.shot DESC LIMIT 1", (aid,)).fetchone()
+                out["cover"] = r[0] if r else None
+            out["first"], out["last"] = c.execute(f"SELECT MIN(f.shot), MAX(f.shot) {live}", (aid,)).fetchone()
+            out["sites"] = [{"site": r[0], "name": credits.SITES.get(r[0], r[0]), "n": r[1]} for r in c.execute(
+                f"SELECT cr.site, COUNT(DISTINCT f.id) n {live.replace('FROM files f', 'FROM files f JOIN credits cr ON cr.file_id=f.id', 1)}"
+                " AND COALESCE(cr.site, '') <> '' GROUP BY cr.site ORDER BY n DESC", (aid,))]
+            # the folders their pictures are kept in, most first (where a new one of theirs is filed)
+            out["folders"] = [{"folder": r[0], "sub": r[1], "path": os.path.join(r[2], *r[1].split("/")) if r[1] else r[2], "n": r[3]} for r in c.execute(
+                f"SELECT f.folder_id, CASE WHEN instr(f.rel, '/') THEN substr(f.rel, 1, length(f.rel) - length(f.name) - 1) ELSE '' END sub, d.path, COUNT(*) n {live}"
+                " GROUP BY f.folder_id, sub ORDER BY n DESC, sub = '', length(sub) LIMIT 6", (aid,))]
+            out["timeline"] = [dict(r) for r in c.execute(
+                f"SELECT strftime('%Y-%m', f.shot, 'unixepoch', 'localtime') AS month, COUNT(*) n {live} GROUP BY month ORDER BY month", (aid,))]
+        return out
+
+    def artist_save(self, aid: int | None, name: str, aliases=(), links=(), cover=...) -> int:
+        """Make (aid None) or change an artist. Another name that's already an artist's merges that artist into this one."""
+        if not isinstance(name or "", str):
+            raise ValueError("An artist's name is text.")
+        name = (name or "").strip()[:credits.NAME_CAP]
+        if not name:
+            raise ValueError("An artist needs a name.")
+        aliases = [a for a in metadata._split(list(aliases or [])) if chars.norm(a) != chars.norm(name)][:32]
+        typed = [str(x).strip() for x in list(links or [])[:16] if str(x).strip()]
+        if any(not credits.clean_url(x) for x in typed):
+            raise ValueError("A link is a web address, like https://www.pixiv.net/users/12345.")
+        links = list(dict.fromkeys(credits.clean_url(x) for x in typed))
+        with self.db.write() as c:
+            clash = c.execute("SELECT id FROM artists WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+            if clash and clash[0] != aid:
+                raise ValueError(f"There's already an artist called {name}: give this one that as another name to make them one.")
+            if aid is None:
+                aid = c.execute("INSERT INTO artists (name, created, auto) VALUES (?,?,0)", (name, time.time())).lastrowid
+            elif not c.execute("UPDATE artists SET name=?, auto=0 WHERE id=?", (name, int(aid))).rowcount:
+                raise KeyError(aid)
+            # another name that's someone else's: that artist (the same person, on another site) becomes this one
+            spelled = {chars.norm(x) for x in [name, *aliases]}
+            others = [r["id"] for r in c.execute("SELECT id, name, aliases FROM artists WHERE id <> ?", (aid,)).fetchall()
+                      if spelled & {chars.norm(x) for x in [r["name"], *json.loads(r["aliases"] or "[]")]}]
+            for other in others:
+                o = c.execute("SELECT name, aliases, links, cover FROM artists WHERE id=?", (other,)).fetchone()
+                aliases += [x for x in [o["name"], *json.loads(o["aliases"] or "[]")] if chars.norm(x) not in {chars.norm(y) for y in [name, *aliases]}]
+                links += [u for u in json.loads(o["links"] or "[]") if u not in links]
+                c.execute("UPDATE files SET artist_id=? WHERE artist_id=?", (aid, other))
+                if o["cover"] and cover is ...:
+                    c.execute("UPDATE artists SET cover=COALESCE(cover, ?) WHERE id=?", (o["cover"], aid))
+                c.execute("DELETE FROM artists WHERE id=?", (other,))
+            c.execute("UPDATE artists SET aliases=?, links=? WHERE id=?", (json.dumps(aliases[:32]), json.dumps(links[:16]), aid))
+            if cover is not ...:
+                c.execute("UPDATE artists SET cover=? WHERE id=?", (int(cover) if cover else None, aid))
+            # the files whose credits name one of these (say, found before the artist had this other name)
+            spelled = {chars.norm(x) for x in [name, *aliases]}
+            loose = "lower(trim(replace(replace(artist, '_', ' '), '-', ' ')))"  # (norm, but for runs of spaces: checked below)
+            ids = sorted({r[0] for r in c.execute(f"SELECT file_id, artist FROM credits WHERE artist <> '' AND {loose} IN ({','.join('?' * len(spelled))})",
+                                                  sorted(spelled)) if chars.norm(r[1]) in spelled}) if aliases else []
+            credits.resolve(c, ids)
+            credits.prune(c)
+        self.db.user_change()
+        return aid
+
+    def artist_delete(self, aid: int) -> bool:
+        """The artist goes from the list; their pictures keep what was found in them (and get that artist back, made anew)."""
+        with self.db.write() as c:
+            ids = [r[0] for r in c.execute("SELECT id FROM files WHERE artist_id=?", (int(aid),))]
+            if not c.execute("DELETE FROM artists WHERE id=?", (int(aid),)).rowcount:
+                return False
+            for part in chars._chunks(ids):  # what you typed for them goes too (it would bring the artist straight back)
+                marks = ",".join("?" * len(part))
+                c.execute(f"UPDATE credits SET artist=NULL WHERE src='user' AND file_id IN ({marks})", part)
+                c.execute(f"DELETE FROM credits WHERE src='user' AND file_id IN ({marks}) AND artist IS NULL AND url IS NULL AND site IS NULL", part)
+            credits.resolve(c, ids)
+            credits.prune(c)
+        self.db.user_change()
+        return True
+
+    def set_credit(self, file_id: int, artist=..., url=...) -> dict:
+        """Your artist ('' none, None what was found) and source for one file."""
+        fid = int(file_id)
+        with self.db.write() as c:
+            if not c.execute("SELECT 1 FROM files WHERE id=?", (fid,)).fetchone():
+                raise KeyError(fid)
+            credits.set_user(c, fid, artist, url)
+            credits.resolve(c, [fid])
+            credits.prune(c)
+            out = credits.of_file(c, fid)
+        self.db.user_change()
+        return out
+
     def viewed(self, file_id: int) -> None:
         with self.db.write() as c:
             if c.execute("SELECT 1 FROM files WHERE id=?", (int(file_id),)).fetchone():
@@ -773,16 +909,22 @@ class Library:
             c.execute("INSERT INTO library_meta (key, value) VALUES ('kind', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (",".join(kinds),))
             scanner.pair_live(c)  # Live Photos are a photo library's: paired, or apart again
             c.execute("UPDATE folders SET file_count=(SELECT COUNT(*) FROM files f WHERE f.folder_id=folders.id AND f.missing=0)")
+        self.credits.nudge()  # for illustrations: who made each one is looked for
         return kinds
 
     set_kind = set_kinds  # one kind, or several
 
     def status(self) -> dict:
+        kinds = self.kinds
+        try:
+            inbox = self.inbox.count() if "illustrations" in (kinds or []) else 0
+        except Exception:
+            inbox = 0
         with self.db.read() as c:
             total = c.execute("SELECT COUNT(*) FROM files WHERE missing=0").fetchone()[0]
             trash = c.execute(f"SELECT COUNT(*) FROM files f WHERE f.missing=2 AND f.id NOT IN ({TRASHED_MOTION})").fetchone()[0]
             offline = c.execute("SELECT COUNT(*) FROM folders WHERE online=0").fetchone()[0]
         return {"files": total, "offline": offline, "scanning": self.scanning, "last_scan": self.last_scan,
                 "queued": len(self._queue), "thumbs_pending": self.thumbs.pending(), "thumbs_failed": self.thumbs.failed,
-                "meta_pending": self.meta.pending(), "trash": trash, "kinds": self.kinds,
-                "dates_pending": self.dater.pending(), "dates_moved": self.dater.moved}
+                "meta_pending": self.meta.pending(), "trash": trash, "kinds": kinds, "inbox": inbox,
+                "dates_pending": self.dater.pending(), "dates_moved": self.dater.moved, "credits_pending": self.credits.pending()}

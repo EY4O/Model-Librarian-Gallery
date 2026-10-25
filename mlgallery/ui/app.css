@@ -373,6 +373,48 @@ a.btn { text-decoration: none; }
 .tl-stack > span:first-child { border-radius: 4px 4px 0 0; }
 .fam { display: inline-block; margin-right: 8px; padding: 0 5px; border: 1px solid; border-radius: 4px; font-size: 10px; font-weight: 700; letter-spacing: .3px; vertical-align: 1px; }
 
+/* ---------------------------------------------------------------- artists, and a picture's artist and source */
+.a-find { width: 200px; }
+.a-sites { padding: 0 12px; color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.a-links { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.a-links .link { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--accent-text); }
+.a-links .link svg { width: 12px; height: 12px; }
+.a-folders { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.a-folders li { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; background: #2b2b2b; }
+.a-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-family: var(--mono); font-size: 12px; }
+.credit { display: flex; flex-direction: column; gap: 6px; }
+.credit-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
+.credit-row .k { color: var(--dim); font-size: 12px; }
+.credit-row .link { font-size: 12.5px; }
+.credit-from { color: var(--dim); font-size: 11.5px; }
+.credit-in { width: 100%; }
+.credit-also { margin: 0; color: var(--dim); font-size: 12px; }
+.credit-also .link { font-size: 12px; }
+
+/* ---------------------------------------------------------------- new downloads */
+.dl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.dl-card { position: relative; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }
+.dl-card.picked { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.dl-pick { position: absolute; top: 8px; left: 8px; z-index: 1; display: flex; padding: 4px; border-radius: 6px; background: rgba(0, 0, 0, .55); cursor: pointer; }
+.dl-pick input { margin: 0; }
+.dl-thumb { width: 100%; aspect-ratio: 4 / 3; padding: 0; border: 0; background: var(--tile-bg); display: flex; align-items: center; justify-content: center; overflow: hidden; cursor: zoom-in; }
+.dl-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.dl-none { color: var(--dim); font-size: 12px; font-weight: 600; letter-spacing: .4px; }
+.dl-body { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px 4px; min-width: 0; }
+.dl-body p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-name { font-weight: 600; font-size: 13px; }
+.dl-sub, .dl-dest { color: var(--dim); font-size: 12px; }
+.dl-artist { font-size: 12.5px; }
+.dl-artist.dim { color: var(--dim); }
+.dl-site .link { font-size: 12.5px; color: var(--accent-text); }
+.dl-have { display: flex; align-items: center; gap: 5px; color: #9fe8df; font-size: 12px; }
+.dl-have svg { width: 12px; height: 12px; flex: none; }
+.dl-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 12px 12px; margin-top: auto; }
+.dl-acts .icon-btn { margin-left: auto; }
+.dl-bar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--raise); }
+.dl-bar .sel-n { margin-right: auto; font-weight: 600; }
+.row.center { justify-content: center; }
+
 /* ---------------------------------------------------------------- characters */
 .badge-n { background: var(--accent-soft); color: var(--accent-text); border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .c-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
@@ -381,7 +423,7 @@ a.btn { text-decoration: none; }
   background: var(--panel); color: var(--text); cursor: pointer; text-align: left;
 }
 .c-card:hover { border-color: var(--line-3); }
-.c-card .c-thumb { aspect-ratio: 1; margin-bottom: 6px; }
+.c-card .c-thumb { aspect-ratio: 1; height: auto; flex: none; margin-bottom: 6px; }  /* (not the card's height: a third line would squeeze the name) */
 .c-name { padding: 0 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .c-n { padding: 0 12px; color: var(--dim); font-size: 12px; }
 .c-review { margin: 2px 12px 0; align-self: flex-start; background: var(--accent-soft); color: var(--accent-text); border-radius: 999px; padding: 1px 8px; font-size: 11px; }

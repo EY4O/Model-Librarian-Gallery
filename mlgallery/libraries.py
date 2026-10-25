@@ -334,9 +334,10 @@ def _source(path: str) -> sqlite3.Connection:
 
 
 def bring_marks(db, source_db: str, name: str) -> dict:
-    """Give this library's files the ratings, favourites, tags, albums, characters and notes the same files
-    (by fingerprint) have in another library. Yours here win; one History step, undoable (`undo_bring`)."""
-    from . import bulk, fileops, metadata
+    """Give this library's files the ratings, favourites, tags, albums, characters, notes and the artists and sources
+    you typed that the same files (by fingerprint) have in another library. Yours here win; one History step, undoable
+    (`undo_bring`)."""
+    from . import bulk, credits, fileops, metadata
     from . import characters as chars
     src = _source(source_db)
     try:
@@ -359,6 +360,9 @@ def bring_marks(db, source_db: str, name: str) -> dict:
         s_rules = src.execute("SELECT character_id, kind, value, strength, muted FROM character_rules").fetchall()
         s_decided = q("SELECT file_id, character_id, state, source FROM file_characters WHERE state IN ('confirmed', 'rejected') AND file_id IN (%s)", sid_to)
         s_folders = src.execute("SELECT path, icon, color FROM folders WHERE icon IS NOT NULL OR color IS NOT NULL").fetchall()
+        has_credits = bool(src.execute("SELECT 1 FROM sqlite_master WHERE name='credits'").fetchone())  # (a library from before 1.5.0 has none)
+        s_credits = q("SELECT file_id, artist, site, post, url FROM credits WHERE src='user' AND file_id IN (%s)", sid_to) if has_credits else []
+        s_artists = src.execute("SELECT name, aliases, links FROM artists WHERE auto=0").fetchall() if has_credits else []
     finally:
         src.close()
 
@@ -369,7 +373,8 @@ def bring_marks(db, source_db: str, name: str) -> dict:
         ids = by_fp.get(fp_of.get(sid)) if sid else None
         return ids[0] if ids else None
     now = time.time()
-    rec = {"marks": [], "tags": [], "albums": [], "notes": [], "new_albums": [], "new_characters": [], "decided": [], "folders": []}
+    rec = {"marks": [], "tags": [], "albums": [], "notes": [], "new_albums": [], "new_characters": [], "decided": [], "folders": [],
+           "credits": [], "new_artists": []}
     touched = set()
     with db.write() as c:
         for m in s_marks:
@@ -436,6 +441,19 @@ def bring_marks(db, source_db: str, name: str) -> dict:
                           (fid, cid, d["state"], d["source"], now))
         for cid in rec["new_characters"]:
             chars.rematch(c, cid)  # files read before the rules arrived
+        names = credits.name_map(c)
+        for a in s_artists:  # the artists you made or changed there (their other names, their pages), if there's none of the name here
+            if credits.norm(a["name"]) in names or c.execute("SELECT 1 FROM artists WHERE name=? COLLATE NOCASE", (a["name"],)).fetchone():
+                continue
+            aid = c.execute("INSERT INTO artists (name, aliases, links, auto, created) VALUES (?,?,?,0,?)", (a["name"], a["aliases"], a["links"], now)).lastrowid
+            rec["new_artists"].append(aid)
+        for cr in s_credits:
+            for fid in here(cr["file_id"]):
+                if c.execute("SELECT 1 FROM credits WHERE file_id=? AND src='user'", (fid,)).fetchone():
+                    continue  # yours here win
+                c.execute("INSERT INTO credits (file_id, src, artist, site, post, url) VALUES (?, 'user', ?,?,?,?)", (fid, cr["artist"], cr["site"], cr["post"], cr["url"]))
+                rec["credits"].append({"file_id": fid})
+        credits.resolve(c, [it["file_id"] for it in rec["credits"]])
         looks = {_norm(f["path"]): f for f in s_folders}
         for f in c.execute("SELECT id, path, icon, color FROM folders WHERE icon IS NULL AND color IS NULL").fetchall():
             src_f = looks.get(_norm(f["path"]))
@@ -445,11 +463,11 @@ def bring_marks(db, source_db: str, name: str) -> dict:
         for fid in touched:
             metadata.refresh_search(c, fid)
         files = len({fid for _, ids in pairs for fid in ids})
-        changed = sum(len(rec[k]) for k in ("marks", "tags", "albums", "notes", "decided", "new_characters", "new_albums", "folders"))
-        op = fileops.record(c, "carry", f"Brought ratings, tags, albums, characters and notes from {name} ({files:,} file{'s' if files != 1 else ''} matched)",
+        changed = sum(len(rec[k]) for k in ("marks", "tags", "albums", "notes", "decided", "new_characters", "new_albums", "folders", "credits", "new_artists"))
+        op = fileops.record(c, "carry", f"Brought ratings, tags, albums, characters, notes and artists from {name} ({files:,} file{'s' if files != 1 else ''} matched)",
                             rec) if changed else None
     return {"op": op, "files": files, "ratings": len(rec["marks"]), "tags": len(rec["tags"]), "albums": len(rec["albums"]),
-            "notes": len(rec["notes"]), "characters": len(rec["new_characters"]), "decisions": len(rec["decided"])}
+            "notes": len(rec["notes"]), "characters": len(rec["new_characters"]), "decisions": len(rec["decided"]), "artists": len(rec["credits"])}
 
 
 def undo_bring(db, data: dict) -> dict:
@@ -468,6 +486,14 @@ def undo_bring(db, data: dict) -> dict:
                           (it["file_id"], it["character"], w["state"], w["source"], w["at"]))
         for cid in data["new_characters"]:
             c.execute("DELETE FROM characters WHERE id=?", (cid,))  # its rules and matches go with it
+        if data.get("credits") or data.get("new_artists"):  # (a step from before 1.5.0 has neither)
+            from . import credits
+            got = [it["file_id"] for it in data.get("credits") or []]
+            c.executemany("DELETE FROM credits WHERE file_id=? AND src='user'", [(f,) for f in got])
+            c.executemany("UPDATE artists SET auto=1 WHERE id=?", [(a,) for a in data.get("new_artists") or []])
+            c.executemany("UPDATE artists SET aliases='[]', links='[]' WHERE id=?", [(a,) for a in data.get("new_artists") or []])
+            credits.resolve(c, [f for f in got if c.execute("SELECT 1 FROM files WHERE id=?", (f,)).fetchone()])
+            credits.prune(c)
         for it in reversed(data["notes"]):
             if it["was"] is None:
                 c.execute("DELETE FROM file_notes WHERE file_id=?", (it["file_id"],))

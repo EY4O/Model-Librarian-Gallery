@@ -224,6 +224,34 @@ MIGRATIONS = [
     ALTER TABLE characters ADD COLUMN who TEXT NOT NULL DEFAULT 'character';  -- character, or person (in photos)
     ANALYZE;  -- the new index has statistics, so the planner keeps using the right one for each sort (name, size...)
     """,
+    # 11: artists, and each picture's artist and source, as found or as you typed them (credits.py); downloads you dismissed
+    """
+    CREATE TABLE artists (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        aliases TEXT NOT NULL DEFAULT '[]',    -- other names (their handle on another site)
+        links TEXT NOT NULL DEFAULT '[]',      -- their pages
+        cover INTEGER REFERENCES files(id) ON DELETE SET NULL,
+        auto INTEGER NOT NULL DEFAULT 1,       -- 1 made by the Gallery from a name it found (gone again with its last picture); 0 yours
+        created REAL
+    );
+    CREATE TABLE credits (
+        file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        src TEXT NOT NULL,                     -- user, file, download, name, folder: for each field, the first of these that has it wins
+        artist TEXT,                           -- the name as found or typed ('' from you: no artist)
+        site TEXT,                             -- pixiv, x, deviantart, danbooru...
+        post TEXT,                             -- the picture's id there
+        url TEXT,                              -- the page it's from
+        PRIMARY KEY (file_id, src)
+    );
+    CREATE INDEX credits_site ON credits (site) WHERE site IS NOT NULL;
+    CREATE INDEX artists_cover ON artists (cover) WHERE cover IS NOT NULL;  -- (a file deleted: its artist's cover is found at once, not by a scan)
+    ALTER TABLE files ADD COLUMN artist_id INTEGER REFERENCES artists(id) ON DELETE SET NULL;  -- the artist the credits come to
+    ALTER TABLE files ADD COLUMN credited INTEGER NOT NULL DEFAULT 0;  -- 0 its artist and source not looked for yet, 1 done
+    CREATE INDEX files_artist ON files (artist_id) WHERE artist_id IS NOT NULL;
+    CREATE INDEX files_credited_todo ON files (credited, mtime DESC) WHERE credited = 0;
+    CREATE TABLE inbox_dismissed (path TEXT PRIMARY KEY COLLATE NOCASE, size INTEGER NOT NULL, mtime REAL NOT NULL);  -- a download not to offer again
+    """,
 ]
 CACHE = 256  # cached query results kept (each tied to the index as it was)
 

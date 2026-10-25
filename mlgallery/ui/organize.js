@@ -33,7 +33,7 @@ export async function undoLast() {
   await undo(last.id);
 }
 
-function dialog(title, body, { submit, submitLabel = "OK", danger = false, wide = false } = {}) {
+export function dialog(title, body, { submit, submitLabel = "OK", danger = false, wide = false } = {}) {
   const err = h("p.form-err", { role: "alert" });
   const go = h("button.btn.primary" + (danger ? ".danger" : ""), { type: "submit" }, submitLabel);
   const dlg = h("dialog.dialog" + (wide ? ".wide" : ""), { "aria-label": title },
@@ -73,6 +73,30 @@ export function tagDialog(selection, count) {
       if (!tags.length) throw new Error("Type a tag (several: separated by commas).");
       const r = await api("/ops/bulk", { method: "POST", body: { selection, action: mode.value, value: tags } });
       done(r, `${mode.value === "tag" ? "Tagged" : "Untagged"} ${plural(r.count, "file")}.`);
+    },
+  });
+}
+
+// the artist of many files at once: a name, no artist, or back to what was found in them
+export function artistDialog(selection, count) {
+  const input = h("input", { type: "text", placeholder: "Their name", "aria-label": "Artist", autocomplete: "off", spellcheck: false });
+  const list = h("datalist", { id: "bulk-artists" });
+  input.setAttribute("list", list.id);
+  input.addEventListener("input", async () => {
+    const { items } = await api(`/suggest?field=artist&q=${encodeURIComponent(input.value)}`).catch(() => ({ items: [] }));
+    list.replaceChildren(...items.map((t) => h("option", { value: t.name })));
+  });
+  const mode = h("select", { "aria-label": "What to do" }, h("option", { value: "set" }, "Set to"), h("option", { value: "none" }, "No artist"),
+    h("option", { value: "found" }, "What was found in them"));
+  mode.onchange = () => { input.disabled = mode.value !== "set"; };
+  dialog(`Artist of ${what(count)}`, h("div", {}, h("div.field-row", {}, mode, h("div", {}, input, list)),
+    h("p.note", {}, "What you set wins over what's found in the files, their names and their folders.")), {
+    submitLabel: "Apply",
+    submit: async () => {
+      const value = mode.value === "set" ? input.value.trim() : mode.value === "none" ? "" : null;
+      if (mode.value === "set" && !value) throw new Error("Type the artist's name.");
+      const r = await api("/ops/bulk", { method: "POST", body: { selection, action: "artist", value } });
+      done(r, value ? `${plural(r.count, "file")} by ${value} now.` : value === "" ? `${plural(r.count, "file")} with no artist.` : `${plural(r.count, "file")} with the artist found in them.`);
     },
   });
 }

@@ -5,8 +5,9 @@
     model:krea  lora:aurelia   a checkpoint / LoRA whose name contains this (quote names with spaces: lora:"paper cut")
     tag:dusk                   a tag (exactly)          album:coast   an album (exactly)
     character:aurelia          a character (by name or alias; matched or confirmed)   review:aurelia  is:review
+    artist:"some name"  site:pixiv   an artist (by name or another name), and where a picture is from (credits.py)
     rating:4  rating:>=3  rating:2-4  rating:0 (unrated)
-    is:fav  is:video  is:image  is:ai  is:photo  is:illustration  has:prompt  has:workflow  no:prompt
+    is:fav  is:video  is:image  is:ai  is:photo  is:illustration  has:prompt  has:workflow  no:prompt  has:artist  has:source
     sampler:euler  scheduler:karras  (exactly; sampler:dpmpp* for every name starting so)
     seed:1234  steps:8  steps:20-30  cfg:7  size:1024x1024  neg:blurry (words in the negative prompt)
     after:2026-10-01  before:2026-10-23  on:2026-10-23  (by when the file was made, your local time; after:yesterday, on:2026-10 too)
@@ -25,7 +26,7 @@ import time
 
 TOKEN = re.compile(r'(-?)(?:(\w+):)?(?:"([^"]*)"?|(\S+))')
 KEYS = {"model", "lora", "tag", "rating", "is", "has", "no", "sampler", "scheduler", "seed", "steps", "neg", "vae", "ext",
-        "cfg", "size", "after", "before", "on", "character", "review", "album", "date", "strength", "color", "colour"}
+        "cfg", "size", "after", "before", "on", "character", "review", "album", "date", "strength", "color", "colour", "artist", "site"}
 
 
 def tokens(q: str) -> list[tuple[str | None, str]]:
@@ -90,6 +91,26 @@ def _characters(db, name: str) -> list[int]:
         if n.lower() == low or low in (a.lower() for a in json.loads(aliases or "[]")):
             out.append(cid)
     return out
+
+
+def _artists(db, name: str) -> list[int]:
+    """The artists called this (or with it as another name; case, spaces, _ and - alike)."""
+    from .characters import norm
+    from .credits import name_map
+
+    def load():
+        with db.read() as c:
+            return name_map(c)
+    got = db.cached(("artist-names",), load).get(norm(name))
+    return [got] if got else []
+
+
+def _site(v: str) -> str:
+    """site:Pixiv, site:twitter, site:yande.re -> the site as it's stored."""
+    from .credits import SITES
+    low = v.strip().lower()
+    by_name = {n.lower(): k for k, n in SITES.items()}
+    return {"twitter": "x", "twitter.com": "x", "x.com": "x", "da": "deviantart", "bsky": "bluesky", "fa": "furaffinity"}.get(low) or by_name.get(low) or low
 
 
 def _loose(name: str) -> str:
@@ -164,6 +185,20 @@ def build(q: str, db=None) -> tuple[list[str], list]:
             else:
                 where.append(f"f.id IN (SELECT file_id FROM file_characters WHERE character_id IN ({_in(ids)}) AND state IN ({_in(states)}))")
                 args += [*ids, *states]
+        elif key == "artist":
+            if db is None:
+                where.append("f.artist_id IS NOT NULL AND f.artist_id IN (SELECT id FROM artists WHERE name = ? COLLATE NOCASE)")
+                args.append(v)
+                continue
+            ids = _artists(db, v)
+            if not ids:
+                where.append("0")
+                continue
+            where.append(f"f.artist_id IS NOT NULL AND f.artist_id IN ({_in(ids)})")  # (so -artist:x keeps the files with no artist)
+            args += ids
+        elif key == "site":
+            where.append("f.id IN (SELECT file_id FROM credits WHERE site = ?)")
+            args.append(_site(v))
         elif key in ("color", "colour"):
             from . import colors
             cond = colors.condition(v)
@@ -214,7 +249,9 @@ def build(q: str, db=None) -> tuple[list[str], list]:
                     "workflow": "f.id IN (SELECT file_id FROM generations WHERE workflow IS NOT NULL)",
                     "meta": "f.meta = 1", "data": "f.meta = 1",
                     "tags": "f.id IN (SELECT file_id FROM file_tags WHERE removed = 0)",
-                    "lora": "f.id IN (SELECT file_id FROM uses WHERE kind = 'lora')"}.get(v)
+                    "lora": "f.id IN (SELECT file_id FROM uses WHERE kind = 'lora')",
+                    "artist": "f.artist_id IS NOT NULL",
+                    "source": "f.id IN (SELECT file_id FROM credits WHERE COALESCE(url, '') <> '' OR COALESCE(site, '') <> '')"}.get(v)
             if cond:
                 where.append(cond if key == "has" else f"NOT ({cond})")
             else:

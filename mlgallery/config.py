@@ -22,6 +22,8 @@ DEFAULTS = {
     "eagle_url": "http://localhost:41595",  # Eagle's local API, for Send to Eagle
     "eagle_token": "",          # Eagle's API token, if your Eagle asks for one (you type it in Settings)
     "updates": False,           # ask GitHub once a day whether there's a newer Gallery (nothing else is sent)
+    "inbox_downloads": True,    # New downloads: offer the pictures in Windows' Downloads folder for filing (a library for illustrations)
+    "inbox_folders": [],        # ... and these folders' too (a Discord or Telegram save folder, say)
 }
 
 

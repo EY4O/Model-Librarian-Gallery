@@ -3,9 +3,11 @@
 // scrolls the same at 200 files or 250,000. Day headings come from a per-day count (one small request),
 // so every tile's place is known without fetching the pages above it.
 
-import { $, KINDS, LOOK_COLORS, LOOK_ICONS, TOKEN, aiOnly, api, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lib, lookIcon, media, menu, plural, stars, store, toast, who } from "./util.js";
+import { $, KINDS, LOOK_COLORS, LOOK_ICONS, TOKEN, aiOnly, api, has, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lib, lookIcon, media, menu, plural, stars, store, toast, who } from "./util.js";
 import { renderStats } from "./stats.js";
 import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
+import { creditEditor, renderArtist, renderArtists } from "./artists.js";
+import { renderDownloads } from "./downloads.js";
 import * as org from "./organize.js";
 import { renderSettings } from "./settings.js";
 
@@ -35,8 +37,8 @@ const state = {
 
 // ---------------------------------------------------------------- the search
 const FIELDS = ["model", "lora", "tag", "sampler", "scheduler", "seed", "steps", "rating", "is", "has", "no", "neg", "vae", "ext",
-  "cfg", "size", "after", "before", "on", "date", "strength", "character", "review", "album", "color"];
-const SUGGESTED = new Set(["model", "lora", "tag", "sampler", "scheduler", "vae", "color"]);
+  "cfg", "size", "after", "before", "on", "date", "strength", "character", "review", "album", "color", "artist", "site"];
+const SUGGESTED = new Set(["model", "lora", "tag", "sampler", "scheduler", "vae", "color", "artist", "site"]);
 // the colour families' own swatches (as in colors.py), for color: chips
 const COLOR_FAMILIES = { red: "#e53935", orange: "#fb8c00", yellow: "#fdd835", green: "#43a047", cyan: "#00acc1", blue: "#1e88e5",
   purple: "#8e24aa", pink: "#ec407a", brown: "#795548", black: "#212121", gray: "#9e9e9e", grey: "#9e9e9e", white: "#f5f5f5" };
@@ -44,6 +46,7 @@ const colorOf = (v) => COLOR_FAMILIES[v.toLowerCase()] || (/^#?([0-9a-f]{3}|[0-9
 const quote = (v) => (/[\s"]/.test(v) ? `"${v.replaceAll('"', "")}"` : v);
 const chipText = (c) => `${c.key}:${quote(c.value)}`;
 const queryString = () => [...state.chips.map(chipText), state.text.trim()].filter(Boolean).join(" ");
+const ART_HINTS = [["artist:", "who made it (by any of their names)"], ["site:", "where it's from: pixiv, x, deviantart…"]];
 const HINTS = [
   ["model:", "a checkpoint or diffusion model"], ["lora:", "a LoRA"], ["tag:", "one of your tags"],
   ["lora:name@0.6-0.8", "a LoRA used at that strength"], ["date:7d", "made in the last 7 days (or today, yesterday, 2026-10)"],
@@ -114,7 +117,7 @@ async function showSuggest() {
       items.length ? null : `No ${field === "model" ? "models" : field + "s"} matching "${q}" yet`);
   } else if (!input.value && document.activeElement === input) {
     suggestFor = null;
-    renderSuggest(HINTS.map(([k, hint]) => ({ label: k, hint, pick: () => { input.value = k; input.focus(); onInput(); } })), null, "Search by");
+    renderSuggest([...(has("illustrations") ? ART_HINTS : []), ...HINTS].map(([k, hint]) => ({ label: k, hint, pick: () => { input.value = k; input.focus(); onInput(); } })), null, "Search by");
   } else {
     suggestFor = null;
     box.hidden = true;
@@ -177,6 +180,8 @@ function renderSide() {
   for (const b of $("kind-nav").querySelectorAll("[data-is]")) b.classList.toggle("sel", b.dataset.is === part);
   for (const v of ["all", "recent", "random", "stats", "review", "trash", "duplicates", "history", "settings"]) $(`view-${v}`).classList.toggle("sel", state.view === v && !(v === "all" && part && !$("kind-nav").hidden));
   $("view-characters").classList.toggle("sel", state.view === "characters" || state.view === "character");
+  $("view-artists").classList.toggle("sel", state.view === "artists" || state.view === "artist");
+  $("view-downloads").classList.toggle("sel", state.view === "downloads");
   const items = state.folders.map((f) => {
     const sel = state.view === "folder" && state.folder === f.id;
     return h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", title: f.path, onclick: () => selectView("folder", f.id),
@@ -288,9 +293,10 @@ function actKey(e) {
   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.currentTarget.click(); }
 }
 
-const PAGES = new Set(["stats", "characters", "character", "review", "duplicates", "history", "settings"]); // screens of their own, instead of the grid
+const PAGES = new Set(["stats", "characters", "character", "review", "artists", "artist", "downloads", "duplicates", "history", "settings"]); // screens of their own, instead of the grid
 const isPage = () => PAGES.has(state.view);
-const pageCtx = { open: (chips) => openFromStats(chips), show: (view, id) => selectView(view, id), refresh: () => loadCharacters() };
+const pageCtx = { open: (chips) => openFromStats(chips), show: (view, id) => selectView(view, id), refresh: () => loadCharacters(),
+  counts: () => pollSoon(), folders: () => state.folders };
 
 function selectView(view, arg = null) {
   closeMenu();
@@ -312,6 +318,9 @@ function selectView(view, arg = null) {
   else if (view === "characters") renderCharacters($("stats"), pageCtx);
   else if (view === "character") renderCharacter($("stats"), arg, pageCtx);
   else if (view === "review") renderReview($("stats"), pageCtx);
+  else if (view === "artists") renderArtists($("stats"), pageCtx);
+  else if (view === "artist") renderArtist($("stats"), arg, pageCtx);
+  else if (view === "downloads") renderDownloads($("stats"), pageCtx);
   else if (view === "duplicates") org.renderDuplicates($("stats"));
   else if (view === "history") org.renderHistory($("stats"));
   else if (view === "settings") renderSettings($("stats"), settingsCtx);
@@ -646,6 +655,7 @@ function selChanged() {
   const moreBtn = h("button.icon-btn", { type: "button", "aria-haspopup": "menu", "aria-label": "More", title: "More", onclick: (e) => menu(e.currentTarget, [
     { label: "Move…", icon: "move", onclick: () => org.moveDialog(sel, n, state.folders, { at: state.folder, after: clearSel }) },
     { label: "Send to Eagle…", icon: "send", onclick: () => org.sendToEagle(sel, n) },
+    has("illustrations") ? { label: "Set the artist…", icon: "person", onclick: () => org.artistDialog(sel, n) } : null,
     null,
     { label: "Not favourites", icon: "heart", onclick: () => bulk("favorite", false) },
     state.view === "album" ? null : { label: "Take out of an album…", icon: "album", onclick: () => org.albumDialog(sel, n, { remove: "" }) },
@@ -690,6 +700,7 @@ org.onChange(async () => {
   await Promise.all([loadFolders(), loadAlbums(), loadCharacters()]);
   if (!isPage()) await reload(false);
   else if (state.view === "history") org.renderHistory($("stats"));
+  else if (state.view === "downloads") renderDownloads($("stats"), pageCtx);  // (filed, or a filing undone)
   pollSoon();
   if (!$("viewer").hidden) refreshViewer();
 });
@@ -1066,6 +1077,9 @@ function renderDetails(info) {
   parts.push(section("Tags", tagEditor(info)));
   parts.push(section("Albums", albumEditor(info)));
   parts.push(section(who(), characterEditor(info)));
+  if (has("illustrations") || info.credit?.artist || info.credit?.url) {
+    parts.push(section("Artist", creditEditor(info, { onFilter: (key, value) => { closeViewer(); addChip(key, value); }, onChanged: () => { state.stale = true; } })));
+  }
   parts.push(...gen);
   const rows = [
     ["Type", `${info.kind === "video" ? "Video" : "Image"} · ${info.name.split(".").pop().toUpperCase()}`],
@@ -1543,6 +1557,7 @@ function applyKinds(kinds) {
   $("characters-label").textContent = who();
   const nav = $("kind-nav");  // a library for more than one: a shortcut to each part of it
   nav.hidden = !kinds || kinds.length < 2;
+  $("view-artists").hidden = $("view-downloads").hidden = !(kinds || []).includes("illustrations");  // who made them; new downloads to file
   const part = { ai: "ai", photo: "photos", illustration: "illustrations" };
   for (const b of nav.querySelectorAll("[data-is]")) b.hidden = !(kinds || []).includes(part[b.dataset.is]);
   if (!$("viewer").hidden && shown) loadDetails(shown);
@@ -1608,6 +1623,8 @@ async function poll() {
     }
     lastMeta = st.meta_pending;
     $("trash-count").textContent = st.trash ? st.trash.toLocaleString() : "";
+    $("inbox-count").textContent = st.inbox ? st.inbox.toLocaleString() : "";
+    $("inbox-count").hidden = !st.inbox;
     if (st.update && st.update !== toldUpdate) { toldUpdate = st.update; toast(`Model Librarian Gallery ${st.update} is out: Settings, Updates.`); }
     loadCharacters(); // matches change as files are read
     pollTimer = setTimeout(poll, busy ? 1500 : 4000);
@@ -1631,6 +1648,8 @@ $("album-new").onclick = newAlbum;
 $("empty-trash").onclick = () => org.emptyTrash(null, state.total);
 $("view-characters").onclick = () => selectView("characters");
 $("view-review").onclick = () => selectView("review");
+$("view-artists").onclick = () => selectView("artists");
+$("view-downloads").onclick = () => selectView("downloads");
 $("shuffle").onclick = () => selectView("random");
 $("side-hide").onclick = () => setSide(true);
 $("side-show").onclick = () => setSide(false);
@@ -1767,7 +1786,8 @@ function showHelp() {
     ["lora:aurelia@0.6-0.8", "a LoRA at that strength (strength: any LoRA)"], ["tag:  album:  character:", "your tags, albums, characters"],
     ["rating:4  rating:2-4  rating:0", "rated 4 or more, 2 to 4, unrated"], ["is:fav  is:video  is:review", "favourites, videos, waiting for review"],
     ["date:today  date:7d  date:2026-10", "when it was made (also after: before: on:)"], ["seed:  steps:  cfg:  sampler:  size:1024x1024", "settings"],
-    ["has:workflow  no:prompt  neg:blurry", "what's saved in it; words in the negative prompt"]];
+    ["has:workflow  no:prompt  neg:blurry", "what's saved in it; words in the negative prompt"],
+    ["artist:  site:pixiv  has:artist  has:source", "who made it, where it's from"]];
   const table = (rows) => h("dl.help-list", {}, rows.map(([k, v]) => [h("dt", {}, h("kbd", {}, k)), h("dd", {}, v)]));
   const dlg = h("dialog.dialog.wide.help", { "aria-label": "Shortcuts and search" },
     h("div.help-body", {},

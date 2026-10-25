@@ -21,7 +21,7 @@ import re
 import shutil
 import time
 
-from . import bulk, colors, fileops, metadata, scan
+from . import bulk, colors, credits, fileops, metadata, scan
 
 API = "http://localhost:41595"
 MAX_ITEMS = 100_000
@@ -268,7 +268,7 @@ def copy_in(db, plan: dict, folder_id: int, sub: str | None = None, progress=Non
 def apply_import(db, plan: dict) -> dict:
     """Give the matched files Eagle's tags, folders (as albums), ratings and notes. One History step, undoable."""
     now = time.time()
-    tagged, filed, rated, noted = [], [], [], []
+    tagged, filed, rated, noted, sourced = [], [], [], [], []
     with db.write() as c:
         for it in plan["matched"]:
             fid = it["file_id"]
@@ -298,6 +298,10 @@ def apply_import(db, plan: dict) -> dict:
                               (fid, it["star"], m["favorite"] if m else 0, now))
             if it.get("palette") and not c.execute("SELECT colors FROM files WHERE id=?", (fid,)).fetchone()[0]:
                 colors.store(c, fid, it["palette"])  # Eagle's colours, until (instead of) the Gallery working them out
+            got = credits.from_url(it.get("url"))  # the page Eagle saved it from: its source (and artist, if the address says)
+            if got and not c.execute("SELECT 1 FROM credits WHERE file_id=? AND src='download'", (fid,)).fetchone():
+                credits.upsert(c, fid, "download", got)  # (what the file, its name and folder said stays)
+                sourced.append(fid)
             note = note_with_url(it["note"], it.get("url"))
             if note:
                 cur = c.execute("SELECT note, source FROM file_notes WHERE file_id=?", (fid,)).fetchone()
@@ -308,11 +312,12 @@ def apply_import(db, plan: dict) -> dict:
                           (fid, note[:4000]))
         for fid in {i["file_id"] for i in plan["matched"]}:
             metadata.refresh_search(c, fid)
+        credits.resolve(c, sourced)
         n = len({i["file_id"] for i in plan["matched"]})
         copied = sorted({i["file_id"] for i in plan["matched"] if i.get("copied_rel")})
         op = fileops.record(c, "eagle", f"Brought in {n} file{'s' if n != 1 else ''}' tags, albums and ratings from Eagle ({plan['name']})"
                             + (f", {len(copied)} of them copied in" if copied else ""),
-                            {"tags": tagged, "albums": filed, "marks": rated, "notes": noted, "copied": copied})
+                            {"tags": tagged, "albums": filed, "marks": rated, "notes": noted, "copied": copied, "sources": sourced})
     return {"op": op, "files": n, "tags": len(tagged), "albums": len(filed), "ratings": len(rated), "notes": len(noted)}
 
 
@@ -337,6 +342,10 @@ def undo_import(db, data: dict) -> dict:
             else:
                 c.execute("INSERT OR REPLACE INTO marks (file_id, rating, favorite, source, updated) VALUES (?,?,?,?,?)",
                           (m["file_id"], m.get("rating"), m.get("favorite") or 0, m["source"], time.time()))
+        sourced = data.get("sources") or []
+        c.executemany("DELETE FROM credits WHERE file_id=? AND src='download'", [(f,) for f in sourced])
+        credits.resolve(c, [f for f in sourced if c.execute("SELECT 1 FROM files WHERE id=?", (f,)).fetchone()])
+        credits.prune(c)
         for it in reversed(data.get("notes") or []):
             if it["was"] is None:
                 c.execute("DELETE FROM file_notes WHERE file_id=?", (it["file_id"],))

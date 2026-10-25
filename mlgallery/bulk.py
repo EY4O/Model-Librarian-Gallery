@@ -1,10 +1,10 @@
-"""Changes to many files at once - rating, favourite, tags, albums - each recorded so it can be undone."""
+"""Changes to many files at once - rating, favourite, tags, albums, the artist - each recorded so it can be undone."""
 from __future__ import annotations
 
 import time
 
 from . import characters as chars
-from . import fileops, metadata
+from . import credits, fileops, metadata
 
 MAX = fileops.MAX_ITEMS
 
@@ -93,8 +93,23 @@ def apply(db, ids, action: str, value=None) -> dict:
             name = c.execute("SELECT name FROM albums WHERE id=?", (aid,)).fetchone()[0]
             op = fileops.record(c, "albums", f"{'Added' if action == 'album' else 'Took'} {files} {'to' if action == 'album' else 'out of'} {name}",
                                 {"action": action, "album": aid, "items": data})
+        elif action == "artist":  # a name; '' for no artist; None for what was found in them
+            if value is not None and not isinstance(value, str):
+                raise fileops.OpError("The artist is a name.")
+            prev = {r["file_id"]: dict(r) for r in c.execute(
+                f"SELECT file_id, artist, site, post, url FROM credits WHERE src='user' AND file_id IN ({','.join('?' * len(ids))})", ids)}
+            for i in ids:
+                credits.set_user(c, i, artist=value)
+            credits.resolve(c, ids)
+            credits.prune(c)
+            name = credits.clean_name(value, junk=False) if value else None
+            what = f"Set the artist of {files} to {name}" if name else f"Said {files} {'have' if n != 1 else 'has'} no artist" if value == "" \
+                else f"Gave {files} the artist found in {'them' if n != 1 else 'it'}"
+            op = fileops.record(c, "credits", what, [{"file_id": i, "was": prev.get(i)} for i in ids])
         else:
             raise fileops.OpError(f"Unknown action {action}")
+    if action == "artist":
+        db.user_change()
     return {"op": op, "count": len(ids)}
 
 
@@ -134,4 +149,14 @@ def undo(db, kind: str, data) -> dict:
                     c.execute("INSERT OR REPLACE INTO album_files (album_id, file_id, source, removed, added) VALUES (?,?,?,?,?)",
                               (aid, it["file_id"], was["source"], was["removed"], time.time()))
             return {"undone": len(data["items"])}
+        if kind == "credits":
+            for it in data:
+                was = it["was"]
+                c.execute("DELETE FROM credits WHERE file_id=? AND src='user'", (it["file_id"],))
+                if was:
+                    c.execute("INSERT INTO credits (file_id, src, artist, site, post, url) VALUES (?, 'user', ?,?,?,?)",
+                              (it["file_id"], was["artist"], was["site"], was["post"], was["url"]))
+            credits.resolve(c, [it["file_id"] for it in data if c.execute("SELECT 1 FROM files WHERE id=?", (it["file_id"],)).fetchone()])
+            credits.prune(c)
+            return {"undone": len(data)}
     return {"undone": 0}

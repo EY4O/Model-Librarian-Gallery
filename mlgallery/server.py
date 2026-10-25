@@ -88,6 +88,22 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_delete("/api/characters/{cid}", character_delete)
     r.add_post("/api/characters/{cid}/review", character_review)
     r.add_post("/api/file/{id}/characters", file_character)
+    r.add_get("/api/artists", artists_list)
+    r.add_post("/api/artists", artist_create)
+    r.add_get("/api/artists/{aid}", artist_get)
+    r.add_post("/api/artists/{aid}", artist_update)
+    r.add_delete("/api/artists/{aid}", artist_delete)
+    r.add_post("/api/file/{id}/credit", file_credit)
+    r.add_get("/api/inbox", inbox_list)
+    r.add_get("/api/inbox/folders", inbox_folders)
+    r.add_post("/api/inbox/folders", inbox_folders_set)
+    r.add_post("/api/inbox/file", inbox_file)
+    r.add_post("/api/inbox/dismiss", inbox_dismiss)
+    r.add_post("/api/inbox/undismiss", inbox_undismiss)
+    r.add_post("/api/inbox/recycle", inbox_recycle)
+    r.add_get("/api/inbox/thumb/{key}", inbox_thumb)
+    r.add_get("/api/inbox/file/{key}", inbox_original)
+    r.add_post("/api/open-url", open_url)
     r.add_post("/api/select", select)
     r.add_post("/api/ops/move/plan", move_plan)
     r.add_post("/api/ops/move", move)
@@ -436,6 +452,171 @@ async def _ids(request, b):
         return await asyncio.to_thread(_lib(request).resolve, b.get("selection"))
     except (OpError, ValueError, TypeError):
         raise web.HTTPBadRequest(text='{"error": "selection: a list of ids, or {view: ...}"}', content_type="application/json")
+
+
+# ---------------------------------------------------------------- artists, and each file's artist and source
+def _aid(request) -> int | None:
+    try:
+        return int(request.match_info["aid"])
+    except ValueError:
+        return None
+
+
+def _names(b, key: str) -> list:
+    v = b.get(key) or []
+    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+        raise ValueError(f"{key} is a list of text")
+    return v
+
+
+async def artists_list(request):
+    return web.json_response(await asyncio.to_thread(_lib(request).artists))
+
+
+async def artist_create(request):
+    b = await _body(request)
+    lib = _lib(request)
+    try:
+        aid = await asyncio.to_thread(lib.artist_save, None, b.get("name"), _names(b, "aliases"), _names(b, "links"))
+    except ValueError as ex:
+        return _err(str(ex), 422)
+    return web.json_response(await asyncio.to_thread(lib.artist, aid))
+
+
+async def artist_get(request):
+    aid = _aid(request)
+    a = await asyncio.to_thread(_lib(request).artist, aid) if aid else None
+    return web.json_response(a) if a else _err("not found", 404)
+
+
+async def artist_update(request):
+    aid, b = _aid(request), await _body(request)
+    lib = _lib(request)
+    cur = await asyncio.to_thread(lib.artist, aid) if aid else None
+    if not cur:
+        return _err("not found", 404)
+    try:
+        kw = {"cover": b["cover"]} if "cover" in b else {}
+        await asyncio.to_thread(lib.artist_save, aid, b.get("name", cur["name"]), _names(b, "aliases") if "aliases" in b else cur["aliases"],
+                                _names(b, "links") if "links" in b else cur["links"], **kw)
+    except ValueError as ex:
+        return _err(str(ex), 422)
+    return web.json_response(await asyncio.to_thread(lib.artist, aid))
+
+
+async def artist_delete(request):
+    aid = _aid(request)
+    ok = await asyncio.to_thread(_lib(request).artist_delete, aid) if aid else False
+    return web.json_response({"ok": True}) if ok else _err("not found", 404)
+
+
+async def file_credit(request):
+    """{artist: a name, '' for none, null for what was found; url: the same for the source}: only the ones given change."""
+    fid, b = _fid(request), await _body(request)
+    kw = {k: b[k] for k in ("artist", "url") if k in b}
+    if any(v is not None and not isinstance(v, str) for v in kw.values()):
+        return _err("artist and url are text (or null)")
+    try:
+        return web.json_response(await asyncio.to_thread(_lib(request).set_credit, fid, **kw))
+    except KeyError:
+        return _err("not found", 404)
+    except ValueError as ex:
+        return _err(str(ex), 422)
+
+
+# ---------------------------------------------------------------- new downloads (downloads.py)
+async def inbox_list(request):
+    q = request.query
+    try:
+        offset, limit = int(q.get("offset", 0)), int(q.get("limit", 60))
+    except ValueError:
+        return _err("bad offset or limit")
+    return web.json_response(await asyncio.to_thread(_lib(request).inbox.items, offset, limit))
+
+
+async def inbox_folders(request):
+    return web.json_response({"folders": await asyncio.to_thread(_lib(request).inbox.folders)})
+
+
+async def inbox_folders_set(request):
+    """{add: path} / {remove: path} / {downloads: true|false}"""
+    b = await _body(request)
+    inbox = _lib(request).inbox
+    try:
+        if isinstance(b.get("downloads"), bool):
+            await asyncio.to_thread(_lib(request).settings.update, {"inbox_downloads": b["downloads"]})
+            inbox._listing = None
+        if b.get("add"):
+            await asyncio.to_thread(inbox.add_folder, str(b["add"]))
+        if b.get("remove"):
+            await asyncio.to_thread(inbox.remove_folder, str(b["remove"]))
+    except ValueError as ex:
+        return _err(str(ex), 422)
+    return web.json_response({"folders": await asyncio.to_thread(inbox.folders)})
+
+
+def _keys(b) -> list[str]:
+    v = b.get("items") or []
+    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+        raise ValueError("items is a list of download keys")
+    return v[:2000]
+
+
+async def inbox_file(request):
+    from .fileops import OpError
+    b = await _body(request)
+    try:
+        artist = b.get("artist")
+        if artist is not None and not isinstance(artist, str):
+            raise ValueError("artist is text")
+        return web.json_response(await asyncio.to_thread(_lib(request).inbox.file, _keys(b), int(b.get("folder") or 0), str(b.get("sub") or ""), artist))
+    except (OpError, ValueError) as ex:
+        return _err(str(ex), 422)
+
+
+async def inbox_dismiss(request):
+    b = await _body(request)
+    try:
+        return web.json_response({"dismissed": await asyncio.to_thread(_lib(request).inbox.dismiss, _keys(b))})
+    except ValueError as ex:
+        return _err(str(ex))
+
+
+async def inbox_undismiss(request):
+    return web.json_response({"back": await asyncio.to_thread(_lib(request).inbox.undismiss)})
+
+
+async def inbox_recycle(request):
+    b = await _body(request)
+    try:
+        return web.json_response(await asyncio.to_thread(_lib(request).inbox.recycle, _keys(b)))
+    except ValueError as ex:
+        return _err(str(ex))
+
+
+async def inbox_thumb(request):
+    path = await asyncio.to_thread(_lib(request).inbox.thumb, request.match_info["key"])
+    if not path:
+        return web.Response(status=404)
+    return web.FileResponse(path, headers={"Cache-Control": "max-age=86400", "Content-Type": "image/webp"})
+
+
+async def inbox_original(request):
+    e = await asyncio.to_thread(_lib(request).inbox.path_of, request.match_info["key"])
+    if not e or not os.path.isfile(e["path"]):
+        return _err("That download isn't there any more.", 404)
+    return web.FileResponse(e["path"], headers={"Cache-Control": "no-cache"})
+
+
+async def open_url(request):
+    """A source or an artist's page, in your web browser (only http and https addresses)."""
+    import webbrowser
+    from .credits import clean_url
+    url = clean_url((await _body(request)).get("url"))
+    if not url:
+        return _err("That isn't a web address.")
+    await asyncio.to_thread(webbrowser.open, url)
+    return web.json_response({"ok": True})
 
 
 def _op(fn):

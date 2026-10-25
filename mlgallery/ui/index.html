@@ -36,6 +36,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
           <span class="label">Trash</span><span class="n" id="trash-count"></span>
         </button>
+        <button type="button" class="nav-item" id="view-downloads" title="Pictures you downloaded, to file into the library" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M4 15v4h16v-4"/></svg>
+          <span class="label">New downloads</span><span class="badge-n" id="inbox-count" hidden></span>
+        </button>
       </div>
       <div class="nav-group" id="kind-nav" hidden>
         <button type="button" class="nav-item" data-is="ai" title="The files with generation data (is:ai)">
@@ -64,6 +68,10 @@
         <button type="button" class="nav-item" id="view-review" title="Files a weak rule matched, waiting for a yes or no">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
           <span class="label">To review</span><span class="badge-n" id="review-count" hidden></span>
+        </button>
+        <button type="button" class="nav-item" id="view-artists" title="Who made your pictures, and where they're from" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 0 0 0 18c1.2 0 1.8-.9 1.8-1.8 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10" cy="7" r="1.2"/><circle cx="15" cy="7" r="1.2"/></svg>
+          <span class="label">Artists</span><span class="n" id="artist-count"></span>
         </button>
         <button type="button" class="nav-item" id="view-duplicates" title="Copies of one file, and the same picture saved twice">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>

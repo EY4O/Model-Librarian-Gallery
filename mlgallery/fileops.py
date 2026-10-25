@@ -129,7 +129,8 @@ def _relocate(db, fid: int, folder: int, rel: str) -> bool:
     name = rel.split("/")[-1]
     try:
         with db.write() as c:
-            c.execute("UPDATE files SET folder_id=?, rel=?, name=?, ext=? WHERE id=?", (folder, rel, name, os.path.splitext(name)[1].lower(), fid))
+            # (its artist is looked for again: another folder or name may say who made it)
+            c.execute("UPDATE files SET folder_id=?, rel=?, name=?, ext=?, credited=0 WHERE id=?", (folder, rel, name, os.path.splitext(name)[1].lower(), fid))
             refresh_search(c, fid)
     except sqlite3.IntegrityError:
         return False
@@ -516,7 +517,7 @@ def undo(db, op_id: int) -> dict:
             if r["op"]:
                 c.execute("DELETE FROM ops WHERE id=?", (r["op"],))  # the undo itself isn't a new step
         result = {"undone": r["trashed"], "failed": [f["id"] for f in r["failed"]]}
-    elif kind in ("marks", "tags", "albums"):
+    elif kind in ("marks", "tags", "albums", "credits"):
         from . import bulk
         result = bulk.undo(db, kind, data)
     elif kind == "eagle":
@@ -528,6 +529,9 @@ def undo(db, op_id: int) -> dict:
     elif kind == "carry":
         from . import libraries
         result = libraries.undo_bring(db, data)
+    elif kind == "file":
+        from . import downloads
+        result = downloads.undo(db, data)
     else:
         raise OpError("Emptying the Trash can't be undone here: the files are in the Windows Recycle Bin.")
     with db.write() as c:
@@ -535,6 +539,7 @@ def undo(db, op_id: int) -> dict:
             c.execute("UPDATE ops SET undone=? WHERE id=?", (time.time(), op["id"]))
         scan.pair_live(c, _touched(data))
         _recount(c)
+    db.user_change()  # the lists counted ahead (Artists, Characters...) are counted again, not shown as they were
     if result.get("failed") and not result.get("undone"):
         raise OpError("Nothing could be undone: the files changed since (moved again, or something else took their place).")
     return result

@@ -57,11 +57,12 @@ def test_grid_viewer_and_controls(server):
 
     async def go():
         async with page(url) as e:
-            await e.wait("document.querySelectorAll('.tile img.on').length >= 8")
+            await e.wait("document.querySelectorAll('.tile img.on').length >= 5")  # (the screen holds 7 at the least: just after midnight, one or two a day)
             assert await e.js("document.getElementById('count').textContent") == f"{total} items"
             assert await e.js("document.getElementById('all-count').textContent") == str(total)
             assert await e.js("document.querySelectorAll('.day').length") >= 2  # newest first: grouped by day
-            assert (await e.js("document.querySelector('.day').textContent")).startswith("Today")
+            # the newest is up to an hour old: just after midnight, that's yesterday
+            assert (await e.js("document.querySelector('.day').textContent")).startswith("Today" if time.localtime().tm_hour >= 1 else ("Today", "Yesterday"))
             # only what's on screen exists
             assert await e.js("document.querySelectorAll('.tile').length") < total
             if SHOTS:
@@ -259,7 +260,7 @@ def test_search_marks_tags_and_details(server):
 
     async def go():
         async with page(url) as e:
-            await e.wait("document.querySelectorAll('.tile').length >= 8")
+            await e.wait("document.querySelectorAll('.tile').length >= 5")
             # typing model:… and a space makes a chip; the grid narrows to it
             await e.js("const q = document.getElementById('q'); q.focus(); q.value = 'lora:aurelia '; q.dispatchEvent(new Event('input')); true")
             await e.wait("document.querySelector('#chips .chip .v')?.textContent === 'aurelia'")
@@ -423,6 +424,56 @@ def test_characters_screens(server):
             await e.key("Escape")
             assert not await e.js("window.__errors.length")
     asyncio.run(go())
+
+
+def test_artists_and_new_downloads(server, tmp_path):
+    url, api = server
+    from conftest import image
+    api("/library/kind", {"kinds": ["ai", "illustrations"]})  # (back to AI generations alone at the end)
+    dl = tmp_path / "Downloads"
+    got = image(dl / "harbour_by_painter_d1a2b3c.png", (96, 72), seed=7)
+    os.utime(got, (time.time() - 600, time.time() - 600))
+    api("/inbox/folders", {"downloads": False, "add": str(dl)})
+    first = api("/files?limit=1")["items"][0]
+    api(f"/file/{first['id']}/credit", {"artist": "Painter"})
+    total = api("/files")["total"]
+    op = None
+
+    async def go():
+        nonlocal op
+        async with page(url) as e:
+            await e.wait("!document.getElementById('view-artists').hidden && !document.getElementById('inbox-count').hidden")
+            # the Artists list, and one artist's page
+            await e.click("#view-artists")
+            await e.wait("[...document.querySelectorAll('.c-card .c-name')].some(n => n.textContent === 'Painter')")
+            await e.js("[...document.querySelectorAll('.c-card')].find(c => c.textContent.includes('Painter')).click(); true")
+            await e.wait("document.querySelector('.c-head h1')?.textContent === 'Painter'")
+            # New downloads: who made it (from its name), filed where Painter's other picture is, in one click
+            await e.click("#view-downloads")
+            await e.wait("document.querySelector('.dl-card .dl-artist')?.textContent.startsWith('painter')")
+            await e.js("document.querySelector('.dl-card .dl-acts .btn.primary').click(); true")
+            await e.wait("document.querySelector('.c-empty h2')?.textContent === 'Nothing new'")
+            assert api("/files")["total"] == total + 1
+            filed = api("/files?q=" + urllib.parse.quote('artist:painter'))["total"]
+            assert filed == 2
+            op = api("/ops")["ops"][0]
+            # its details: the artist, from its name, and the source
+            await e.click("#view-all")
+            await e.js("const q = document.getElementById('q'); q.value = 'site:deviantart '; q.dispatchEvent(new Event('input')); true")
+            await e.wait("document.getElementById('count').textContent.startsWith('1 match')")
+            await e.click(".tile")
+            await e.wait("document.querySelector('.credit .chip')?.textContent.includes('Painter')")  # the artist it found: Painter, the one you named
+            assert "DeviantArt" in await e.js("document.querySelector('.credit').textContent")
+            await e.key("Escape")
+            assert not await e.js("window.__errors.length")
+    try:
+        asyncio.run(go())
+    finally:  # the shared sample library as it was
+        if op and op["kind"] == "file":
+            api(f"/ops/{op['id']}/undo", {"x": 1})
+        api(f"/file/{first['id']}/credit", {"artist": None})
+        api("/library/kind", {"kinds": ["ai"]})
+    assert os.path.isfile(got) and api("/files")["total"] == total
 
 
 def test_organising(server):

@@ -6,9 +6,9 @@ import { done } from "./organize.js";
 const field = (label, control, note) => h("div.set-row", {}, h("label.set-label", {}, label), h("div.set-control", {}, control, note ? h("p.note", {}, note) : null));
 
 export async function renderSettings(root, ctx) {
-  let s, folders, lb;
+  let s, folders, lb, inbox;
   try {
-    [s, { folders }, lb] = await Promise.all([api("/settings"), api("/folders"), api("/libraries")]);
+    [s, { folders }, lb, { folders: inbox }] = await Promise.all([api("/settings"), api("/folders"), api("/libraries"), api("/inbox/folders")]);
   } catch (e) { toast(e.message, true); return; }
   const save = async (patch, what) => {
     try {
@@ -42,6 +42,7 @@ export async function renderSettings(root, ctx) {
         h("div.row", {}, h("button.btn.small", { type: "button", onclick: () => ctx.rescan(f) }, "Look again"),
           h("button.btn.small", { type: "button", onclick: () => ctx.removeFolder(f) }, "Remove"))))) : h("p.st-none", {}, "No folders yet."),
       field("Eagle libraries", h("label.check", { for: "set-eagle" }, eagle, " Leave them out (recommended)"), "Eagle manages the files in its *.library folders; the Gallery doesn't index or touch them.")),
+    (lib.kinds || []).includes("illustrations") ? downloads(s, inbox, () => renderSettings(root, ctx)) : null,
     h("section.st-card.set", { "aria-label": "Thumbnails and videos" },
       h("div.st-card-head", {}, h("h2", {}, "Thumbnails and videos")),
       field("Thumbnail size", thumbSize, "A bigger size is made in the background as tiles need it; the smaller ones stay in the cache."),
@@ -72,6 +73,35 @@ export async function renderSettings(root, ctx) {
         } }, s.shortcut ? "Make it again" : "Add the Gallery to the Start menu")), "Starts it in its own window, with its icon.")),
     updates(s, () => renderSettings(root, ctx), save),
   );
+}
+
+// ---------------------------------------------------------------- New downloads: the folders whose pictures are offered for filing
+function downloads(s, inbox, again) {
+  const set = async (body, what) => {
+    try {
+      await api("/inbox/folders", { method: "POST", body });
+      if (what) toast(what);
+      again();
+    } catch (e) { toast(e.message, true); }
+  };
+  const dl = h("input", { type: "checkbox", checked: s.settings.inbox_downloads, id: "set-inbox-dl",
+    onchange: (e) => set({ downloads: e.target.checked }, e.target.checked ? "Your Downloads folder is offered again." : "Your Downloads folder isn't offered any more.") });
+  const others = inbox.filter((f) => !f.downloads);
+  return h("section.st-card.set", { "aria-label": "New downloads" },
+    h("div.st-card-head", {}, h("h2", {}, "New downloads"),
+      h("button.btn.small", { type: "button", onclick: async () => { const p = await pickFolder("Another folder for new downloads", "Add"); if (p) set({ add: p }, `${baseName(p)} added.`); } }, "Add a folder")),
+    h("p.note.set-lede", {}, "The pictures and videos in these folders are offered for filing (New downloads, in the sidebar): moved into the library with who made them and where they're from. Only the folders themselves are looked in, not the folders inside them."),
+    field("Downloads", h("label.check", { for: "set-inbox-dl" }, dl, " Windows' Downloads folder"),
+      inbox.find((f) => f.downloads)?.path || (s.settings.inbox_downloads ? "Not found on this PC." : null)),
+    others.length ? h("ol.set-folders", {}, others.map((f) => h("li", {},
+      h("span.sf-name", {}, baseName(f.path)), h("code", {}, f.path),
+      f.ok ? null : h("span.st-none", {}, f.why),
+      h("div.row", {}, h("button.btn.small", { type: "button", onclick: () => set({ remove: f.path }, `${baseName(f.path)} isn't offered any more.`) }, "Remove"))))) : null,
+    inbox.some((f) => f.downloads && !f.ok) ? h("p.note", {}, inbox.find((f) => f.downloads).why) : null,
+    field("Dismissed", h("button.btn.small", { type: "button", onclick: async () => {
+      const r = await api("/inbox/undismiss", { method: "POST" }).catch((e) => { toast(e.message, true); return null; });
+      if (r) toast(r.back ? `${plural(r.back, "dismissed download")} offered again.` : "None were dismissed.");
+    } }, "Offer them again"), "Downloads you dismissed aren't offered again, unless they change."));
 }
 
 // ---------------------------------------------------------------- updates from GitHub Releases

@@ -23,7 +23,7 @@ function thumb(id, alt = "") {
 export function preview(file) {
   const close = () => { box.remove(); document.removeEventListener("keydown", key, true); };
   const key = (e) => { if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); close(); } };
-  const src = media("file", file.file_id ?? file.id);
+  const src = file.src || media("file", file.file_id ?? file.id);  // (a download: its own address)
   const box = h("div.preview", { role: "dialog", "aria-label": file.name || "Preview", onclick: close },
     file.kind === "video" ? h("video", { src, controls: true, autoplay: true, loop: true, onclick: (e) => e.stopPropagation() }) : h("img", { src, alt: file.name || "" }),
     h("div.preview-name", {}, file.name || ""));

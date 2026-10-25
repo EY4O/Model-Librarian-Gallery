@@ -23,8 +23,10 @@ A Windows app for large libraries of AI generations, photos and illustrations: i
 - ✂️ **Light editing** — flip, rotate and crop in the viewer (PNG, JPEG, WebP, HEIC, TIFF); the prompt, workflow and EXIF the file carries are kept, Save as copy keeps the original, or replace it (undoable).
 - 📷 **Photos and illustrations too** — each library is for AI generations, photos, illustrations, or any mix of them (with a sidebar shortcut to each part, and `is:ai`, `is:photo`, `is:illustration`), and shows what fits: iPhone HEIC (in a photo library, Live Photos are one item that plays on hover), TIFF, BMP, AVIF, AVI and 3GP alongside PNG, JPEG, WebP and MP4; grouped by the day each photo was taken (EXIF, a video's recorded date, or the date in its name), and People in a photo library (People & characters, each marked, in a mixed one).
 - ▶️ **Videos play on hover** — rest on a video's tile and it plays there, silently.
+- 🖌️ **Artists and sources** — in a library for illustrations, who made each picture and where it's from: read from the file, the name a site gives its downloads (Pixiv, Danbooru, DeviantArt, X and more), where Windows says it was downloaded from, or an `Artists\<name>` folder; or typed by you, for one picture or many. An **Artists** list with a page for each (their other names on other sites make them one artist), and `artist:`, `site:`, `has:source` in the search.
+- 📥 **New downloads** — the pictures in your Downloads folder (and any others you add) are offered for filing, with who made them and where they're from: one click moves one into the library, into the folder their other pictures are in; one the library has already is marked, to delete instead.
 - 🧬 **What made it** — the prompt, settings, checkpoint, LoRAs with their strengths and the ComfyUI workflow of every image and video (ComfyUI, A1111 / Forge, NovelAI, InvokeAI and more), read by Model Librarian's own readers.
-- 🔍 **Search that knows generations** — words in prompts and names, plus `model:`, `lora:`, `tag:`, `character:`, `color:`, `rating:4`, `is:fav`, `is:photo`, `seed:`, `after:` and more, suggested as you type.
+- 🔍 **Search that knows generations** — words in prompts and names, plus `model:`, `lora:`, `tag:`, `character:`, `artist:`, `color:`, `rating:4`, `is:fav`, `is:photo`, `seed:`, `after:` and more, suggested as you type.
 - 🎨 **Colour sets** — each picture's main colours as swatches, like Eagle's: hover for the value and share, click to copy it or find every picture with that colour (`color:#140d17`, `color:red`).
 - 📊 **Statistics** — what you made with over time (by model family, in Model Librarian's colours), the colours you make most, your most used checkpoints, LoRAs, prompt parts and settings, and the models you have but never use.
 - 👤 **Characters and People** — a name plus its LoRA, trigger words or tags finds every image it's in; anything uncertain waits in **To review** for a yes or no. In a photo library they're People, tagged by hand.
@@ -110,6 +112,16 @@ The first start sets up the app's own Python in `.venv`; later starts open strai
 - Thumbnails are small WebP files kept by fingerprint, made in the background, newest first. Videos get a poster frame from ffmpeg.
 - The index is one SQLite file, backed up daily (the last 7 kept). Your files' own data can always be read again from them; your ratings, tags, albums and characters live in the index. This PC's library keeps it in `%LOCALAPPDATA%\Model Librarian Gallery`.
 - Hidden and system folders, and Eagle libraries (`*.library`), are never indexed.
+</details>
+
+<details>
+<summary><b>🖌️ Artists, sources and new downloads</b></summary>
+
+- In a library for illustrations, each picture's artist and source are looked for in the background: in the file's own details (EXIF Artist, XMP creator, a PNG's Author, a source link written in it), in where Windows says it was downloaded from (the page, kept with the file), in the name a site gives its downloads (`12345678_p0.png` from Pixiv, `…_drawn_by_<artist>__<md5>` from Danbooru, `…_by_<artist>_d1a2b3c` from DeviantArt, Twitter Media Downloader's names, yande.re, Konachan, Fur Affinity), in gallery-dl's `<site>\<artist>` folders, and in an `Artists\<name>` folder of yours. AI generations are left out.
+- What you type wins, then the file, then where it was downloaded from, then its name, then its folder; the details panel says where each came from and what else was found. **Set the artist** (the selection's More menu) does many at once, with Undo.
+- Every artist found is in the **Artists** list, with a page: the sites their pictures came from, the folders they're kept in, their links. Give an artist another name (their handle on another site) and the artist with that name becomes the same one.
+- **New downloads** lists the pictures and videos in your Downloads folder (and others set in Settings; only the folders themselves, not the ones inside), newest first. **File** moves one into the library, into the folder its artist's other pictures are in, or an `Artists\<name>` folder of their own; **Elsewhere** picks the folder and the artist. A download the library has already (the same bytes) is marked, to send to the Recycle Bin instead. **Dismiss** stops offering one. Filing is in History, and Undo puts the download back.
+- Bringing in an Eagle library records each item's source link as its source too.
 </details>
 
 <details>
