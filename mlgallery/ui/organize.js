@@ -104,7 +104,7 @@ export function artistDialog(selection, count) {
 export async function albumDialog(selection, count, { remove = null } = {}) {
   const { albums } = await api("/albums").catch(() => ({ albums: [] }));
   const input = h("input", { type: "text", placeholder: "An album, or a new name", "aria-label": "Album", autocomplete: "off", value: remove || "" });
-  const list = h("datalist", { id: "bulk-albums" }, albums.map((a) => h("option", { value: a.name })));
+  const list = h("datalist", { id: "bulk-albums" }, albums.filter((a) => a.query == null).map((a) => h("option", { value: a.name })));  // (a smart album's search decides)
   input.setAttribute("list", list.id);
   const mode = h("select", { "aria-label": "Add or take out" }, h("option", { value: "album" }, "Add to"), h("option", { value: "unalbum", selected: !!remove }, "Take out of"));
   dialog(`Album for ${what(count)}`, h("div.field-row", {}, mode, h("div", {}, input, list)), {
@@ -116,6 +116,60 @@ export async function albumDialog(selection, count, { remove = null } = {}) {
       done(r, `${mode.value === "album" ? "Added" : "Took"} ${plural(r.count, "file")} ${mode.value === "album" ? "to" : "out of"} ${name}.`);
     },
   });
+}
+
+// ---------------------------------------------------------------- rename by a pattern
+const TOKENS = [["{artist}", "who made it"], ["{date}", "when it was taken (else modified)"], ["{n}", "1, 2, 3…"], ["{name}", "its name now"],
+  ["{model}", "its checkpoint"], ["{seed}", "its seed"], ["{lora}", "its first LoRA"]];
+
+export function renameDialog(selection, count, { pattern = "{date}_{n}" } = {}) {
+  const input = h("input", { type: "text", value: pattern, "aria-label": "Pattern", spellcheck: false, autocomplete: "off" });
+  const start = h("input", { type: "number", value: 1, min: 0, "aria-label": "Start at", style: { width: "80px" } });
+  const chips = h("div.rn-tokens", {}, TOKENS.map(([t, what]) => h("button.btn.small", { type: "button", title: what, onclick: () => {
+    const at = input.selectionStart ?? input.value.length;
+    input.value = input.value.slice(0, at) + t + input.value.slice(input.selectionEnd ?? at);
+    input.focus();
+    check();
+  } }, t)));
+  const plan = h("div.plan", { "aria-live": "polite" });
+  let timer = null, last = null;
+  const check = () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      try {
+        const p = await api("/ops/rename/plan", { method: "POST", body: { selection, pattern: input.value, start: Number(start.value) || 0 } });
+        last = p;
+        if (p.limited) p.preview.push({ from: "…", to: `only the first ${p.count.toLocaleString()} at once` });
+        plan.replaceChildren(
+          p.preview.length ? h("ol.rn-preview", {}, p.preview.map((x) => h("li", {}, h("span.rn-from", {}, x.from), " → ", h("span.rn-to", {}, x.to)))) : null,
+          h("p.note", {}, p.count ? `${plural(p.count, "file")} will be renamed${p.count > p.preview.length ? ` (the first ${p.preview.length} shown)` : ""}.` : "Nothing would change."),
+          p.same ? h("p.note", {}, `${plural(p.same, "file has", "files have")} that name already.`) : null,
+          p.unavailable ? h("p.note", {}, `${plural(p.unavailable, "file isn't", "files aren't")} reachable right now.`) : null);
+        go.disabled = !p.count;
+      } catch (e) {
+        last = null;
+        plan.replaceChildren(h("p.form-err", {}, e.message));
+        go.disabled = true;
+      }
+    }, 200);
+  };
+  input.addEventListener("input", check);
+  start.addEventListener("input", check);
+  const { go } = dialog(`Rename ${what(count)}`, h("div", {},
+    h("label.field-row", {}, h("span", {}, "Pattern"), input),
+    chips,
+    h("label.field-row", {}, h("span", {}, "Start {n} at"), start),
+    plan,
+    h("p.note", {}, "Each keeps its folder and its extension; a name that's taken gets a number, like \"name (2)\". What a file doesn't have is left out. You can undo it.")), {
+    submitLabel: "Rename", wide: true,
+    submit: async () => {
+      if (!last || !last.count) return false;
+      const r = await api("/ops/rename", { method: "POST", body: { selection, pattern: input.value, start: Number(start.value) || 0 } });
+      done(r, `Renamed ${plural(r.renamed, "file")}${r.failed.length ? `; ${r.failed.length} couldn't be` : ""}.`);
+    },
+  });
+  go.disabled = true;
+  check();
 }
 
 // ---------------------------------------------------------------- move
@@ -239,6 +293,12 @@ export async function renderDuplicates(root) {
       draw();
       return h("section.st-card", { "aria-label": `${g.kind} group` },
         h("div.st-card-head", {}, h("h2", {}, g.kind === "copies" ? "Copies of one file" : "The same picture, saved more than once"),
+          h("button.btn.small", { type: "button", title: "Look at them side by side, at full size", onclick: () => compare(g, keep, async (k) => {
+            keep = k;
+            draw();
+            const others = g.files.filter((_, i) => i !== keep).map((f) => f.id);
+            if (await trashFiles(others)) renderDuplicates(root);
+          }) }, "Compare"),
           h("button.btn.small", { type: "button", onclick: async () => {
             const others = g.files.filter((_, i) => i !== keep).map((f) => f.id);
             if (await trashFiles(others)) renderDuplicates(root);
@@ -246,6 +306,64 @@ export async function renderDuplicates(root) {
         files);
     }),
   ]);
+}
+
+// the copies of one picture side by side (four at a time, ← → for more), filling the window: fitted, or at actual size
+// (scrolling together); pick the one to keep
+const SIDE = 4;
+function compare(g, keep, choose) {
+  let actual = false, page = Math.floor(keep / SIDE);
+  const pages = Math.ceil(g.files.length / SIDE);
+  const pane = (f, i) => {
+    const img = h("img", { src: media("file", f.id), alt: f.name, draggable: false });
+    const scroller = h("div.cmp-pic", {}, img);
+    scroller.addEventListener("scroll", () => {  // at actual size, the others follow: the same spot in each
+      if (!actual || scroller._following) return;
+      for (const p of panes) if (p.scroller !== scroller) { p.scroller._following = true; p.scroller.scrollTop = scroller.scrollTop; p.scroller.scrollLeft = scroller.scrollLeft; requestAnimationFrame(() => { p.scroller._following = false; }); }
+    });
+    return { scroller, el: h("figure.cmp-one" + (i === keep ? ".keep" : ""), {}, scroller,
+      h("figcaption", {},
+        h("span.cmp-name", { title: `${f.folder_path}\\${f.rel}` }, f.name),
+        h("span.cmp-sub", {}, [f.width ? `${f.width} × ${f.height}` : "", fmtSize(f.size), fmtDate(f.mtime), f.meta === 1 ? "generation data" : ""].filter(Boolean).join(" · ")),
+        f.rating ? stars(f.rating, { size: 10 }) : null,
+        h("button.btn.small" + (i === keep ? ".primary" : ""), { type: "button", onclick: () => { shut(); choose(i); } }, icon("check"), "Keep this one"))) };
+  };
+  let panes = [];
+  const row = h("div.cmp-row");
+  const where = h("span.cmp-where");
+  const prev = h("button.icon-btn", { type: "button", "aria-label": "The ones before", title: "The ones before (←)", onclick: () => turn(-1) }, "‹");
+  const next = h("button.icon-btn", { type: "button", "aria-label": "The next ones", title: "The next ones (→)", onclick: () => turn(1) }, "›");
+  const turn = (d) => {
+    page = Math.max(0, Math.min(pages - 1, page + d));
+    const from = page * SIDE, shown = g.files.slice(from, from + SIDE);
+    panes = shown.map((f, k) => pane(f, from + k));
+    row.style.gridTemplateColumns = `repeat(${shown.length}, minmax(0, 1fr))`;
+    row.replaceChildren(...panes.map((p) => p.el));
+    where.textContent = pages > 1 ? `${from + 1}–${from + shown.length} of ${g.files.length}` : "";
+    prev.hidden = next.hidden = pages < 2;
+    prev.disabled = page === 0;
+    next.disabled = page === pages - 1;
+  };
+  const size = h("button.btn.small", { type: "button", onclick: () => {
+    actual = !actual;
+    box.classList.toggle("actual", actual);
+    size.textContent = actual ? "Fit to the window" : "Actual size";
+  } }, "Actual size");
+  const shut = () => { box.remove(); document.removeEventListener("keydown", esc, true); };
+  const esc = (e) => {
+    if (e.key === "Escape") shut();
+    else if (e.key === "ArrowLeft" || e.key === "ArrowRight") turn(e.key === "ArrowLeft" ? -1 : 1);
+    else return;
+    e.stopPropagation();
+    e.preventDefault();
+  };
+  const box = h("div.cmp", { role: "dialog", "aria-label": "Compare" },
+    h("header.cmp-bar", {}, h("span", {}, `${plural(g.files.length, "copy", "copies")}: keep one, the rest go to the Trash`), h("span.spacer"), prev, where, next, size,
+      h("button.icon-btn", { type: "button", "aria-label": "Close", title: "Close (Esc)", onclick: shut }, icon("remove"))),
+    row);
+  turn(0);
+  document.addEventListener("keydown", esc, true);
+  document.body.append(box);
 }
 
 // ---------------------------------------------------------------- History

@@ -89,6 +89,16 @@ def overlapping(existing: list[str], path: str) -> str | None:
     return None
 
 
+def _there(root: str, rel: str, skip_eagle: bool) -> bool:
+    """Is this file there now, where a walk would find it? (One the walk missed because it came back while the walk went
+    on, from the Trash say, is; one in a folder the walk leaves out, an Eagle library or the portable Gallery, isn't.)"""
+    parts = rel.split("/")
+    for k in range(1, len(parts)):
+        if skip_dir(parts[k - 1], skip_eagle) or os.path.isfile(os.path.join(root, *parts[:k], APP_EXE)):
+            return False
+    return os.path.isfile(os.path.join(root, *parts))
+
+
 def scan_folder(db, folder: dict, *, skip_eagle: bool = True, progress=None, stop=None) -> dict:
     """Bring the index up to date with one folder. -> counts. `progress(dict)` is called now and then;
     `stop()` returning True ends the walk early (then nothing is marked missing)."""
@@ -124,12 +134,14 @@ def scan_folder(db, folder: dict, *, skip_eagle: bool = True, progress=None, sto
     _flush(db, now, touched, pending)
 
     stopped = bool(stop and stop())
+    # (the files it didn't find, looked for on the disk once more first, outside the write lock: a folder of thousands deleted takes a while)
+    back = set() if stopped else {r["id"] for rel, r in known.items() if rel not in seen and r["missing"] in (0, PAIRED) and _there(root, rel, skip_eagle)}
     with db.write() as c:
         if not stopped:  # only a full walk can say a file is gone
-            gone = [r["id"] for rel, r in known.items() if rel not in seen and r["missing"] in (0, PAIRED)]
+            gone = [r["id"] for rel, r in known.items() if rel not in seen and r["missing"] in (0, PAIRED) and r["id"] not in back]
             # a file found elsewhere in this scan (a move) has its new folder/rel already: leave it
             for i in gone:
-                # (and one put in the Trash while the walk went on isn't gone: it's in the Trash)
+                # (and one put in the Trash while the walk went on isn't gone: it's in the Trash; nor is one put back meanwhile)
                 cur = c.execute("SELECT folder_id, rel, missing FROM files WHERE id=?", (i,)).fetchone()
                 if cur and cur["folder_id"] == fid and cur["rel"] not in seen and cur["missing"] in (0, PAIRED):
                     c.execute("UPDATE files SET missing=1 WHERE id=?", (i,))

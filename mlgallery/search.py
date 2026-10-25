@@ -3,7 +3,7 @@
     lighthouse dusk            words in the file name, prompt, models or tags (each as a prefix: "light" finds "lighthouse")
     "paper cut"                a phrase
     model:krea  lora:aurelia   a checkpoint / LoRA whose name contains this (quote names with spaces: lora:"paper cut")
-    tag:dusk                   a tag (exactly)          album:coast   an album (exactly)
+    tag:dusk                   a tag (exactly)          album:coast   an album (exactly; a smart album: its search)
     character:aurelia          a character (by name or alias; matched or confirmed)   review:aurelia  is:review
     artist:"some name"  site:pixiv   an artist (by name or another name), and where a picture is from (credits.py)
     rating:4  rating:>=3  rating:2-4  rating:0 (unrated)
@@ -122,7 +122,15 @@ def _in(values: list) -> str:
     return ",".join("?" * len(values))
 
 
-def build(q: str, db=None) -> tuple[list[str], list]:
+def _smart(db, name: str) -> str | None:
+    """A smart album's search (None: an album of files you put in it, or none of that name)."""
+    def load():
+        with db.read() as c:
+            return {r[0].lower(): r[1] for r in c.execute("SELECT name, query FROM albums WHERE query IS NOT NULL")}
+    return db.cached(("smart-albums",), load).get(name.strip().lower())
+
+
+def build(q: str, db=None, _depth: int = 0) -> tuple[list[str], list]:
     """-> (SQL conditions on files f, their parameters). Each filter picks its files with one indexed lookup
     (f.id IN (...)), never a lookup per file, so they stay quick on a big library. Without `db` (tests of the
     grammar) names aren't resolved and matching uses LIKE."""
@@ -131,7 +139,7 @@ def build(q: str, db=None) -> tuple[list[str], list]:
         if key and not v.strip():
             continue  # "lora:" being typed: no filter yet
         if key and key.startswith("-"):  # -tag:x: everything but what tag:x picks
-            w, a = build(f'{key[1:]}:"{v}"' if " " in v else f"{key[1:]}:{v}", db)
+            w, a = build(f'{key[1:]}:"{v}"' if " " in v else f"{key[1:]}:{v}", db, _depth)
             if w:
                 where.append(f"NOT ({' AND '.join(w)})")
                 args += a
@@ -196,8 +204,8 @@ def build(q: str, db=None) -> tuple[list[str], list]:
                 continue
             where.append(f"f.artist_id IS NOT NULL AND f.artist_id IN ({_in(ids)})")  # (so -artist:x keeps the files with no artist)
             args += ids
-        elif key == "site":
-            where.append("f.id IN (SELECT file_id FROM credits WHERE site = ?)")
+        elif key == "site":  # where it's from as its details show it (not a source you, or a better one, overrode)
+            where.append("f.site IS NOT NULL AND f.site = ?")  # (so -site:x keeps the files with no source)
             args.append(_site(v))
         elif key in ("color", "colour"):
             from . import colors
@@ -207,6 +215,13 @@ def build(q: str, db=None) -> tuple[list[str], list]:
                 continue
             where.append(cond[0])
             args += cond[1]
+        elif key == "album" and db is not None and _smart(db, v) is not None:
+            if _depth > 4:  # a smart album whose search names itself (or one that does): nothing, rather than forever
+                where.append("0")
+                continue
+            w, a = build(_smart(db, v), db, _depth + 1)
+            where.append("(" + " AND ".join(w) + ")" if w else "1")
+            args += a
         elif key == "album":
             where.append("f.id IN (SELECT af.file_id FROM album_files af JOIN albums al ON al.id=af.album_id WHERE af.removed=0 AND al.name = ? COLLATE NOCASE)")
             args.append(v)
@@ -251,7 +266,7 @@ def build(q: str, db=None) -> tuple[list[str], list]:
                     "tags": "f.id IN (SELECT file_id FROM file_tags WHERE removed = 0)",
                     "lora": "f.id IN (SELECT file_id FROM uses WHERE kind = 'lora')",
                     "artist": "f.artist_id IS NOT NULL",
-                    "source": "f.id IN (SELECT file_id FROM credits WHERE COALESCE(url, '') <> '' OR COALESCE(site, '') <> '')"}.get(v)
+                    "source": "f.site IS NOT NULL"}.get(v)
             if cond:
                 where.append(cond if key == "has" else f"NOT ({cond})")
             else:

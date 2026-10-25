@@ -69,6 +69,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
           <span class="label">To review</span><span class="badge-n" id="review-count" hidden></span>
         </button>
+        <button type="button" class="nav-item" id="view-swipe" title="Swipe review: the pictures you're looking at (a folder, an album, a search; else all of them), one at a time. A or left: delete; D or right: keep; W or up: favourite">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="4" width="11" height="15" rx="2" transform="rotate(8 12.5 11.5)"/><rect x="5" y="5" width="11" height="15" rx="2"/></svg>
+          <span class="label">Swipe</span>
+        </button>
         <button type="button" class="nav-item" id="view-artists" title="Who made your pictures, and where they're from" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 0 0 0 18c1.2 0 1.8-.9 1.8-1.8 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10" cy="7" r="1.2"/><circle cx="15" cy="7" r="1.2"/></svg>
           <span class="label">Artists</span><span class="n" id="artist-count"></span>
@@ -123,6 +127,9 @@
           </button>
           <div class="suggest" id="suggest" role="listbox" hidden></div>
         </div>
+        <button type="button" class="icon-btn" id="save-search" aria-label="Save this search as a smart album" title="Save this search as a smart album" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 5 5M10.5 8v5M8 10.5h5"/></svg>
+        </button>
         <button type="button" class="btn" id="empty-trash" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Empty the Trash</button>
         <button type="button" class="icon-btn toggle" id="f-fav" aria-pressed="false" aria-label="Favourites only" title="Favourites only">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5s-7.5-4.6-9.5-9.3C1.2 7.9 3.3 4.5 6.8 4.5c2 0 3.4 1.1 4.2 2.3h2c.8-1.2 2.2-2.3 4.2-2.3 3.5 0 5.6 3.4 4.3 6.7-2 4.7-9.5 9.3-9.5 9.3Z"/></svg>
@@ -173,6 +180,9 @@
       </div>
       <div class="spacer"></div>
       <div class="v-edit" id="v-edit" hidden></div>
+      <button type="button" class="icon-btn" id="v-play" aria-pressed="false" title="Slideshow (P); right-click for its pace" aria-label="Slideshow">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="i-play" d="M8 5v14l11-7z"/><path class="i-pause" d="M8 5v14M16 5v14"/></svg>
+      </button>
       <div class="v-tools" id="v-tools" role="toolbar" aria-label="Picture">
         <button type="button" class="icon-btn" id="v-flip" title="Flip horizontally (Shift+F)" aria-label="Flip horizontally"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M9 7 4 17h5ZM15 7l5 10h-5Z"/></svg></button>
         <button type="button" class="icon-btn" id="v-rotate" title="Rotate (Shift+R)" aria-label="Rotate"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="9" width="11" height="11" rx="1.5"/><path d="M9 5h5a5 5 0 0 1 5 5v1M16.5 8.5 19 11l2.5-2.5"/></svg></button>

@@ -244,6 +244,32 @@ def to_front(hwnd: int) -> bool:
     return False
 
 
+POWERSHELL_ID = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe"
+TOAST = ("[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null;"
+         " [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null;"
+         " $x = New-Object Windows.Data.Xml.Dom.XmlDocument; $x.LoadXml($env:MLG_TOAST);"
+         " [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($env:MLG_AUMID).Show([Windows.UI.Notifications.ToastNotification]::new($x))")
+
+
+def notify(title: str, text: str) -> bool:
+    """A Windows notification, under the Gallery's name when its Start menu shortcut is there (it carries the app id),
+    else PowerShell's. Nothing to install: Windows' own notifications, through PowerShell."""
+    import subprocess
+    from xml.sax.saxutils import escape
+    from . import APP_NAME
+    from .shortcut import start_menu
+    if os.name != "nt":
+        return False
+    aumid = APP_ID if os.path.isfile(os.path.join(start_menu(), f"{APP_NAME}.lnk")) else POWERSHELL_ID
+    xml = f'<toast><visual><binding template="ToastGeneric"><text>{escape(title)}</text><text>{escape(text)}</text></binding></visual></toast>'
+    try:  # (the words go in through the environment: nothing in them is read as a command)
+        subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-Command", TOAST], env={**os.environ, "MLG_TOAST": xml, "MLG_AUMID": aumid},
+                         creationflags=0x08000000, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError:
+        return False
+
+
 def read_shortcut(lnk: str) -> str | None:
     with _Com():
         link, persist, store = _open_link(os.path.abspath(lnk), False)

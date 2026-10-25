@@ -150,6 +150,27 @@ class Inbox:
     def count(self) -> int:
         return len(self.entries())
 
+    def notify_loop(self, stop, every: float = 15) -> None:
+        """New pictures in a downloads folder: a Windows notification (when it's on, in a library for illustrations).
+        Only ones that arrive while the Gallery is open: what was there when it started was there already."""
+        seen = None
+        while not stop.wait(every):
+            try:
+                if not self.lib.settings.get("inbox_notify") or "illustrations" not in (self.lib.kinds or []):
+                    seen = None
+                    continue
+                es = self.entries()
+                keys = {e["key"] for e in es}
+                if seen is not None:
+                    new = [e for e in es if e["key"] not in seen]
+                    if new:
+                        from .winshell import notify
+                        notify(f"{len(new)} new download{'s' if len(new) != 1 else ''} to file" if len(new) > 1 else "A new download to file",
+                               ", ".join(e["name"] for e in new[:3]) + ("…" if len(new) > 3 else "") + " (New downloads, in the Gallery)")
+                seen = keys
+            except Exception:
+                continue
+
     def _about(self, e: dict) -> dict:
         """What's known about one download: its fingerprint, and who made it / where it's from."""
         k = (e["path"], e["size"], e["mtime"])

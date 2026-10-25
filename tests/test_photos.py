@@ -530,3 +530,24 @@ def test_two_indexers_finding_one_new_file_at_once(lib, media, monkeypatch):
     with lib.db.read() as c:
         assert c.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 1
         assert c.execute("SELECT COUNT(*) FROM search").fetchone()[0] == 1
+
+
+def test_a_rescan_doesnt_take_a_file_put_back_meanwhile_for_gone(lib, media, monkeypatch):
+    # the walk passes while it's in the Trash; it's back before the rescan ends: still there, not missing
+    image(media / "a.png", seed=1)
+    image(media / "b.png", seed=2)
+    f = folder(lib, media)
+    scan.scan_folder(lib.db, f)
+    walk = scan.walk
+    monkeypatch.setattr(scan, "walk", lambda root, skip_eagle=True: (x for x in walk(root, skip_eagle) if not x[1].endswith("a.png")))
+    scan.scan_folder(lib.db, f)
+    with lib.db.read() as c:
+        assert c.execute("SELECT missing FROM files WHERE name='a.png'").fetchone()[0] == 0
+    # one in a folder the walk leaves out (an Eagle library) is gone from the library, as before
+    lib2_media = media / "Art.library"
+    image(lib2_media / "c.png", seed=3)
+    monkeypatch.setattr(scan, "walk", walk)
+    scan.scan_folder(lib.db, f, skip_eagle=False)
+    scan.scan_folder(lib.db, f, skip_eagle=True)
+    with lib.db.read() as c:
+        assert c.execute("SELECT missing FROM files WHERE name='c.png'").fetchone()[0] == 1

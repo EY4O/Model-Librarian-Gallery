@@ -12,7 +12,7 @@ const FROM = { file: "from the file", download: "from where it was downloaded", 
 
 export async function renderDownloads(root, ctx) {
   const sel = new Set();
-  let data = null, shown = PAGE;
+  let data = null, shown = PAGE, focusAt = -1;  // (the card the keyboard was on, found again after a redraw)
   const where = (s, folders) => {
     if (!s) return "";
     const f = folders.find((x) => x.id === s.folder);
@@ -83,7 +83,7 @@ export async function renderDownloads(root, ctx) {
     const toggle = () => { if (sel.has(it.key)) sel.delete(it.key); else sel.add(it.key); draw(); };
     const img = h("img", { src: pic("thumb", it.key), alt: it.name, loading: "lazy", decoding: "async" });
     img.onerror = () => img.replaceWith(h("span.dl-none", {}, it.kind === "video" ? "Video" : it.name.split(".").pop().toUpperCase()));
-    return h("article.dl-card" + (picked ? ".picked" : ""), { "aria-label": it.name },
+    return h("article.dl-card" + (picked ? ".picked" : ""), { "aria-label": it.name, tabIndex: 0 },
       h("label.dl-pick", { title: "Select" }, h("input", { type: "checkbox", checked: picked, onchange: toggle, "aria-label": `Select ${it.name}` })),
       h("button.dl-thumb", { type: "button", title: "Look closer", onclick: () => preview({ name: it.name, kind: it.kind, src: pic("file", it.key) }) }, img),
       h("div.dl-body", {},
@@ -100,6 +100,32 @@ export async function renderDownloads(root, ctx) {
         h("button.btn.small", { type: "button", onclick: () => fileDialog([it.key]) }, it.have ? "File anyway…" : "Elsewhere…"),
         h("button.icon-btn.small", { type: "button", "aria-label": `Dismiss ${it.name}`, title: "Dismiss: don't offer it again", onclick: () => dismiss([it.key]) }, icon("remove"))));
   };
+  // the keyboard: arrows between the cards, and a letter for what to do with the one you're on
+  const grid = (cards) => {
+    const el = h("div.dl-grid", {}, cards);
+    el.addEventListener("pointerdown", () => { focusAt = -1; });  // (the mouse again: a redraw doesn't pull the page back to a card)
+    el.addEventListener("keydown", (e) => {
+      const at = e.target.closest?.(".dl-card");
+      if (!at || e.ctrlKey || e.altKey || e.metaKey || e.target.closest("button, input") && e.target !== at) return;
+      const list = [...el.querySelectorAll(".dl-card")], i = list.indexOf(at), it = data.items[i];
+      const cols = Math.max(1, list.filter((c) => c.offsetTop === list[0].offsetTop).length);
+      const go = (j) => { if (list[j]) { list[j].focus(); focusAt = j; } };
+      const k = e.key.toLowerCase();
+      if (e.key === "ArrowRight") go(i + 1);
+      else if (e.key === "ArrowLeft") go(i - 1);
+      else if (e.key === "ArrowDown") go(i + cols);
+      else if (e.key === "ArrowUp") go(i - cols);
+      else if (k === "f") { focusAt = i; if (it.have) recycle([it.key]); else if (it.suggest) fileThem([it.key], it.suggest); }
+      else if (k === "e") { focusAt = i; fileDialog([it.key]); }
+      else if (k === "d") { focusAt = i; dismiss([it.key]); }
+      else if (k === "x") { focusAt = i; if (sel.has(it.key)) sel.delete(it.key); else sel.add(it.key); draw(); }
+      else if (e.key === " " || e.key === "Enter") preview({ name: it.name, kind: it.kind, src: pic("file", it.key) });
+      else return;
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    return el;
+  };
   const draw = () => {
     const folders = data.folders.filter((f) => f.ok);
     const keys = [...sel];
@@ -111,17 +137,21 @@ export async function renderDownloads(root, ctx) {
       h("button.icon-btn", { type: "button", "aria-label": "Clear the selection", onclick: () => { sel.clear(); draw(); } }, icon("remove"))) : null;
     root.replaceChildren(...[
       h("header.st-head", {}, h("div", {}, h("h1", {}, "New downloads"),
-        h("p.st-none", {}, folders.length ? `In ${folders.map((f) => baseName(f.path)).join(", ")}` : "No downloads folder set: Settings, New downloads.")),
+        h("p.st-none", {}, folders.length ? `In ${folders.map((f) => baseName(f.path)).join(", ")}` : "No downloads folder set: Settings, New downloads."),
+        data.items.length ? h("p.dl-keys", {}, h("kbd", {}, "← → ↑ ↓"), " move ", h("kbd", {}, "F"), " file ", h("kbd", {}, "E"), " elsewhere ",
+          h("kbd", {}, "D"), " dismiss ", h("kbd", {}, "X"), " select ", h("kbd", {}, "Space"), " look closer") : null),
         h("div.row", {},
           data.items.length ? h("button.btn", { type: "button", onclick: () => { data.items.forEach((it) => sel.add(it.key)); draw(); } }, `Select all ${data.items.length.toLocaleString()}`) : null,
           h("button.btn", { type: "button", onclick: () => ctx.show("settings") }, "Folders…"))),
       bar,
-      data.items.length ? h("div.dl-grid", {}, data.items.map(card))
+      data.items.length ? grid(data.items.map(card))
         : h("div.c-empty", {}, h("h2", {}, "Nothing new"),
           h("p", {}, "Pictures and videos you download show up here, with who made them and where they're from when that's known, to file into the library in one click."),
           h("button.link", { type: "button", onclick: async () => { const r = await api("/inbox/undismiss", { method: "POST" }).catch(() => ({ back: 0 })); toast(r.back ? `${plural(r.back, "dismissed download")} offered again.` : "None were dismissed."); ctx.counts(); load(); } }, "Offer the dismissed ones again")),
       data.total > data.items.length ? h("div.row.center", {}, h("button.btn", { type: "button", onclick: () => { shown += PAGE * 2; load(); } }, `Show more (${(data.total - data.items.length).toLocaleString()} more)`)) : null,
     ].filter(Boolean));
+    const cards = root.querySelectorAll(".dl-card");  // back on the card you were on (or the one that took its place)
+    if (focusAt >= 0 && cards.length) cards[Math.min(focusAt, cards.length - 1)].focus({ preventScroll: false });
   };
   await load();
 }

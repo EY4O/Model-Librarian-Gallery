@@ -349,4 +349,4 @@ export function fmtLeft(s) {
 }
 
 // the long job of yours under way, if its dialog is hidden: what the status bar shows it with, and how to open it again
-export const job = { reopen: null };
+export const job = { reopen: null, following: false, told: false };

@@ -123,14 +123,16 @@ def _move_file(src: str, dst: str) -> None:
         raise
 
 
-def _relocate(db, fid: int, folder: int, rel: str) -> bool:
-    """The index follows a file to folder/rel; False (and nothing changed) if another record holds that name."""
+def _relocate(db, fid: int, folder: int, rel: str, recredit: bool = True) -> bool:
+    """The index follows a file to folder/rel; False (and nothing changed) if another record holds that name.
+    recredit: its artist is looked for again (another folder may say who made it); a rename doesn't: what its old name
+    said (a Pixiv post, a Danbooru artist) is still where it's from."""
     from .metadata import refresh_search
     name = rel.split("/")[-1]
     try:
         with db.write() as c:
-            # (its artist is looked for again: another folder or name may say who made it)
-            c.execute("UPDATE files SET folder_id=?, rel=?, name=?, ext=?, credited=0 WHERE id=?", (folder, rel, name, os.path.splitext(name)[1].lower(), fid))
+            c.execute(f"UPDATE files SET folder_id=?, rel=?, name=?, ext=?{', credited=0' if recredit else ''} WHERE id=?",
+                      (folder, rel, name, os.path.splitext(name)[1].lower(), fid))
             refresh_search(c, fid)
     except sqlite3.IntegrityError:
         return False
@@ -532,6 +534,9 @@ def undo(db, op_id: int) -> dict:
     elif kind == "file":
         from . import downloads
         result = downloads.undo(db, data)
+    elif kind == "rename":
+        from . import rename
+        result = rename.undo(db, data)
     else:
         raise OpError("Emptying the Trash can't be undone here: the files are in the Windows Recycle Bin.")
     with db.write() as c:

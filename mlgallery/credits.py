@@ -424,7 +424,8 @@ def resolve(c, ids, names: dict | None = None) -> None:
         rows = c.execute("SELECT src, artist, site, post, url FROM credits WHERE file_id=?", (fid,)).fetchall()
         w = winner(rows)
         aid = artist_for(c, w["artist"], names) if w["artist"] else None  # (one you typed goes with its last picture too, unless you edit them)
-        c.execute("UPDATE files SET artist_id=? WHERE id=? AND artist_id IS NOT ?", (aid, fid, aid))
+        site = w["site"] or None
+        c.execute("UPDATE files SET artist_id=?, site=? WHERE id=? AND (artist_id IS NOT ? OR site IS NOT ?)", (aid, site, fid, aid, site))
 
 
 def prune(c) -> int:

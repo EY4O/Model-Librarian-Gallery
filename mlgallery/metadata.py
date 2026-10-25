@@ -221,8 +221,9 @@ def store(c, file_id: int, got: dict | None) -> int:
                 c.execute("INSERT OR IGNORE INTO file_tags (file_id, tag_id, source) VALUES (?,?, 'workflow')", (file_id, tag_id(c, t)))
             for a in info.get("albums") or []:
                 from .bulk import album_id
-                c.execute("INSERT OR IGNORE INTO album_files (album_id, file_id, source, added) VALUES (?, ?, 'workflow', ?)",
-                          (album_id(c, a), file_id, time.time()))
+                aid = album_id(c, a)
+                if aid:  # (none for a smart album of that name: its search decides)
+                    c.execute("INSERT OR IGNORE INTO album_files (album_id, file_id, source, added) VALUES (?, ?, 'workflow', ?)", (aid, file_id, time.time()))
             m = c.execute("SELECT source FROM marks WHERE file_id=?", (file_id,)).fetchone()
             if (not m or m["source"] == "workflow") and (info.get("rating") or info.get("favourite")):  # yours win
                 c.execute("INSERT OR REPLACE INTO marks (file_id, rating, favorite, source, updated) VALUES (?,?,?, 'workflow', ?)",

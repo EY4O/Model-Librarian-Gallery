@@ -401,6 +401,8 @@ def bring_marks(db, source_db: str, name: str) -> dict:
                 c.execute("UPDATE albums SET icon=?, color=?, cover=? WHERE id=?", (a["icon"], a["color"], cover(a["cover"]), aid))
                 rec["new_albums"].append(aid)
             aid = bulk.album_id(c, a["name"])
+            if not aid:
+                continue  # a smart album of that name here: its search decides what's in it
             for fid in here(a["file_id"]):
                 cur = c.execute("SELECT source, removed FROM album_files WHERE album_id=? AND file_id=?", (aid, fid)).fetchone()
                 if cur and (cur["source"], cur["removed"]) == (a["source"], a["removed"]):

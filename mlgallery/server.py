@@ -127,6 +127,13 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_post("/api/eagle/read", eagle_read)
     r.add_get("/api/eagle/read", eagle_read_status)
     r.add_post("/api/eagle/stop", eagle_stop)
+    r.add_post("/api/eagle/seen", eagle_seen)
+    r.add_get("/api/sort", sort_queue)
+    r.add_post("/api/sort", sort_decide)
+    r.add_post("/api/sort/undo", sort_undo)
+    r.add_post("/api/sort/reset", sort_reset)
+    r.add_post("/api/ops/rename/plan", rename_plan)
+    r.add_post("/api/ops/rename", rename_apply)
     r.add_post("/api/eagle/apply", eagle_apply)
     r.add_get("/api/eagle/folders", eagle_folders)
     r.add_post("/api/eagle/send", eagle_send)
@@ -541,10 +548,12 @@ async def inbox_folders(request):
 
 
 async def inbox_folders_set(request):
-    """{add: path} / {remove: path} / {downloads: true|false}"""
+    """{add: path} / {remove: path} / {downloads: true|false} / {notify: true|false}"""
     b = await _body(request)
     inbox = _lib(request).inbox
     try:
+        if isinstance(b.get("notify"), bool):  # a Windows notification when new ones arrive
+            await asyncio.to_thread(_lib(request).settings.update, {"inbox_notify": b["notify"]})
         if isinstance(b.get("downloads"), bool):
             await asyncio.to_thread(_lib(request).settings.update, {"inbox_downloads": b["downloads"]})
             inbox._listing = None
@@ -621,6 +630,42 @@ async def open_url(request):
     return web.json_response({"ok": True})
 
 
+# ---------------------------------------------------------------- swipe review, and renaming by a pattern
+async def sort_queue(request):
+    q = request.query
+    try:
+        return web.json_response(await asyncio.to_thread(_lib(request).sort_queue, seed=int(q.get("seed", 0)), limit=int(q.get("limit", 40)), **_view(q)))
+    except ValueError:
+        return _err("bad seed or limit")
+
+
+async def sort_decide(request):
+    b = await _body(request)
+    try:
+        return web.json_response(await asyncio.to_thread(_lib(request).sort_decide, int(b.get("file") or 0), str(b.get("verdict")), b.get("value")))
+    except KeyError:
+        return _err("not found", 404)
+    except (TypeError, ValueError) as ex:
+        return _err(str(ex))
+
+
+async def sort_undo(request):
+    b = await _body(request)
+    try:
+        await asyncio.to_thread(_lib(request).sort_undo, int(b.get("file") or 0), b.get("was"))
+    except (TypeError, ValueError):
+        return _err("file: an id")
+    return web.json_response({"ok": True})
+
+
+async def sort_reset(request):
+    b = await _body(request)
+    v = b.get("view") if isinstance(b.get("view"), dict) else {}
+    n = await asyncio.to_thread(_lib(request).sort_reset, str(v.get("sort") or "newest"), int(v["folder"]) if str(v.get("folder", "")).isdigit() else None,
+                                v.get("kind") or None, str(v.get("q") or "")[:2000])
+    return web.json_response({"reset": n})
+
+
 def _op(fn):
     """Run a file operation; its refusals come back as a message."""
     async def handler(request):
@@ -632,6 +677,20 @@ def _op(fn):
         except KeyError:
             return _err("not found", 404)
     return handler
+
+
+@_op
+async def rename_plan(request, b):
+    from . import rename
+    p = await asyncio.to_thread(rename.plan, _lib(request).db, await _ids(request, b), str(b.get("pattern") or ""), int(b.get("start", 1) or 0))
+    p.pop("items")
+    return p
+
+
+@_op
+async def rename_apply(request, b):
+    from . import rename
+    return await asyncio.to_thread(rename.apply, _lib(request).db, await _ids(request, b), str(b.get("pattern") or ""), int(b.get("start", 1) or 0))
 
 
 async def select(request):
@@ -710,8 +769,10 @@ async def albums(request):
 
 async def album_create(request):
     b = await _body(request)
-    try:
-        return web.json_response(await asyncio.to_thread(_lib(request).album_save, None, b.get("name")))
+    try:  # {name, query}: with a query, a smart album (the search, kept)
+        if b.get("query") is not None and not isinstance(b.get("query"), str):
+            raise ValueError("query: a search")
+        return web.json_response(await asyncio.to_thread(_lib(request).album_save, None, b.get("name"), query=b.get("query")))
     except ValueError as ex:
         return _err(str(ex), 422)
 
@@ -724,7 +785,9 @@ async def album_update(request):
         cur = next((a for a in await asyncio.to_thread(lib.albums) if a["id"] == aid), None)
         if not cur:
             return _err("not found", 404)
-        kw = {"cover": b["cover"]} if "cover" in b else {}
+        kw = {k: b[k] for k in ("cover", "query") if k in b}
+        if kw.get("query") is not None and not isinstance(kw.get("query"), str):
+            raise ValueError("query: a search")
         return web.json_response(await asyncio.to_thread(lib.album_save, aid, b.get("name", cur["name"]), **kw))
     except KeyError:
         return _err("not found", 404)
@@ -860,8 +923,17 @@ async def eagle_stop(request):
     return web.json_response({"ok": True})
 
 
+async def eagle_seen(request):
+    """The end of a job told (its dialog showed it, or the status bar did): not told again."""
+    _EAGLE["seen"] = True
+    return web.json_response({"ok": True})
+
+
 def eagle_job() -> dict | None:
-    """The Eagle library being read or brought in, for the status bar (while its dialog is hidden)."""
+    """The Eagle library being read or brought in, for the status bar (while its dialog is hidden); once it's over,
+    how it ended, until that's been told (the window may have been reloaded meanwhile: the result isn't lost)."""
+    if _EAGLE.get("state") in ("done", "failed") and _EAGLE.get("ended") and not _EAGLE.get("seen"):
+        return {"state": _EAGLE["state"], "title": _EAGLE.get("ended"), "result": _EAGLE.get("result"), "error": _EAGLE.get("error")}
     if _EAGLE.get("state") not in ("reading", "applying"):
         return None
     return {k: _EAGLE.get(k) for k in ("state", "title", "done", "total", "bytes", "bytes_total", "stop")}
@@ -931,10 +1003,10 @@ async def eagle_apply(request):
                 lib.meta.nudge()
                 lib.db.user_change()
             _EAGLE.clear()
-            _EAGLE.update(state="done", result=result)
+            _EAGLE.update(state="done", result=result, ended=f"Brought in {plan['name']}")
         except Exception as ex:
             _EAGLE.clear()
-            _EAGLE.update(state="failed", error=str(ex)[:300])
+            _EAGLE.update(state="failed", error=str(ex)[:300], ended=f"Bringing in {plan['name']}")
     threading.Thread(target=run, name="eagle-import", daemon=True).start()
     return web.json_response({"state": "applying", "total": total})
 

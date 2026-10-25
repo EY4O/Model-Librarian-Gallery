@@ -98,6 +98,10 @@ function downloads(s, inbox, again) {
       f.ok ? null : h("span.st-none", {}, f.why),
       h("div.row", {}, h("button.btn.small", { type: "button", onclick: () => set({ remove: f.path }, `${baseName(f.path)} isn't offered any more.`) }, "Remove"))))) : null,
     inbox.some((f) => f.downloads && !f.ok) ? h("p.note", {}, inbox.find((f) => f.downloads).why) : null,
+    field("Notifications", h("label.check", { for: "set-inbox-notify" },
+      h("input", { type: "checkbox", id: "set-inbox-notify", checked: s.settings.inbox_notify,
+        onchange: (e) => set({ notify: e.target.checked }, e.target.checked ? "You'll get a Windows notification when new pictures arrive." : "No more notifications for new downloads.") }),
+      " Tell me when new pictures arrive"), "A Windows notification, while the Gallery is open. Under the Gallery's name once it's in the Start menu (Settings, The Gallery's data)."),
     field("Dismissed", h("button.btn.small", { type: "button", onclick: async () => {
       const r = await api("/inbox/undismiss", { method: "POST" }).catch((e) => { toast(e.message, true); return null; });
       if (r) toast(r.back ? `${plural(r.back, "dismissed download")} offered again.` : "None were dismissed.");
@@ -160,6 +164,8 @@ async function follow(title, note, line, stopping) {
     dlg.close();
     job.reopen = () => { job.reopen = null; dlg.showModal(); };
   };
+  job.following = true;
+  job.told = false;
   const dlg = h("dialog.dialog.follow", { "aria-label": title }, h("form", { method: "dialog", onsubmit: (e) => e.preventDefault() },
     h("h2", {}, title), status, bar, left, h("p.note", {}, note),
     h("div.row.end", {}, h("button.btn", { type: "button", onclick: hide }, "Keep using the Gallery"), stop)));
@@ -179,6 +185,9 @@ async function follow(title, note, line, stopping) {
     left.textContent = total && !st.stop ? fmtLeft(pace.update(done, total)) : "";
   }
   job.reopen = null;
+  job.told = st.state === "done" || st.state === "failed";  // (told here: a poll before the server hears so doesn't tell it again)
+  job.following = false;
+  if (st.state === "done" || st.state === "failed") api("/eagle/seen", { method: "POST" }).catch(() => {});  // told here: not again by the status bar
   if (dlg.open) dlg.close();
   dlg.remove();
   return st;

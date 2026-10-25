@@ -252,6 +252,16 @@ MIGRATIONS = [
     CREATE INDEX files_credited_todo ON files (credited, mtime DESC) WHERE credited = 0;
     CREATE TABLE inbox_dismissed (path TEXT PRIMARY KEY COLLATE NOCASE, size INTEGER NOT NULL, mtime REAL NOT NULL);  -- a download not to offer again
     """,
+    # 12: smart albums (a search kept), the pictures a swipe review kept, and each file's source as it's shown (the one that wins)
+    """
+    ALTER TABLE albums ADD COLUMN query TEXT;  -- a smart album: this search, always up to date (NULL: the files you put in it)
+    CREATE TABLE reviewed (file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE, at REAL NOT NULL);  -- kept in a swipe review
+    ALTER TABLE files ADD COLUMN site TEXT;    -- where it's from, as its details show it (credits.py; site: and has:source go by it)
+    UPDATE files SET site = (SELECT NULLIF(cr.site, '') FROM credits cr WHERE cr.file_id = files.id AND (cr.url IS NOT NULL OR cr.site IS NOT NULL)
+                             ORDER BY CASE cr.src WHEN 'user' THEN 0 WHEN 'file' THEN 1 WHEN 'download' THEN 2 WHEN 'name' THEN 3 ELSE 4 END LIMIT 1)
+     WHERE id IN (SELECT file_id FROM credits);
+    CREATE INDEX files_site ON files (site) WHERE site IS NOT NULL;
+    """,
 ]
 CACHE = 256  # cached query results kept (each tied to the index as it was)
 

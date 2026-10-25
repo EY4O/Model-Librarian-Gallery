@@ -130,6 +130,7 @@ class Library:
         self.credits.start()
         self.watcher.start()
         threading.Thread(target=self._scan_loop, name="scanner", daemon=True).start()
+        threading.Thread(target=self.inbox.notify_loop, args=(self._stop,), name="inbox-notify", daemon=True).start()
         if rescan:
             self.scan_all()
 
@@ -431,9 +432,9 @@ class Library:
                 return [dict(r) for r in c.execute(
                     "SELECT a.name, COUNT(f.id) AS n FROM artists a LEFT JOIN files f ON f.artist_id=a.id AND f.missing=0"
                     " WHERE a.name LIKE ? ESCAPE '\\' GROUP BY a.id HAVING n > 0 OR a.auto = 0 ORDER BY n DESC, a.name COLLATE NOCASE LIMIT ?", (like, n))]
-            if field == "site":
+            if field == "site":  # (the source each picture's details show: what site: finds)
                 return [{"name": r[0], "n": r[1]} for r in c.execute(
-                    "SELECT site, COUNT(DISTINCT file_id) n FROM credits WHERE COALESCE(site, '') <> '' AND site LIKE ? ESCAPE '\\'"
+                    "SELECT site, COUNT(*) n FROM files WHERE site IS NOT NULL AND missing=0 AND site LIKE ? ESCAPE '\\'"
                     " GROUP BY site ORDER BY n DESC LIMIT ?", (like, n))]
             if field in ("sampler", "scheduler"):
                 return [dict(r) for r in c.execute(
@@ -633,8 +634,8 @@ class Library:
             counts = dict(c.execute("SELECT artist_id, COUNT(*) FROM files WHERE artist_id IS NOT NULL AND missing=0 GROUP BY artist_id").fetchall())
             sites: dict[int, list] = {}
             for aid, site, n in c.execute(
-                    "SELECT f.artist_id, cr.site, COUNT(DISTINCT f.id) n FROM files f JOIN credits cr ON cr.file_id=f.id"
-                    " WHERE f.artist_id IS NOT NULL AND f.missing=0 AND COALESCE(cr.site, '') <> '' GROUP BY f.artist_id, cr.site ORDER BY n DESC"):
+                    "SELECT artist_id, site, COUNT(*) n FROM files WHERE artist_id IS NOT NULL AND missing=0 AND site IS NOT NULL"
+                    " GROUP BY artist_id, site ORDER BY n DESC"):
                 sites.setdefault(aid, []).append(site)
             latest = dict(c.execute("SELECT artist_id, id FROM (SELECT artist_id, id, ROW_NUMBER() OVER (PARTITION BY artist_id ORDER BY shot DESC, id DESC) k"
                                     " FROM files WHERE artist_id IS NOT NULL AND missing=0) WHERE k=1").fetchall())
@@ -664,8 +665,7 @@ class Library:
                 out["cover"] = r[0] if r else None
             out["first"], out["last"] = c.execute(f"SELECT MIN(f.shot), MAX(f.shot) {live}", (aid,)).fetchone()
             out["sites"] = [{"site": r[0], "name": credits.SITES.get(r[0], r[0]), "n": r[1]} for r in c.execute(
-                f"SELECT cr.site, COUNT(DISTINCT f.id) n {live.replace('FROM files f', 'FROM files f JOIN credits cr ON cr.file_id=f.id', 1)}"
-                " AND COALESCE(cr.site, '') <> '' GROUP BY cr.site ORDER BY n DESC", (aid,))]
+                f"SELECT f.site, COUNT(*) n {live} AND f.site IS NOT NULL GROUP BY f.site ORDER BY n DESC", (aid,))]
             # the folders their pictures are kept in, most first (where a new one of theirs is filed)
             out["folders"] = [{"folder": r[0], "sub": r[1], "path": os.path.join(r[2], *r[1].split("/")) if r[1] else r[2], "n": r[3]} for r in c.execute(
                 f"SELECT f.folder_id, CASE WHEN instr(f.rel, '/') THEN substr(f.rel, 1, length(f.rel) - length(f.name) - 1) ELSE '' END sub, d.path, COUNT(*) n {live}"
@@ -747,6 +747,56 @@ class Library:
         self.db.user_change()
         return out
 
+    # ---------------------------------------------------------------- swipe review
+    def sort_queue(self, sort: str = "newest", folder: int | None = None, kind: str | None = None, q: str = "", seed: int = 0,
+                   limit: int = 40) -> dict:
+        """The pictures of a view not reviewed yet, in its order (the next few), and how many there are, and were."""
+        sort = sort if sort in SORTS and sort not in ("trashed",) else "newest"
+        frm, args = self._from(folder, kind, q, sort)
+        order_args = [int(seed) % 4294967291] if sort == "random" else []
+        with self.db.read() as c:
+            left = c.execute(f"SELECT COUNT(*) FROM {frm} AND f.id NOT IN (SELECT file_id FROM reviewed)", args).fetchone()[0]
+            done = c.execute(f"SELECT COUNT(*) FROM {frm} AND f.id IN (SELECT file_id FROM reviewed)", args).fetchone()[0]
+            ids = [r[0] for r in c.execute(f"SELECT f.id FROM {frm} AND f.id NOT IN (SELECT file_id FROM reviewed) ORDER BY {SORTS[sort]} LIMIT ?",
+                                           [*args, *order_args, max(1, min(200, int(limit)))])]
+            rows = {r["id"]: dict(r) for r in c.execute(f"SELECT {ITEM} FROM files f LEFT JOIN marks m ON m.file_id=f.id WHERE f.id IN ({','.join('?' * len(ids))})", ids)} if ids else {}
+        return {"left": left, "reviewed": done, "items": [rows[i] for i in ids if i in rows]}
+
+    def sort_decide(self, file_id: int, verdict: str, value=None) -> dict:
+        """keep (it stays), fav (kept, a favourite), rate (kept, rated value) -> what it was, to undo it."""
+        if verdict not in ("keep", "fav", "rate"):
+            raise ValueError("keep, fav or rate")
+        fid = int(file_id)
+        with self.db.read() as c:
+            m = c.execute("SELECT rating, favorite, source, updated FROM marks WHERE file_id=?", (fid,)).fetchone()
+        was = dict(m) if m else None
+        if verdict == "fav":
+            self.mark(fid, favorite=True)
+        elif verdict == "rate":
+            self.mark(fid, rating=int(value or 0))
+        with self.db.write() as c:
+            if not c.execute("SELECT 1 FROM files WHERE id=?", (fid,)).fetchone():
+                raise KeyError(fid)
+            c.execute("INSERT OR REPLACE INTO reviewed (file_id, at) VALUES (?, ?)", (fid, time.time()))
+        return {"was": was}
+
+    def sort_undo(self, file_id: int, was) -> None:
+        """A keep taken back: not reviewed any more, its rating and favourite as they were."""
+        fid = int(file_id)
+        with self.db.write() as c:
+            c.execute("DELETE FROM reviewed WHERE file_id=?", (fid,))
+            if was is None:
+                c.execute("DELETE FROM marks WHERE file_id=?", (fid,))
+            elif isinstance(was, dict):
+                c.execute("INSERT OR REPLACE INTO marks (file_id, rating, favorite, source, updated) VALUES (?,?,?,?,?)",
+                          (fid, was.get("rating"), int(bool(was.get("favorite"))), was.get("source") or "user", was.get("updated") or time.time()))
+
+    def sort_reset(self, sort: str = "newest", folder: int | None = None, kind: str | None = None, q: str = "") -> int:
+        """Review a view again from the start: its pictures aren't reviewed any more."""
+        frm, args = self._from(folder, kind, q, sort if sort in SORTS else "newest")
+        with self.db.write() as c:
+            return c.execute(f"DELETE FROM reviewed WHERE file_id IN (SELECT f.id FROM {frm})", args).rowcount
+
     def viewed(self, file_id: int) -> None:
         with self.db.write() as c:
             if c.execute("SELECT 1 FROM files WHERE id=?", (int(file_id),)).fetchone():
@@ -781,14 +831,31 @@ class Library:
 
     def albums(self) -> list[dict]:
         with self.db.read() as c:
-            return [dict(r) for r in c.execute(
-                "SELECT al.id, al.name, al.cover, al.icon, al.color, (SELECT COUNT(*) FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0) n,"
+            out = [dict(r) for r in c.execute(
+                "SELECT al.id, al.name, al.cover, al.icon, al.color, al.query, (SELECT COUNT(*) FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0) n,"
                 " (SELECT af.file_id FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0 ORDER BY f.shot DESC LIMIT 1) latest"
                 " FROM albums al ORDER BY al.name COLLATE NOCASE")]
+        for a in out:  # a smart album holds what its search finds (counted ahead, like Statistics: the last count at once,
+            if a["query"] is not None:  # and stale: True while it's counted again, for the sidebar to ask once more)
+                (a["n"], a["latest"]), fresh = self.db.cached_lazy(("smart", a["query"]), lambda q=a["query"]: self._smart_count(q))
+                a["stale"] = not fresh
+        return out
 
-    def album_save(self, aid: int | None, name: str, cover=...) -> dict:
+    def _smart_count(self, q: str) -> tuple[int, int | None]:
+        try:
+            got = self.files(limit=1, q=q)
+            return got["total"], (got["items"][0]["id"] if got["items"] else None)
+        except Exception:  # a search that can't be made (old, or odd): empty, not an error for the whole list
+            return 0, None
+
+    def album_save(self, aid: int | None, name: str, cover=..., query=...) -> dict:
+        """Make (aid None) or change an album; query: a smart album's search (None: an album of files you put in it)."""
         if not isinstance(name or "", str):
             raise ValueError("An album's name is text.")
+        if query is not ... and query is not None:
+            query = str(query).strip()[:2000]
+            if not query:
+                raise ValueError("A smart album needs a search.")
         name = (name or "").strip()[:100]
         if not name:
             raise ValueError("An album needs a name.")
@@ -802,6 +869,10 @@ class Library:
                 raise KeyError(aid)
             if cover is not ...:
                 c.execute("UPDATE albums SET cover=? WHERE id=?", (int(cover) if cover else None, aid))
+            if query is not ...:
+                c.execute("UPDATE albums SET query=? WHERE id=?", (query, aid))
+                if query is not None:
+                    c.execute("DELETE FROM album_files WHERE album_id=?", (aid,))  # what it holds is what the search finds
         return next(a for a in self.albums() if a["id"] == aid)
 
     def album_delete(self, aid: int) -> bool:

@@ -24,6 +24,7 @@ DEFAULTS = {
     "updates": False,           # ask GitHub once a day whether there's a newer Gallery (nothing else is sent)
     "inbox_downloads": True,    # New downloads: offer the pictures in Windows' Downloads folder for filing (a library for illustrations)
     "inbox_folders": [],        # ... and these folders' too (a Discord or Telegram save folder, say)
+    "inbox_notify": False,      # a Windows notification when new pictures arrive there
 }
 
 

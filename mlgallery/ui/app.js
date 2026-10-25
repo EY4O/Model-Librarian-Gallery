@@ -7,6 +7,7 @@ import { $, KINDS, LOOK_COLORS, LOOK_ICONS, Pace, TOKEN, aiOnly, api, fmtLeft, h
 import { renderStats } from "./stats.js";
 import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
 import { creditEditor, renderArtist, renderArtists } from "./artists.js";
+import { swipeReview } from "./swipe.js";
 import { renderDownloads } from "./downloads.js";
 import * as org from "./organize.js";
 import { renderSettings } from "./settings.js";
@@ -82,6 +83,7 @@ function removeChips(test) {
 
 let searchTimer = null;
 function searchChanged({ now = true } = {}) {
+  $("save-search").hidden = !queryString();
   renderChips();
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => reload(true), now ? 0 : 260);
@@ -202,7 +204,7 @@ function renderSide() {
     const sel = state.view === "album" && state.album === a.name;
     return h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", onclick: () => selectView("album", a.name), "aria-current": sel ? "true" : null,
       oncontextmenu: (e) => { e.preventDefault(); lookMenu(e.currentTarget, "album", a); } },
-      lookIcon(a, "album"), h("span.label", {}, a.name), h("span.n", {}, a.n.toLocaleString()),
+      lookIcon(a, a.query != null ? "filter" : "album"), h("span.label", { title: a.query != null ? `Smart album: ${a.query}` : "" }, a.name), h("span.n", {}, a.n.toLocaleString()),
       h("span.acts", {},
         h("span.act", { role: "button", tabIndex: 0, title: "Rename", "aria-label": `Rename ${a.name}`, onkeydown: actKey,
           onclick: async (e) => { e.stopPropagation(); renameAlbum(a); } }, icon("tag")),
@@ -212,11 +214,14 @@ function renderSide() {
   renderToolbar();
 }
 
+let albumsAgain = null;
 async function loadAlbums() {
   try {
     state.albums = (await api("/albums")).albums;
     if (state.view === "album" && !state.albums.some((a) => a.name === state.album)) selectView("all");
     renderSide();
+    clearTimeout(albumsAgain);  // a smart album being counted again: its new count in a moment
+    if (state.albums.some((a) => a.stale)) albumsAgain = setTimeout(loadAlbums, 1500);
   } catch {}
 }
 
@@ -239,7 +244,8 @@ function lookMenu(anchor, kind, it) {
     null,
     ...(kind === "folder"
       ? [{ label: "Look again", icon: "rescan", onclick: () => rescan(it) }, { label: "Show in Explorer", icon: "explorer", onclick: () => api(`/folders/${it.id}/reveal`, { method: "POST" }).catch((e) => toast(e.message, true)) }]
-      : [{ label: "Rename…", icon: "pen", onclick: () => renameAlbum(it) }]),
+      : [{ label: "Rename…", icon: "pen", onclick: () => renameAlbum(it) },
+        it.query != null ? { label: "Change its search…", icon: "filter", onclick: () => smartSearch(it) } : null].filter(Boolean)),
     null,
     kind === "folder" ? { label: `Remove ${name} from the library`, icon: "remove", danger: true, onclick: () => removeFolder(it) }
       : { label: "Delete the album", icon: "remove", danger: true, onclick: () => deleteAlbum(it) },
@@ -260,6 +266,31 @@ function iconPicker(anchor, it, pick) {
     h("div.menu-label", {}, "Emoji"),
     h("div.row.tight", {}, emoji, h("button.btn.small", { type: "button", onclick: () => emoji.value.trim() && choose(`e:${emoji.value.trim()}`) }, "Use it"),
       h("span.spacer"), h("button.btn.small", { type: "button", onclick: () => choose(null) }, "Default"))) }], { cls: "look-menu" });
+}
+
+// a search kept as a smart album: in Albums, always up to date
+async function saveSearch() {
+  const q = queryString();
+  if (!q) return;
+  const name = await askText("Save this search as a smart album", "Name", "", { ok: "Save", placeholder: q.slice(0, 40) });
+  if (!name) return;
+  try {
+    const a = await api("/albums", { method: "POST", body: { name, query: q } });
+    clearSearch();
+    await loadAlbums();
+    selectView("album", a.name);
+    toast(`${a.name} holds what "${q}" finds, as it changes.`);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function smartSearch(a) {
+  const q = await askText(`The search ${a.name} keeps`, "Search", a.query, { ok: "Save" });
+  if (q == null || q === a.query) return;
+  try {
+    await api(`/albums/${a.id}`, { method: "POST", body: { query: q } });
+    await loadAlbums();
+    if (state.view === "album" && state.album === a.name) reload(true);
+  } catch (e) { toast(e.message, true); }
 }
 
 async function newAlbum() {
@@ -362,6 +393,7 @@ function renderToolbar() {
   $("view-title").title = f ? f.path : "";
   $("empty-trash").hidden = state.view !== "trash" || !state.total;
   $("shuffle").hidden = state.view !== "random";
+  $("save-search").hidden = !queryString();
   // the View button says what's not the default, so a filter is never hidden in a menu
   const sorted = ["random", "recent", "trash"].includes(state.view) || state.sort === "newest" ? "" : SORT_NAMES[state.sort];
   const kind = state.kind ? KIND_NAMES[state.kind] : "";
@@ -659,6 +691,7 @@ function selChanged() {
     null,
     { label: "Not favourites", icon: "heart", onclick: () => bulk("favorite", false) },
     state.view === "album" ? null : { label: "Take out of an album…", icon: "album", onclick: () => org.albumDialog(sel, n, { remove: "" }) },
+    { label: "Rename…", icon: "pen", onclick: () => org.renameDialog(sel, n, { pattern: has("illustrations") ? "{artist}_{date}_{n}" : aiOnly() ? "{model}_{seed}" : "{date}_{n}" }) },
   ].filter((x, i, a) => x !== null || (i > 0 && a[i - 1] !== null))) }, icon("more"));
   bar.replaceChildren(
     h("span.sel-n", {}, state.selAll ? `All ${n.toLocaleString()} selected` : `${n.toLocaleString()} selected`),
@@ -671,7 +704,7 @@ function selChanged() {
       rateBtn,
       h("button.btn", { type: "button", onclick: () => bulk("favorite", true), title: "Favourite (F)" }, icon("heart"), "Favourite"),
       h("button.btn", { type: "button", onclick: () => org.tagDialog(sel, n) }, icon("tag"), "Tag…"),
-      state.view === "album" ? h("button.btn", { type: "button", onclick: () => bulkAlbumOut() }, icon("album"), "Take out")
+      state.view === "album" && !smartAlbum() ? h("button.btn", { type: "button", onclick: () => bulkAlbumOut() }, icon("album"), "Take out")
         : h("button.btn", { type: "button", onclick: () => org.albumDialog(sel, n) }, icon("album"), "Album…"),
       moreBtn,
       h("span.bar-sep", { "aria-hidden": "true" }),
@@ -679,6 +712,8 @@ function selChanged() {
     ]),
     h("button.icon-btn", { type: "button", "aria-label": "Clear the selection", title: "Clear the selection (Esc)", onclick: clearSel }, icon("remove")));
 }
+
+const smartAlbum = () => state.view === "album" && state.albums.find((a) => a.name === state.album)?.query != null;
 
 async function bulk(action, value) {
   try {
@@ -1155,7 +1190,7 @@ function albumEditor(info) {
   const wrap = h("div.tags");
   const render = (list) => {
     const known = new Set(list.map((a) => a.id));
-    const others = state.albums.filter((a) => !known.has(a.id));
+    const others = state.albums.filter((a) => !known.has(a.id) && a.query == null);
     const pick = h("select.pick", { "aria-label": "Add to an album" }, h("option", { value: "" }, "+ Album"),
       others.map((a) => h("option", { value: a.name }, a.name)), h("option", { value: "\u0000new" }, "New album…"));
     pick.onchange = async () => {
@@ -1539,6 +1574,25 @@ function closeViewer() {
   else if (i >= 0) focusTile(i);
 }
 
+// the slideshow: the view, one after another at the pace you chose, round again at the end; P (or the button) stops it
+let slides = null;
+function slideshow(on) {
+  clearInterval(slides);
+  slides = on ? setInterval(() => {
+    if (vz.edited || $("viewer").hidden) return slideshow(false);
+    const i = viewing + 1 < state.total ? viewing + 1 : 0;
+    if (itemAt(i)) openViewer(i);
+    else loadPage(Math.floor(i / PAGE)).then(() => openViewer(i));
+  }, store.get("slidePace", 4) * 1000) : null;
+  $("v-play").setAttribute("aria-pressed", String(!!slides));
+  $("v-play").title = slides ? "Stop the slideshow (P)" : "Slideshow (P); right-click for its pace";
+  if (on) toast(`Slideshow: every ${store.get("slidePace", 4)} seconds. P stops it.`);
+}
+function paceMenu(anchor) {
+  menu(anchor, [2, 4, 8, 15].map((s) => ({ label: `Every ${s} seconds`, icon: store.get("slidePace", 4) === s ? "check" : null,
+    onclick: () => { store.set("slidePace", s); if (slides) slideshow(true); } })));
+}
+
 function step(d) {
   if (vz.edited) return toast("Save or cancel the edit first.");
   const i = viewing + d;
@@ -1637,6 +1691,15 @@ async function poll() {
     if (st.kinds === null && !askedKind) { askedKind = true; askKind(); }
     const busy = st.scanning || st.queued || st.thumbs_pending || st.meta_pending || st.job;
     $("status-dot").classList.toggle("busy", !!(busy || st.dates_pending || st.credits_pending));
+    if (st.job && (st.job.state === "done" || st.job.state === "failed")) {  // ended while its dialog wasn't open (hidden, or the window reloaded)
+      if (!job.following && !job.told) {
+        const r = st.job.result;
+        if (st.job.state === "failed") toast(`${st.job.title} didn't finish: ${st.job.error || "something went wrong"}.`, true);
+        else org.done(r, `${st.job.title}: ${plural(r.files || 0, "file")} got their tags, albums and ratings${r.copied ? `; ${plural(r.copied, "file")} copied in` : ""}${r.stopped ? `; stopped, ${plural(r.stopped, "item")} not copied` : ""}.`);
+        api("/eagle/seen", { method: "POST" }).catch(() => {});
+      }
+      st.job = null;
+    }
     const line = statusLine(st);
     $("status").textContent = line.text;
     $("status").classList.toggle("job", !!(line.job && job.reopen));
@@ -1689,6 +1752,18 @@ $("empty-trash").onclick = () => org.emptyTrash(null, state.total);
 $("view-characters").onclick = () => selectView("characters");
 $("view-review").onclick = () => selectView("review");
 $("view-artists").onclick = () => selectView("artists");
+$("save-search").onclick = saveSearch;
+// Swipe (in the sidebar): the pictures you're looking at, one at a time; on another screen (or the Trash), all of them
+$("view-swipe").onclick = () => {
+  const grid = !isPage() && state.view !== "trash";
+  const view = grid ? { sort: sortFor() === "viewed" ? "newest" : sortFor(), folder: state.folder, kind: state.kind, q: viewQuery(), seed: state.seed } : { sort: "newest", q: "" };
+  const title = grid ? $("view-title").textContent + (queryString() ? ` · ${queryString()}` : "") : "All";
+  swipeReview(view, title,
+    { onClose: (t) => { if (t.kept || t.deleted) { org.done(null, `Swipe review: ${plural(t.kept, "kept", "kept")}, ${plural(t.deleted, "deleted", "deleted")}.`); } } });
+};
+$("v-play").onclick = () => slideshow(!slides);
+$("v-panel").addEventListener("focusin", () => { if (slides) slideshow(false); });  // (the next picture would wipe what you're typing)
+$("v-play").oncontextmenu = (e) => { e.preventDefault(); paceMenu(e.currentTarget); };
 $("view-downloads").onclick = () => selectView("downloads");
 $("shuffle").onclick = () => selectView("random");
 $("side-hide").onclick = () => setSide(true);
@@ -1820,7 +1895,8 @@ function showHelp() {
   if (document.querySelector("dialog.help")) return;
   const keys = [["Grid", [["← → ↑ ↓", "move between files"], ["Enter or Space", "open"], ["Ctrl+click, Shift+click", "select"], ["Ctrl+A", "select everything in view"],
     ["Delete", "move to the Trash"], ["Ctrl+Z", "undo the last change"], ["/ or Ctrl+F", "search"], ["Ctrl+B", "hide or show the sidebar"]]],
-    ["Viewer", [["← →", "previous, next"], ["1 – 5, 0", "rate (again: clear)"], ["F", "favourite"], ["I", "details panel"], ["Delete", "move to the Trash"], ["Esc", "back"]]],
+    ["Viewer", [["← →", "previous, next"], ["1 – 5, 0", "rate (again: clear)"], ["F", "favourite"], ["P", "slideshow (right-click its button: the pace)"], ["I", "details panel"], ["Delete", "move to the Trash"], ["Esc", "back"]]],
+    ["Swipe", [["A or ←", "delete (to the Trash)"], ["D or →", "keep"], ["W or ↑", "favourite and keep"], ["1 – 5", "rate and keep"], ["Z", "take the last one back"]]],
     ["To review", [["Y / N", "yes, it's them / no"], ["← →", "next card"]]]];
   const words = [["lighthouse dusk", "words in the prompt, name, models or tags"], ['"paper cut"', "a phrase"], ["model:  lora:  vae:", "a model by (part of) its name"],
     ["lora:aurelia@0.6-0.8", "a LoRA at that strength (strength: any LoRA)"], ["tag:  album:  character:", "your tags, albums, characters"],
@@ -1844,7 +1920,8 @@ function showHelp() {
 document.addEventListener("keydown", (e) => {
   const inField = e.target.closest?.("input, select, textarea");
   if (e.key === "?" && !inField && !document.querySelector("dialog[open]")) { e.preventDefault(); showHelp(); return; }
-  if (document.querySelector("dialog[open], .preview, .menu")) return;
+  if (slides && !$("viewer").hidden && !(e.key.toLowerCase() === "p" && !inField) && e.key !== " ") slideshow(false);  // anything else you do stops it (typing a tag too)
+  if (document.querySelector("dialog[open], .preview, .menu, .swipe, .cmp")) return;  // (an overlay has the keys)
   if (!$("viewer").hidden && !inField && viewerKey(e)) { e.preventDefault(); return; }
   if (e.ctrlKey && ["=", "+", "-", "0"].includes(e.key) && $("viewer").hidden && !isPage()) {
     e.preventDefault();
@@ -1885,6 +1962,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === "Escape") closeViewer();
+  else if (e.key.toLowerCase() === "p") slideshow(!slides);
   else if (e.key === "ArrowRight") step(1);
   else if (e.key === "ArrowLeft") step(-1);
   else if (e.key.toLowerCase() === "i") setDetails($("viewer").classList.contains("no-details"));

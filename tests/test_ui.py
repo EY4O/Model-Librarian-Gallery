@@ -34,6 +34,7 @@ def server(sample_dir, tmp_path_factory):
         with urllib.request.urlopen(req) as r:
             return json.load(r)
 
+    api.base, api.token = base, token  # (for a request api() doesn't make: DELETE)
     api("/library/kind", {"kind": "ai"})  # said once: these tests don't meet the question (test_empty_library does)
     api("/folders", {"path": sample_dir})
     deadline = time.time() + 90
@@ -476,6 +477,52 @@ def test_artists_and_new_downloads(server, tmp_path):
     assert os.path.isfile(got) and api("/files")["total"] == total
 
 
+def test_swipe_review_and_smart_albums(server):
+    url, api = server
+    total = api("/files")["total"]
+
+    async def go():
+        async with page(url) as e:
+            await e.wait("document.querySelectorAll('.tile').length > 4")
+            # Swipe (in the sidebar): D keeps, A deletes (to the Trash), Z takes the last one back
+            await e.click("#view-swipe")
+            await e.wait(f"document.querySelector('.sw-count')?.textContent.startsWith('{total} to go')")
+            await e.key("Enter")  # its keys are its own: the grid behind (and the sidebar's Swipe) get none
+            await e.key("Delete")
+            assert await e.js("document.querySelectorAll('.swipe').length") == 1 and api("/status")["trash"] == 0
+            first = await e.js("document.querySelector('.sw-card:not(.under) .sw-name').textContent")
+            await e.key("d")
+            await e.wait(f"document.querySelector('.sw-count')?.textContent === '{total - 1} to go · 1 reviewed'")
+            assert await e.js("document.querySelector('.sw-card:not(.under) .sw-name').textContent") != first
+            await e.key("a")
+            await e.wait("document.querySelector('.sw-count')?.textContent.includes('1 reviewed') && !document.querySelector('.sw-card.out-left')")
+            await e.wait(f"document.querySelector('.sw-count')?.textContent.startsWith('{total - 2} to go')")
+            assert api("/status")["trash"] == 1
+            await e.key("z")
+            await e.wait(f"document.querySelector('.sw-count')?.textContent.startsWith('{total - 1} to go')")
+            assert api("/status")["trash"] == 0
+            await e.key("Escape")
+            await e.wait("!document.querySelector('.swipe') && document.querySelector('.toast')?.textContent.startsWith('Swipe review: 1 kept')")
+            # a search kept as a smart album: in Albums with a search icon, holding what the search finds
+            await e.js("const q = document.getElementById('q'); q.value = 'lora:aurelia '; q.dispatchEvent(new Event('input')); true")
+            await e.wait("!document.getElementById('save-search').hidden")
+            want = api("/files?q=lora:aurelia")["total"]
+            await e.js("document.getElementById('save-search').click(); true")
+            await e.wait("document.querySelector('dialog[open] input')")
+            await e.js("const i = document.querySelector('dialog[open] input'); i.value = 'Aurelia picks'; i.form.requestSubmit(); true")
+            await e.wait(f"document.getElementById('view-title').textContent === 'Aurelia picks' && document.getElementById('count').textContent === '{want} items'")
+            assert await e.js("[...document.querySelectorAll('#albums .nav-item')].some(b => b.textContent.includes('Aurelia picks') && b.querySelector('[title^=\"Smart album\"]'))")
+            assert not await e.js("window.__errors.length")
+    try:
+        asyncio.run(go())
+    finally:  # the shared library as it was
+        api("/sort/reset", {"view": {"sort": "newest"}})
+        smart = next((a for a in api("/albums")["albums"] if a["name"] == "Aurelia picks"), None)
+        if smart:
+            req = urllib.request.Request(api.base + f"/api/albums/{smart['id']}", method="DELETE", headers={"X-MLG-Token": api.token})
+            urllib.request.urlopen(req).close()
+
+
 def test_organising(server):
     url, api = server
     total = api("/files")["total"]
@@ -508,15 +555,16 @@ def test_organising(server):
             await e.key("z", ctrlKey=True)
             await e.wait(f"document.getElementById('count').textContent === '{total} items'")
             assert api("/status")["trash"] == 0
-            # and from the Trash view: Put back
+            # and from the Trash view: Put back (waiting for the grid, not the Trash's badge: it may still say 1 from the first)
             await e.js("document.querySelector('.tile').focus(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key: 'Delete', bubbles: true})); true")
-            await e.wait("document.getElementById('trash-count').textContent === '1'", timeout=15)
+            await e.wait(f"document.getElementById('count').textContent === '{total - 1} items'")
             await e.click("#view-trash")
             await e.wait("document.getElementById('view-title').textContent === 'Trash' && document.querySelector('.tile')")
             assert not await e.js("document.getElementById('empty-trash').hidden")
             await e.js("document.querySelector('.tile').dispatchEvent(new MouseEvent('click', {bubbles: true, ctrlKey: true})); true")
             await e.js("[...document.querySelectorAll('#selbar .btn')].find(b => b.textContent.includes('Put back')).click(); true")
-            await e.wait("document.querySelector('#empty h2')?.textContent === 'The Trash is empty'")
+            await e.wait("document.querySelector('.toast')?.textContent.startsWith('Put back 1 file')")  # (only once the Gallery has done it)
+            await e.wait("!document.getElementById('empty').hidden && document.querySelector('#empty h2')?.textContent === 'The Trash is empty'")
             assert api("/files")["total"] == total
             # History lists all of it; Duplicates opens
             await e.click("#view-history")

@@ -10,12 +10,13 @@ MAX = fileops.MAX_ITEMS
 
 
 def album_id(c, name: str, create: bool = True) -> int | None:
+    """The album of that name (made if there's none); None for a smart album: its search decides what's in it."""
     name = str(name or "").strip()[:100]
     if not name:
         return None
-    r = c.execute("SELECT id FROM albums WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+    r = c.execute("SELECT id, query FROM albums WHERE name=? COLLATE NOCASE", (name,)).fetchone()
     if r:
-        return r[0]
+        return r[0] if r[1] is None else None
     return c.execute("INSERT INTO albums (name, created) VALUES (?,?)", (name, time.time())).lastrowid if create else None
 
 
@@ -72,6 +73,8 @@ def apply(db, ids, action: str, value=None) -> dict:
             c.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM file_tags)")
             op = fileops.record(c, "tags", f"{'Tagged' if action == 'tag' else 'Untagged'} {files} {', '.join(names)}", {"action": action, "items": data})
         elif action in ("album", "unalbum"):
+            if c.execute("SELECT 1 FROM albums WHERE name=? COLLATE NOCASE AND query IS NOT NULL", (str(value or "").strip(),)).fetchone():
+                raise fileops.OpError("That's a smart album: it holds what its search finds. Change its search instead.")
             aid = album_id(c, value, create=action == "album")
             if not aid:
                 raise fileops.OpError("Which album?")
