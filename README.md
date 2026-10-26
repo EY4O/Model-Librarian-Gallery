@@ -61,7 +61,7 @@ A Windows app for large libraries of AI generations, photos and illustrations: i
 
 1. From the [latest release](https://github.com/EY4O/Model-Librarian-Gallery/releases/latest), download **Model-Librarian-Gallery-&lt;version&gt;-portable.zip** (about 100 MB; it brings its own Python and ffmpeg).
 2. Unzip it somewhere outside OneDrive, such as `%LOCALAPPDATA%\Programs`.
-3. Start **Model Librarian Gallery.exe** in the unzipped folder. The program isn't signed, so Windows may ask first: choose **More info → Run anyway**.
+3. Start **Model Librarian Gallery.exe** in the unzipped folder. The program isn't signed yet, so Windows SmartScreen may warn you the first time: choose **More info → Run anyway**.
 
 Then use **Settings → Add the Gallery to the Start menu**, or right-click its taskbar button and choose **Pin to taskbar**. To keep it up to date, turn on **Settings → Updates**.
 

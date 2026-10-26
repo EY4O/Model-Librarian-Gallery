@@ -1,0 +1,66 @@
+name: Bug report
+description: Something in Model Librarian Gallery doesn't work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting it. Questions and ideas are welcome in [Discussions](https://github.com/EY4O/Model-Librarian-Gallery/discussions) instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Gallery version
+      placeholder: e.g. 1.8.1
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: e.g. Windows 11 24H2
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you run it
+      options:
+        - Portable folder from Releases
+        - Built the portable folder
+        - From the checkout (run.bat)
+    validations:
+      required: true
+  - type: input
+    id: size
+    attributes:
+      label: Roughly how many files in the library
+      placeholder: e.g. 20,000
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log
+      description: Anything the Gallery printed or showed when it went wrong.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, or anything that might help.
