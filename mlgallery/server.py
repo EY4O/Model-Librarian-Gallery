@@ -41,6 +41,7 @@ RELAUNCH = web.AppKey("relaunch", object)
 DAILY = web.AppKey("daily", object)
 DEVICES = web.AppKey("devices", remote.Devices)
 REMOTE = web.AppKey("remote", dict)        # Phone and tablet: {runner: the server's, for its site to join; site: that site, while it runs}
+DRAG = web.AppKey("drag_files", object)   # the window's own file drag (out to Explorer, the desktop, ComfyUI); None in a browser
 TRAY = web.AppKey("tray", object)          # the window's tray icon: shown again as Settings change (None: no window, or not Windows)
 
 
@@ -48,7 +49,7 @@ def _err(msg: str, status: int = 400) -> web.Response:
     return web.json_response({"error": msg}, status=status)
 
 
-def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=None, relaunch=None, tray=None) -> web.Application:
+def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=None, relaunch=None, tray=None, drag_files=None) -> web.Application:
     """The aiohttp application. `pick_folder()`: the window's folder dialog, when there is one; `quit()` closes the
     Gallery and `relaunch(args)` starts another one (switching libraries, Restart now), when it can."""
     token = token or secrets.token_urlsafe(24)
@@ -58,6 +59,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     app[DEVICES] = remote.Devices(lib.settings)
     app[REMOTE] = {"runner": None, "site": None}  # (filled in as it runs: aiohttp wants an app's own values set before it starts)
     app[TRAY] = tray
+    app[DRAG] = drag_files
     app.on_startup.append(_start_daily)
     app.on_cleanup.append(_stop_daily)
     r = app.router
@@ -169,6 +171,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_post("/api/libraries/forget", library_forget)
     r.add_post("/api/settings", settings_set)
     r.add_post("/api/watching", watching)
+    r.add_post("/api/drag", drag_out)
     r.add_get("/api/thumb/{id}", thumb)
     r.add_get("/api/file/{id}", original)
     return app
@@ -400,6 +403,7 @@ async def status(request):
     st["update"] = request.app[UPDATER].available()  # a newer Gallery on GitHub (only known once it's been asked)
     st["job"] = eagle_job()  # a long job of yours under way (an Eagle library brought in), for the status bar
     st["paused"] = _lib(request).watcher.paused  # (from the tray)
+    st["native_drag"] = bool(request.app[DRAG])  # (the window can drag files out: in a browser, it can't)
     return web.json_response(st)
 
 
@@ -432,6 +436,29 @@ async def add_folder(request):
     except ValueError as ex:
         return _err(str(ex), 422)
     return web.json_response({"folder": f})
+
+
+async def drag_out(request):
+    """{selection}: those files dragged out of the window, as files (Explorer copies them, ComfyUI opens them). It
+    answers once they're dropped (or the drag is called off): {effect, n}."""
+    fn = request.app[DRAG]
+    if not fn:
+        return _err("Dragging files out works in the Gallery's own window.", 501)
+    lib = _lib(request)
+    ids = (await _ids(request, await _body(request)))[:500]
+
+    def where():
+        with lib.db.read() as c:
+            off = {r[0] for r in c.execute("SELECT f.id FROM files f JOIN folders d ON d.id=f.folder_id WHERE d.online=0")}
+        return [p for p in (lib.file_path(i) for i in ids if i not in off) if p and os.path.isfile(p)]  # (a drive that's gone: never waited on)
+    paths = await asyncio.to_thread(where)
+    if not paths:
+        return _err("Those files aren't reachable right now.", 404)
+    try:
+        effect = await asyncio.to_thread(fn, paths)
+    except Exception as ex:  # (the window closing as it starts, say)
+        return _err(f"The window couldn't start the drag: {ex}", 409)
+    return web.json_response({"effect": effect, "n": len(paths)})
 
 
 async def pick(request):
@@ -1590,9 +1617,9 @@ async def original(request):
     return web.FileResponse(path, headers={"Cache-Control": "no-cache"})  # ranges supported: videos seek
 
 
-async def serve(lib: Library, port: int = 0, token: str | None = None, pick_folder=None, quit=None, relaunch=None, tray=None):
+async def serve(lib: Library, port: int = 0, token: str | None = None, pick_folder=None, quit=None, relaunch=None, tray=None, drag_files=None):
     """Start serving on 127.0.0.1 -> (runner, port, token)."""
-    app = make_app(lib, token, pick_folder=pick_folder, quit=quit, relaunch=relaunch, tray=tray)
+    app = make_app(lib, token, pick_folder=pick_folder, quit=quit, relaunch=relaunch, tray=tray, drag_files=drag_files)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", port)

@@ -192,7 +192,8 @@ function renderSide() {
   $("view-downloads").classList.toggle("sel", state.view === "downloads");
   const trees = new Map(state.folders.map((f) => [f.id, dirTree(state.dirs[f.id] || [])]));
   const anyDirs = [...trees.values()].some((t) => t.kids.size);
-  const had = document.activeElement?.closest?.("#folders [role=treeitem], #albums [role=treeitem]")?.dataset.key;  // (drawn again: focus stays on it)
+  const hadRow = document.activeElement?.closest?.("#folders [role=treeitem], #albums [role=treeitem]");  // (drawn again: focus stays on it)
+  const had = hadRow?.dataset.key, hadIn = hadRow?.closest("#folders, #albums")?.id;
   const items = state.folders.flatMap((f) => {
     const sel = state.view === "folder" && state.folder === f.id && !state.sub, tree = trees.get(f.id), key = `f:${f.id}`;
     return [h("div.nav-item" + (sel ? ".sel" : ""), { ...treeRow(key, null, 1, tree.kids.size > 0, sel), title: f.path, onclick: () => selectView("folder", f.id),
@@ -213,7 +214,7 @@ function renderSide() {
   const tree = albumTree(state.albums);
   $("albums").replaceChildren(...(state.albums.length ? albumRows(tree, 0, [...tree.kids.values()].some((n) => n.kids.size))
     : [h("p.nav-empty", {}, "Albums gather files from any folder.")]));
-  for (const box of [$("folders"), $("albums")]) roving(box, had);
+  for (const box of [$("folders"), $("albums")]) roving(box, box.id === hadIn ? had : null);
   renderToolbar();
 }
 
@@ -223,11 +224,14 @@ function renderSide() {
 const treeRow = (key, parent, level, kids, sel) => ({ role: "treeitem", tabIndex: -1, "data-key": key, "data-parent": parent || null, "aria-level": level,
   "aria-expanded": kids ? String(opened.has(key)) : null, "aria-selected": String(!!sel), "aria-current": sel ? "true" : null });
 
+let treeNext = null;  // a row to have the focus once drawn (an album just renamed or moved, under its new name)
 function roving(box, had) {
   const rows = [...box.querySelectorAll("[role=treeitem]")];
-  const at = rows.find((r) => r.dataset.key === had) || rows.find((r) => r.getAttribute("aria-selected") === "true") || rows[0];
+  const want = treeNext && rows.some((r) => r.dataset.key === treeNext) ? treeNext : had;
+  const at = rows.find((r) => r.dataset.key === want) || rows.find((r) => r.getAttribute("aria-selected") === "true") || rows[0];
   if (at) at.tabIndex = 0;
-  if (had && at && at.dataset.key === had) at.focus({ preventScroll: true });
+  if (want && at && rows.some((r) => r.dataset.key === want)) { at.focus({ preventScroll: true }); if (want === treeNext) treeNext = null; }
+  else if (had && at) at.focus({ preventScroll: true });  // (the row it was on is gone: the one shown)
 }
 
 for (const box of [$("folders"), $("albums")]) {
@@ -240,7 +244,8 @@ for (const box of [$("folders"), $("albums")]) {
     const go = (r) => { if (!r) return; for (const x of rows) x.tabIndex = -1; r.tabIndex = 0; r.focus(); };
     const key = row.dataset.key, kids = row.hasAttribute("aria-expanded"), open = row.getAttribute("aria-expanded") === "true";
     const toggle = (on) => { setOpen(key, on); renderSide(); box.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus(); };
-    if (e.shiftKey && e.key === "F10" || e.key === "ContextMenu") row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    if (e.key === "ContextMenu") return;  // (its own contextmenu event comes to the row)
+    if (e.shiftKey && e.key === "F10") row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
     else if (e.shiftKey) return;
     else if (e.key === "ArrowDown") go(rows[i + 1]);
     else if (e.key === "ArrowUp") go(rows[i - 1]);
@@ -294,9 +299,16 @@ function albumRows(node, depth, nested) {
       oncontextmenu: (e) => { e.preventDefault(); a ? lookMenu(e.currentTarget, "album", a) : parentMenu(e.currentTarget, n.path); },
       ondragstart: (e) => { dragging = n.path; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", n.path); },
       ondragend: () => { dragging = null; },
-      ondragover: (e) => { if (canDrop(n.path)) { e.preventDefault(); e.currentTarget.classList.add("drop"); } },
+      ondragover: (e) => {
+        if (canDrop(n.path) || (dragOut && !dragOut.trash && a && a.query == null)) { e.preventDefault(); e.dataTransfer.dropEffect = dragOut ? "copy" : "move"; e.currentTarget.classList.add("drop"); }
+      },
       ondragleave: (e) => e.currentTarget.classList.remove("drop"),
-      ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove("drop"); if (canDrop(n.path)) moveAlbum(dragging, `${n.path} / ${leafName(dragging)}`); } },
+      ondrop: (e) => {
+        e.preventDefault();
+        e.currentTarget.classList.remove("drop");
+        if (dragOut && !dragOut.trash && a && a.query == null) addDraggedTo(n.path);
+        else if (canDrop(n.path)) moveAlbum(dragging, `${n.path} / ${leafName(dragging)}`);
+      } },
       nested ? twist(key, n.kids.size > 0) : null,
       a ? lookIcon(a, a.query != null ? "filter" : "album") : icon("album"),
       h("span.label", { title: a?.query != null ? `Smart album: ${a.query}` : n.path }, n.name), h("span.n", {}, count.toLocaleString()),
@@ -306,6 +318,14 @@ function albumRows(node, depth, nested) {
           onclick: async (e) => { e.stopPropagation(); deleteAlbum(a); } }, icon("remove")) : null));
     return [row, ...(n.kids.size && opened.has(key) ? albumRows(n, depth + 1, nested) : [])];
   });
+}
+
+async function addDraggedTo(album) {
+  const { selection: sel, n } = dragOut;
+  try {
+    const r = await api("/ops/bulk", { method: "POST", body: { selection: sel, action: "album", value: album } });
+    org.done(r, `${plural(r.count ?? n, "file")} added to ${leafName(album)}.`);
+  } catch (e) { toast(e.message, true); }
 }
 
 // the albums heading takes a dragged album back to the top
@@ -332,6 +352,7 @@ function followMove(from, to) {
   }
   openTo(to);
   store.set("open", [...opened].slice(-500));
+  treeNext = `a:${albumName(to).toLowerCase()}`;
 }
 
 async function moveAlbum(path, to) {
@@ -393,7 +414,10 @@ async function loadAlbums() {
     const d = await api("/albums");
     state.albums = d.albums;
     state.albumGroups = d.groups || [];
-    if (state.view === "album" && ![...state.albums, ...state.albumGroups].some((a) => sameName(a.name, state.album))) selectView("all");
+    if (state.view === "album" && ![...state.albums, ...state.albumGroups].some((a) => sameName(a.name, state.album))) {
+      const same = state.albumId && state.albums.find((a) => a.id === state.albumId);  // (renamed under it: an Undo, say)
+      if (same) { state.album = albumName(same.name); reload(false); } else selectView("all");
+    }
     renderSide();
     clearTimeout(albumsAgain);  // a smart album (or a parent's whole count) being counted again: its new count in a moment
     if ([...state.albums, ...state.albumGroups].some((a) => a.stale)) albumsAgain = setTimeout(loadAlbums, 1500);
@@ -551,6 +575,7 @@ function selectView(view, arg = null, sub = null) {
   state.folder = view === "folder" ? arg : null;
   state.character = view === "character" ? arg : null;
   state.album = view === "album" ? arg : null;
+  state.albumId = view === "album" ? state.albums.find((a) => sameName(a.name, arg))?.id ?? null : null;
   state.sub = view === "folder" ? sub : null;  // (a subfolder of that folder: "Characters/Aurelia")
   if (view === "album" && arg) openTo(arg);
   clearSel();
@@ -790,6 +815,7 @@ const itemAt = (i) => (state.pages.get(Math.floor(i / PAGE)) ?? state.shownPages
 
 function tileFor(item) {
   const el = h("button.tile" + (isSelected(item) ? ".picked" : ""), { type: "button", onclick: (e) => tileClick(e, item.__i), onfocus: () => { state.focus = item.__i; },
+    draggable: "true", ondragstart: (e) => dragOutFiles(e, isSelected(item) && selCount() ? selection() : [item.id], isSelected(item) ? selCount() : 1, item),
     "aria-label": item.name, role: "gridcell", "aria-selected": String(isSelected(item)) });
   el.append(h("span.t-pick", { role: "checkbox", "aria-checked": String(isSelected(item)), "aria-label": `Select ${item.name}`, title: "Select (Ctrl+click)",
     onclick: (e) => { e.stopPropagation(); toggleSel(item.__i); } }, icon("check")));
@@ -1802,6 +1828,29 @@ function setDetails(open) {
   store.set("details", open);
 }
 
+// dragging pictures out of the window - to Explorer or the desktop (a copy), to ComfyUI (its workflow, or an input) - as
+// the files themselves: the window starts Windows' own file drag. A drop on an album in the sidebar adds them to it.
+let dragOut = null;  // {selection, n}: what's being dragged out right now
+async function dragOutFiles(e, sel, n, it) {
+  const trash = state.view === "trash";
+  if (!lastStatus?.native_drag) {  // in a browser: one file, by its address (Chrome saves it where it's dropped)
+    e.dataTransfer.clearData();
+    if (n === 1 && it) e.dataTransfer.setData("DownloadURL", `application/octet-stream:${it.name}:${new URL(media("file", it.id), location.href)}`);
+    dragOut = { selection: sel, n, trash, page: true };  // (an album here takes it: cleared when the drag ends)
+    return;
+  }
+  e.preventDefault();  // (not the page's own drag: Windows' file drag takes over, the mouse button still down)
+  dragOut = { selection: sel, n, trash };
+  try {
+    await api("/drag", { method: "POST", body: { selection: sel } });
+  } catch (ex) { toast(ex.message, true); }
+  setTimeout(() => { dragOut = null; }, 200);
+}
+// files dragged over the window (ours, or from Explorer) aren't opened in it: only an album takes them, and only ours
+document.addEventListener("dragover", (e) => { if (e.dataTransfer?.types?.includes("Files") && !e.defaultPrevented) { e.preventDefault(); e.dataTransfer.dropEffect = "none"; } });
+document.addEventListener("drop", (e) => { if (e.dataTransfer?.types?.includes("Files")) e.preventDefault(); });
+document.addEventListener("dragend", () => { if (dragOut?.page) setTimeout(() => { dragOut = null; }, 0); });
+
 let viewerHold = null;
 function closeViewer() {
   if ($("viewer").hidden) return;
@@ -1815,7 +1864,7 @@ function closeViewer() {
   viewing = -1;
   shown = null;
   if (state.view === "recent" || state.stale) reload(false); // what you just opened moved to the top; or files came meanwhile
-  else if (i >= 0) focusTile(i);
+  else if (i >= 0 && !document.activeElement?.closest?.("#side")) focusTile(i);
 }
 
 // the slideshow: the view, one after another at the pace you chose, round again at the end; P (or the button) stops it
@@ -2015,6 +2064,11 @@ $("view-swipe").onclick = () => {
 $("v-play").onclick = () => slideshow(!slides);
 $("v-panel").addEventListener("focusin", () => { if (slides) slideshow(false); });  // (the next picture would wipe what you're typing)
 $("v-play").oncontextmenu = (e) => { e.preventDefault(); paceMenu(e.currentTarget); };
+$("v-media").addEventListener("dragstart", (e) => {
+  const it = itemAt(viewing);
+  if (!it || vz.crop || $("v-media").classList.contains("pannable")) { e.preventDefault(); return; }  // (zoomed in: a drag pans)
+  dragOutFiles(e, [it.id], 1, it);
+});
 $("view-downloads").onclick = () => selectView("downloads");
 $("shuffle").onclick = () => selectView("random");
 $("side-hide").onclick = () => setSide(true);
@@ -2179,7 +2233,8 @@ document.addEventListener("keydown", (e) => {
   }
   if (slides && !$("viewer").hidden && !(e.key.toLowerCase() === "p" && !inField) && e.key !== " ") slideshow(false);  // anything else you do stops it (typing a tag too)
   if (document.querySelector("dialog[open], .preview, .menu, .swipe, .cmp")) return;  // (an overlay has the keys)
-  if (!$("viewer").hidden && !inField && viewerKey(e)) { e.preventDefault(); return; }
+  const inSide = !!e.target.closest?.("#side");
+  if (!$("viewer").hidden && !inField && !inSide && viewerKey(e)) { e.preventDefault(); return; }
   if (e.ctrlKey && ["=", "+", "-", "0"].includes(e.key) && $("viewer").hidden && !isPage()) {
     e.preventDefault();
     setTile(e.key === "0" ? 176 : state.tile * (e.key === "-" ? 1 / 1.15 : 1.15));
@@ -2199,7 +2254,7 @@ document.addEventListener("keydown", (e) => {
       if (one) { e.preventDefault(); org.trashFiles([one.id]); return; }
     }
   }
-  if (!$("viewer").hidden && !inField && e.key === "Delete" && state.view !== "trash") { e.preventDefault(); deleteViewing(); return; }
+  if (!$("viewer").hidden && !inField && !inSide && e.key === "Delete" && state.view !== "trash") { e.preventDefault(); deleteViewing(); return; }
   if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
     e.preventDefault();
     setSide(!$("app").classList.contains("side-hidden"));
@@ -2213,6 +2268,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (inField || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (inSide && !$("viewer").hidden && e.key !== "Escape") return;  // (the viewer's keys only from the viewer)
   if ($("viewer").hidden) {
     if (gridKey(e)) e.preventDefault();
     else if (e.key === "ArrowDown" || e.key === "ArrowRight") { if (state.total && !e.target.classList?.contains("tile")) { e.preventDefault(); focusTile(Math.max(0, state.focus)); } }

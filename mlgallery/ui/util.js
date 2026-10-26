@@ -36,7 +36,7 @@ export function h(tag, props, ...kids) {
   const el = document.createElement(name || "div");
   if (classes.length) el.className = classes.join(" ");
   for (const [k, v] of Object.entries(props || {})) {
-    if (v == null || v === false) continue;
+    if (v == null || (v === false && k !== "draggable")) continue;
     if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
     else if (k === "style") Object.assign(el.style, v);
     else if (k in el) el[k] = v;
@@ -131,7 +131,8 @@ export function holdFocus(el, { keep = [], also = [] } = {}) {
   if (!el.contains(document.activeElement)) (el.querySelector("[autofocus]") || el).focus?.({ preventScroll: true });
   return () => {
     for (const x of held) x.inert = false;
-    if (back?.isConnected && !back.closest?.("[inert]")) back.focus?.({ preventScroll: true });
+    const now = document.activeElement;
+    if ((!now || now === document.body || el.contains(now)) && back?.isConnected && !back.closest?.("[inert]")) back.focus?.({ preventScroll: true });
   };
 }
 

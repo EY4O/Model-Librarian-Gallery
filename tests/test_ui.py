@@ -772,6 +772,7 @@ def test_the_sidebar_tree_by_keyboard_and_overlays_holding_the_focus(server):
             await e.wait("document.querySelectorAll('.tile').length > 4")
             # the folder tree: a tree of rows (no button inside one), one of them in the Tab order
             assert await e.js("document.getElementById('folders').getAttribute('role')") == "tree"
+            assert await e.js("[...document.querySelectorAll('.tile img')].every(i => i.draggable === false)")  # (a drag is the tile's, never its picture's address)
             assert await e.js("document.querySelectorAll('[role=treeitem] button, [role=treeitem] [role=button]').length") == 0
             assert await e.js("[...document.querySelectorAll('#folders [role=treeitem]')].filter(r => r.tabIndex === 0).length") == 1
             await e.js("document.querySelector('#folders [role=treeitem]').focus(); true")
@@ -795,6 +796,12 @@ def test_the_sidebar_tree_by_keyboard_and_overlays_holding_the_focus(server):
             await e.js("document.querySelector('.tile').focus(); document.querySelector('.tile').click(); true")
             await e.wait("!document.getElementById('viewer').hidden")
             assert await e.js("document.querySelector('main.main').inert && !document.getElementById('side').closest('[inert]')")
+            # keys in the sidebar are its own: Delete on a row there doesn't send the picture in the viewer to the Trash
+            trash = api("/status")["trash"]
+            await e.js("document.querySelector('#folders [role=treeitem]').focus(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key: 'Delete', bubbles: true})); true")
+            await asyncio.sleep(0.5)
+            assert api("/status")["trash"] == trash and not await e.js("document.getElementById('viewer').hidden")
+            await e.js("document.querySelector('#v-media img, #v-media video')?.focus?.(); document.getElementById('viewer').focus(); true")
             await e.key("Escape")
             await e.wait("document.getElementById('viewer').hidden")
             assert await e.js("!document.querySelector('main.main').inert && document.activeElement.classList.contains('tile')")

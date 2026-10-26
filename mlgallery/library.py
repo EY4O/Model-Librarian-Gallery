@@ -43,8 +43,9 @@ REVIEW_RUN = 120  # seconds: answers in To review this close together are one Hi
 
 
 def _review_summary(name: str, items: list) -> str:
-    yes = sum(1 for it in items if it["verdict"] == "confirm")
-    n = len(items)
+    last = {it["file_id"]: it["verdict"] for it in items}  # (a file answered twice counts once, as its last answer)
+    yes = sum(1 for v in last.values() if v == "confirm")
+    n = len(last)
     return f"Reviewed {n} file{'s' if n != 1 else ''} for {name}: {yes} yes, {n - yes} no"
 
 
@@ -626,9 +627,14 @@ class Library:
     def review_take_back(self, cid: int) -> dict | None:
         """Z on To review: the last answer for this character taken back (out of its History step). -> its file, or None."""
         with self.db.write() as c:
-            last = c.execute("SELECT id, data FROM ops WHERE kind='review' AND undone IS NULL ORDER BY id DESC LIMIT 1").fetchone()
-            run = json.loads(last["data"]) if last else None
-            if not run or run.get("character") != int(cid) or not run["items"]:
+            last = run = None
+            for r in c.execute("SELECT id, at, data FROM ops WHERE kind='review' AND undone IS NULL AND at > ? ORDER BY id DESC LIMIT 20",
+                               (time.time() - REVIEW_RUN * 15,)):  # (a run of answers from this sitting, a half hour say)
+                d = json.loads(r["data"])
+                if d.get("character") == int(cid) and d.get("items"):
+                    last, run = r, d
+                    break
+            if not run:
                 return None
             it = run["items"].pop()
             bulk.review_restore(c, int(cid), [it])

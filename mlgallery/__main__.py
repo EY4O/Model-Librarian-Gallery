@@ -184,6 +184,32 @@ def main(argv=None) -> int:
         chosen = w.create_file_dialog(kind)
         return chosen[0] if chosen else None
 
+    dragging = threading.Lock()
+
+    def drag_files(paths: list[str]):
+        """Windows' own file drag from the window, with these files: Explorer and the desktop copy them, a browser page
+        (ComfyUI) gets them as files. Runs on the window's thread while the mouse button is still down. -> what the drop did."""
+        w = window["w"]
+        if not w or not paths:
+            return None
+        from System import Action, Array, String  # (pythonnet: what pywebview's window is made with)
+        from System.Windows.Forms import Control, DataFormats, DataObject, DragDropEffects, MouseButtons
+        if not dragging.acquire(blocking=False):
+            return "None"  # (one at a time: a second waiting for the first would start once its button was long let go)
+        try:
+            form = w.native
+            data = DataObject()
+            data.SetData(DataFormats.FileDrop, Array[String](paths))
+            done = {"effect": "None"}
+
+            def go():
+                if Control.MouseButtons & MouseButtons.Left:  # (let go already: no drop wherever the pointer happens to be)
+                    done["effect"] = str(form.DoDragDrop(data, DragDropEffects.Copy))
+            form.Invoke(Action(go))
+            return done["effect"]
+        finally:
+            dragging.release()
+
     def hwnd_of():
         try:
             return int(window["w"].native.Handle.ToInt64())  # the WinForms window itself
@@ -218,6 +244,8 @@ def main(argv=None) -> int:
         hooks.update(quit=quit_app, relaunch=relaunch)
     if not (args.browser or args.server):
         hooks.update(pick_folder=pick_folder)
+        if os.name == "nt":
+            hooks.update(drag_files=drag_files)
 
     # ---------------------------------------------------------------- the tray (Settings, Keep running in the tray)
     def in_tray() -> bool:

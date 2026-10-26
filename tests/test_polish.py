@@ -373,3 +373,19 @@ def test_moving_and_renaming_albums_can_be_undone(lib, media):
     lib.album_save(None, "Trips / Coast")  # (its old name taken meanwhile: that one stays as it is)
     fileops.undo(lib.db, renamed["op"])
     assert sorted(x["name"] for x in lib.albums()) == ["Best coast", "Trips / Coast", "Trips / Coast / Rocks", "Trips / Shore"]
+
+
+def test_undoing_a_move_when_names_are_taken_since(lib, media):
+    from mlgallery import bulk
+    pictures(lib, media)
+    ids = [i["id"] for i in lib.files()["items"]]
+    bulk.apply(lib.db, ids[:1], "album", "A / B")
+    bulk.apply(lib.db, ids[1:2], "album", "A / B / B")
+    lib.album_save(None, "Best", query='album:"A / B / B"')
+    r = lib.album_move("A / B", "A")  # A / B to A, and A / B / B to A / B
+    assert sorted(a["name"] for a in lib.albums()) == ["A", "A / B", "Best"]
+    lib.album_save(None, "A / B / B")  # (a new one with the old name meanwhile)
+    fileops.undo(lib.db, r["op"])  # (no crash: each gets a free name)
+    names = sorted(a["name"] for a in lib.albums())
+    assert len(names) == len(set(n.casefold() for n in names)) == 4 and "A / B / B" in names
+    assert next(a for a in lib.albums() if a["name"] == "Best")["query"] == 'album:"A / B"'  # (its search left as it was: not every name came back)

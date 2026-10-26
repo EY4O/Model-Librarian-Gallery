@@ -45,7 +45,7 @@ MEDIA = re.compile(r"/api/(thumb|file)/\d+")
 
 
 # the History steps a device may undo: the kinds of change it can make itself (never a move, a rename, an edit, Eagle...)
-UNDO = {"marks", "tags", "albums", "credits", "characters", "trash", "restore"}
+UNDO = {"marks", "tags", "albums", "credits", "characters", "trash", "restore", "review"}
 
 
 def allowed(method: str, path: str) -> bool:

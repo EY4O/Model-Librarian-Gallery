@@ -204,3 +204,22 @@ def test_another_characters_answers_are_another_step(lib, media):
     two = lib.character_save(None, "Two", [], [{"kind": "tag", "value": "noisy"}])
     f = lib.review_queue(one)[0]["file_id"]
     assert lib.character_review(one, [f], "confirm")["op"] != lib.character_review(two, [f], "reject")["op"]
+
+
+def test_undoing_answers_leaves_a_later_decision_alone(lib, media):
+    from mlgallery import fileops
+    library(lib, media, n=16)
+    for fid in lib.files(limit=100)["items"]:
+        lib.set_tags(fid["id"], add=["noisy"])
+    cid = lib.character_save(None, "Night", [], [{"kind": "tag", "value": "noisy"}])
+    f = lib.review_queue(cid)[0]["file_id"]
+    r = lib.character_review(cid, [f], "confirm")
+    lib.set_file_character(f, cid, "reject")  # (changed your mind in the details panel)
+    fileops.undo(lib.db, r["op"])
+    with lib.db.read() as c:
+        assert c.execute("SELECT state FROM file_characters WHERE file_id=? AND character_id=?", (f, cid)).fetchone()[0] == "rejected"
+    # Z takes back answers just given, for this character: not an old run
+    r = lib.character_review(cid, [lib.review_queue(cid)[0]["file_id"]], "confirm")
+    with lib.db.write() as c:
+        c.execute("UPDATE ops SET at=at-86400 WHERE id=?", (r["op"],))
+    assert lib.review_take_back(cid) is None

@@ -1,5 +1,6 @@
 """The server: the token and Host checks, and the API the interface uses."""
 import asyncio
+import os
 import time
 
 import pytest
@@ -186,3 +187,28 @@ def test_info_marks_tags_workflow_and_search(lib, media):
         days = await (await c.get("/api/days?q=is:fav", headers=H)).json()
         assert sum(d["n"] for d in days["days"]) == 1
     run(lib, fn)
+
+
+def test_dragging_files_out_of_the_window(lib, media):
+    fid = indexed(lib, media, n=2)  # noqa: F841
+    ids = [r["id"] for r in lib.files()["items"]]
+    dragged = []
+
+    def drag(paths):  # (a stand-in for the window's own file drag)
+        dragged.append(paths)
+        return "Copy"
+
+    async def go(hook):
+        c = TestClient(TestServer(make_app(lib, TOKEN, drag_files=hook), host="127.0.0.1"))
+        await c.start_server()
+        try:
+            st = await (await c.get("/api/status", headers=H)).json()
+            r = await c.post("/api/drag", json={"selection": ids}, headers=H)
+            return st["native_drag"], r.status, await r.json()
+        finally:
+            await c.close()
+    native, status, body = asyncio.run(go(drag))
+    assert native and status == 200 and body == {"effect": "Copy", "n": 2}
+    assert sorted(os.path.basename(p) for p in dragged[0]) == ["0.png", "1.png"] and all(os.path.isfile(p) for p in dragged[0])
+    native, status, _ = asyncio.run(go(None))  # (in a browser: no file drag of its own)
+    assert not native and status == 501

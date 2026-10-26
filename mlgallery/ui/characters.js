@@ -20,9 +20,14 @@ function thumb(id, alt = "") {
 }
 
 // a quick look at one file, over everything (Esc or a click closes it)
-export function preview(file) {
+export function preview(file, { answer = null } = {}) {
   const close = () => { box.remove(); document.removeEventListener("keydown", key, true); letGo(); };
-  const key = (e) => { if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); close(); } };
+  const key = (e) => {
+    const k = e.key.toLowerCase();
+    if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); close(); }
+    else if (answer && (k === "y" || k === "n") && !e.ctrlKey && !e.metaKey) { e.stopPropagation(); e.preventDefault(); close(); answer(k === "y" ? "confirm" : "reject"); }
+    else if (k === "z") e.stopPropagation();  // (not To review's take-back, under the preview)
+  };
   const src = file.src || media("file", file.file_id ?? file.id);  // (a download: its own address)
   const box = h("div.preview", { role: "dialog", "aria-modal": "true", tabIndex: -1, "aria-label": file.name || "Preview", onclick: close },
     file.kind === "video" ? h("video", { src, controls: true, autoplay: true, loop: true, onclick: (e) => e.stopPropagation() }) : h("img", { src, alt: file.name || "" }),
@@ -70,6 +75,7 @@ export async function renderCharacters(root, ctx) {
 
 // ---------------------------------------------------------------- one character
 export async function renderCharacter(root, id, ctx) {
+  reviewAgain = () => renderCharacter(root, id, ctx);
   root.setAttribute("aria-busy", "true");
   let c, queue, recent;
   try {
@@ -269,6 +275,7 @@ export function editCharacter(c, ctx, preset = {}) {
 
 // ---------------------------------------------------------------- To review
 export async function renderReview(root, ctx) {
+  reviewAgain = () => { ctx.refresh(); renderReview(root, ctx); };
   root.setAttribute("aria-busy", "true");
   let queue;
   try { queue = await api("/characters/review"); } catch (e) { toast(e.message, true); return; } finally { root.removeAttribute("aria-busy"); }
@@ -291,6 +298,7 @@ export async function renderReview(root, ctx) {
       reviewGrid(g.items, ctx, () => { ctx.refresh(); renderReview(root, ctx); }, { single: true }))),
   ].filter(Boolean));
   async function decideAll(cid, g, verdict) {
+    lastCid = cid;
     if (!await ask(verdict === "confirm" ? `Are all ${g.items.length} ${g.name}?` : `Are none of these ${g.name}?`,
       verdict === "confirm" ? `They'll count as ${g.name} from now on.` : `They won't be suggested for ${g.name} again.`, { ok: verdict === "confirm" ? `Yes, all ${g.name}` : `None are ${g.name}` })) return;
     await api(`/characters/${cid}/review`, { method: "POST", body: { files: g.items.map((i) => i.file_id), verdict } }).catch((e) => toast(e.message, true));
@@ -310,7 +318,7 @@ async function takeBack(cid) {
 let reviewAgain = null, lastCid = null;  // (how to draw the page that's showing again; whose answer was last)
 // Z on To review (or that character's page), with no card in front of it: after the last one's answered, say
 document.addEventListener("keydown", (e) => {
-  if (e.key.toLowerCase() !== "z" || e.ctrlKey || e.metaKey || e.altKey || !lastCid || e.target.closest?.("input, select, textarea, dialog, .r-card")) return;
+  if (e.key.toLowerCase() !== "z" || e.ctrlKey || e.metaKey || e.altKey || !lastCid || e.target.closest?.("input, select, textarea, dialog, .r-card") || document.querySelector(".preview")) return;
   const page = document.getElementById("stats");
   if (!page || page.hidden || !(page.querySelector("h1")?.textContent === "To review" || page.querySelector(`[data-review-cid="${lastCid}"]`))) return;
   e.preventDefault();
@@ -318,7 +326,6 @@ document.addEventListener("keydown", (e) => {
 });
 
 function reviewGrid(items, ctx, after, { single = false } = {}) {
-  reviewAgain = after;
   const grid = h("div.r-grid", { role: "list" });
   const decide = async (it, card, verdict) => {
     lastCid = it.character_id;
@@ -336,7 +343,7 @@ function reviewGrid(items, ctx, after, { single = false } = {}) {
   grid.replaceChildren(...items.map((it) => {
     const card = h("div.r-card", { role: "listitem", tabIndex: 0, "aria-label": `${it.name}: is ${it.character} in it? Y or N` });
     card.append(...[
-      h("button.r-thumb", { type: "button", title: "Look closer", onclick: () => preview(it) }, thumb(it.file_id, it.name)),
+      h("button.r-thumb", { type: "button", title: "Look closer", onclick: () => preview(it, { answer: (v) => decide(it, card, v) }) }, thumb(it.file_id, it.name)),
       single ? null : h("div.r-q", {}, h("span.r-who", {}, it.character)),
       h("div.r-acts", {},
         h("button.btn.small.yes", { type: "button", onclick: () => decide(it, card, "confirm") }, h("kbd", {}, "Y"), it.character),
@@ -346,7 +353,7 @@ function reviewGrid(items, ctx, after, { single = false } = {}) {
       if (k === "y") { e.preventDefault(); decide(it, card, "confirm"); }
       else if (k === "n") { e.preventDefault(); decide(it, card, "reject"); }
       else if (k === "z" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); takeBack(it.character_id); }
-      else if (k === " " || k === "enter") { if (e.target === card) { e.preventDefault(); preview(it); } }
+      else if (k === " " || k === "enter") { if (e.target === card) { e.preventDefault(); preview(it, { answer: (v) => decide(it, card, v) }); } }
       else if (e.key === "ArrowRight") { e.preventDefault(); card.nextElementSibling?.focus(); }
       else if (e.key === "ArrowLeft") { e.preventDefault(); card.previousElementSibling?.focus(); }
       else return;
