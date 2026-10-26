@@ -28,6 +28,8 @@ DEFAULTS = {
     "remote": False,            # Phone and tablet: paired devices on the home network or Tailscale can open the library
     "remote_port": 8766,        # ... on this port (it stays the same, so a paired device's address does)
     "remote_devices": [],       # ... these: {id, name, hash of its key, added, seen} (remote.py)
+    "tray": False,              # closing the window leaves the Gallery running in the tray (tray.py)
+    "tray_login": False,        # ... and it starts there when you sign in to Windows (needs tray)
 }
 
 

@@ -250,6 +250,9 @@ def test_settings_shows_the_library(tmp_path):
                 assert "--library" in text
                 # a new library indexes its own folder
                 assert str(root) in await e.js("document.querySelector('section[aria-label=Folders]').textContent")
+                # nor can a server alone keep running in a tray: those switches are off, and say why
+                assert await e.js("document.getElementById('set-tray').disabled && document.getElementById('set-tray-login').disabled")
+                assert "own window, on Windows" in await e.js("document.querySelector('section[aria-label=\"In the background\"]').textContent")
         asyncio.run(go())
     finally:
         p.terminate()

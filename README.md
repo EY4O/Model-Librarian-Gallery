@@ -40,6 +40,7 @@ A Windows app for large libraries of AI generations, photos and illustrations: i
 - ♻️ **Duplicates** — exact copies, and the same picture saved twice in another format or size; **Compare** shows them side by side at full size before you choose (videos play together), and **Keep both** leaves a group alone for good.
 - 🔗 **Model Librarian and ComfyUI** — **Open in ComfyUI** opens a file's workflow in a new ComfyUI tab, **Save as recipe** puts it in Model Librarian's recipes, and the **Gallery Info** node tags images as they're made.
 - 🦅 **Leaving Eagle** — bring an Eagle library in as plain files, laid out by its folders, into a library of its own or this one, with its tags, ratings, notes, links and colours (Eagle's library is only read); or send any selection to Eagle.
+- 🧺 **In the tray** — turn on **Keep running in the tray** and closing the window leaves the Gallery by the clock: phones, new-download notifications and the folder watcher keep working, and its menu opens New downloads, turns Phone and tablet on or off, pauses watching and quits. It can start there when you sign in, too.
 - 🔄 **Updates when you want them** — turn on **Updates** in Settings and the portable Gallery asks GitHub once a day for a new version, then installs it at its next start.
 - 💼 **A library you can take anywhere** — make any folder a library and its index, thumbnails and backups live inside it: copy it to an external drive and open it on any PC, whatever drive letter it gets.
 - 🛡️ **Your files stay yours** — indexing only reads; nothing leaves your PC.
@@ -203,6 +204,7 @@ Statistics count the files made in a range (7 days to all time): what they were 
 - **Delete** moves a file to the Gallery's Trash (a hidden `.mlg-trash` folder in its own library folder), from where **Put back** restores it. Emptying the Trash sends files to the Windows Recycle Bin.
 - The Gallery listens on 127.0.0.1 only, with a new token each start; other programs and web pages can't use it. It sends nothing anywhere: Open in ComfyUI talks only to the ComfyUI address you set.
 - **Phone and tablet** is off until you turn it on. Then the Gallery also listens on the network, on a port of its own, but answers only devices you've paired and only from private addresses (home networks and Tailscale), never the open internet, even if a router forwards the port. A paired device can look and organise; it can't change Settings or folders, move, rename or empty anything.
+- **Starting at sign-in** is off until you turn it on in Settings, In the background: it adds the Gallery to your own Windows user's sign-in list (the Run key), and turning it off takes it out again.
 - **Updates** are off until you turn them on. Checking only reads GitHub's list of releases. An update is checked against its SHA-256 before it's unpacked beside the app, and the Gallery swaps it in at its next start, while it's closed.
 </details>
 

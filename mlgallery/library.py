@@ -192,6 +192,13 @@ class Library:
             return [{"rel": k, "n": v} for k, v in sorted(n.items(), key=lambda kv: kv[0].casefold())]
         return self.db.cached(("dirs", int(folder_id)), run)
 
+    def pause_watching(self, on: bool) -> None:
+        """Stop looking for new and changed files (the tray's Pause watching folders), or start again: then every
+        folder is looked through, for what came meanwhile."""
+        was, self.watcher.paused = self.watcher.paused, bool(on)
+        if was and not on:
+            self.scan_all()
+
     def remove_folder(self, folder_id: int) -> bool:
         """Forget a folder and its files in the index. The folder and its files on disk are not touched."""
         with self._queue_cv:

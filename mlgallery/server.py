@@ -40,15 +40,15 @@ QUIT = web.AppKey("quit", object)
 RELAUNCH = web.AppKey("relaunch", object)
 DAILY = web.AppKey("daily", object)
 DEVICES = web.AppKey("devices", remote.Devices)
-RUNNER = web.AppKey("runner", object)      # the server's runner, for the second site (phones) to join
-REMOTE = web.AppKey("remote_site", object)  # that site, while it runs
+REMOTE = web.AppKey("remote", dict)        # Phone and tablet: {runner: the server's, for its site to join; site: that site, while it runs}
+TRAY = web.AppKey("tray", object)          # the window's tray icon: shown again as Settings change (None: no window, or not Windows)
 
 
 def _err(msg: str, status: int = 400) -> web.Response:
     return web.json_response({"error": msg}, status=status)
 
 
-def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=None, relaunch=None) -> web.Application:
+def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=None, relaunch=None, tray=None) -> web.Application:
     """The aiohttp application. `pick_folder()`: the window's folder dialog, when there is one; `quit()` closes the
     Gallery and `relaunch(args)` starts another one (switching libraries, Restart now), when it can."""
     token = token or secrets.token_urlsafe(24)
@@ -56,7 +56,8 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     app[LIB], app[TOKEN], app[PICK], app[QUIT], app[RELAUNCH] = lib, token, pick_folder, quit, relaunch
     app[UPDATER] = Updater(lib.home, lib.settings)
     app[DEVICES] = remote.Devices(lib.settings)
-    app[REMOTE] = None
+    app[REMOTE] = {"runner": None, "site": None}  # (filled in as it runs: aiohttp wants an app's own values set before it starts)
+    app[TRAY] = tray
     app.on_startup.append(_start_daily)
     app.on_cleanup.append(_stop_daily)
     r = app.router
@@ -165,6 +166,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_post("/api/libraries/open", library_open)
     r.add_post("/api/libraries/forget", library_forget)
     r.add_post("/api/settings", settings_set)
+    r.add_post("/api/watching", watching)
     r.add_get("/api/thumb/{id}", thumb)
     r.add_get("/api/file/{id}", original)
     return app
@@ -280,21 +282,21 @@ async def pair(request: web.Request):
 # ---------------------------------------------------------------- Phone and tablet, from the PC's Settings
 async def remote_start(app) -> str | None:
     """Listen for paired devices (on every network: only private addresses are answered). -> why it couldn't, or None."""
-    if app[REMOTE] or not app.get(RUNNER):
+    if app[REMOTE]["site"] or not app[REMOTE]["runner"]:
         return None
     lib = app[LIB]
     port = int(lib.settings.get("remote_port") or remote.PORT)
-    site = web.TCPSite(app[RUNNER], os.environ.get("MLG_REMOTE_HOST") or "0.0.0.0", port)  # (MLG_REMOTE_HOST: the tests keep it on 127.0.0.1)
+    site = web.TCPSite(app[REMOTE]["runner"], os.environ.get("MLG_REMOTE_HOST") or "0.0.0.0", port)  # (MLG_REMOTE_HOST: the tests keep it on 127.0.0.1)
     try:
         await site.start()
     except OSError as ex:
         return f"Port {port} is taken ({ex.strerror or ex}): pick another in Settings."
-    app[REMOTE] = site
+    app[REMOTE]["site"] = site
     return None
 
 
 async def remote_stop(app) -> None:
-    site, app[REMOTE] = app[REMOTE], None
+    site, app[REMOTE]["site"] = app[REMOTE]["site"], None
     if site:
         await site.stop()
 
@@ -302,12 +304,25 @@ async def remote_stop(app) -> None:
 def _remote_view(request) -> dict:
     app, lib = request.app, _lib(request)
     port = int(lib.settings.get("remote_port") or remote.PORT)
-    return {"on": bool(lib.settings.get("remote")), "running": bool(app[REMOTE]), "port": port, "devices": app[DEVICES].list(),
+    return {"on": bool(lib.settings.get("remote")), "running": bool(app[REMOTE]["site"]), "port": port, "devices": app[DEVICES].list(),
             "addresses": [dict(a, url=f"http://{a['ip']}:{port}/") for a in remote.addresses()]}
 
 
 async def remote_get(request):
     return web.json_response(_remote_view(request))
+
+
+async def remote_switch(app, on: bool) -> str | None:
+    """Phone and tablet on or off (Settings, the tray's menu) -> why it couldn't go on, or None."""
+    lib = app[LIB]
+    await asyncio.to_thread(lib.settings.update, {"remote": bool(on)})
+    if not on:
+        await remote_stop(app)
+        return None
+    why = await remote_start(app)
+    if why:
+        await asyncio.to_thread(lib.settings.update, {"remote": False})
+    return why
 
 
 async def remote_set(request):
@@ -326,7 +341,7 @@ async def remote_set(request):
     if isinstance(b.get("on"), bool):
         patch["remote"] = b["on"]
     await asyncio.to_thread(lib.settings.update, patch)
-    if app[REMOTE] and ("remote_port" in patch or patch.get("remote") is False):
+    if app[REMOTE]["site"] and ("remote_port" in patch or patch.get("remote") is False):
         await remote_stop(app)
     if lib.settings.get("remote"):
         why = await remote_start(app)
@@ -338,7 +353,7 @@ async def remote_set(request):
 
 async def remote_code(request):
     """A pairing code (10 minutes, one device), and the addresses to open with it (for the QR code)."""
-    if not _lib(request).settings.get("remote") or not request.app[REMOTE]:
+    if not _lib(request).settings.get("remote") or not request.app[REMOTE]["site"]:
         return _err("Turn Phone and tablet on first.", 409)
     code = request.app[DEVICES].new_code()
     view = _remote_view(request)
@@ -377,7 +392,15 @@ async def status(request):
     st = await asyncio.to_thread(_lib(request).status)
     st["update"] = request.app[UPDATER].available()  # a newer Gallery on GitHub (only known once it's been asked)
     st["job"] = eagle_job()  # a long job of yours under way (an Eagle library brought in), for the status bar
+    st["paused"] = _lib(request).watcher.paused  # (from the tray)
     return web.json_response(st)
+
+
+async def watching(request):
+    """{paused: true|false}: the folder watcher paused (as from the tray), or started again."""
+    b = await _body(request)
+    await asyncio.to_thread(_lib(request).pause_watching, bool(b.get("paused")))
+    return web.json_response({"paused": _lib(request).watcher.paused})
 
 
 async def library_kind(request):
@@ -1313,6 +1336,10 @@ def _settings_out(lib, updater: Updater, can_restart: bool) -> dict:
             "shortcut": shortcut.exists() if os.name == "nt" else None, "update": dict(updater.info(), can_restart=can_restart)}
 
 
+def _tray_out(app) -> dict:
+    return {"tray_ok": bool(app[TRAY])}
+
+
 def _can_relaunch(app) -> bool:
     return bool(app[QUIT] and app[RELAUNCH])
 
@@ -1322,7 +1349,7 @@ def _settings_view(request) -> dict:
 
 
 async def settings_get(request):
-    return web.json_response(await asyncio.to_thread(_settings_view, request))
+    return web.json_response({**await asyncio.to_thread(_settings_view, request), **_tray_out(request.app)})
 
 
 def _check_settings(b: dict) -> dict:
@@ -1361,8 +1388,22 @@ async def settings_set(request):
         b = _check_settings({k: v for k, v in b.items() if k in lib.settings.all()})
     except ValueError as ex:
         return _err(str(ex), 422)
+    if b.get("tray") is False:
+        b["tray_login"] = False  # (nothing to start in at sign-in)
+    if b.get("tray_login") is True:
+        b["tray"] = True
+    if "tray_login" in b and bool(b["tray_login"]) != bool(lib.settings.get("tray_login")):
+        if not request.app[TRAY]:
+            return _err("The Gallery can only start in the tray when it runs in its own window, on Windows.", 409)
+        from . import tray
+        try:
+            await asyncio.to_thread(tray.set_login, bool(b["tray_login"]))
+        except OSError as ex:
+            return _err(f"Windows didn't let the Gallery start at sign-in: {ex.strerror or ex}.", 409)
     await asyncio.to_thread(lib.settings.update, b)
-    return web.json_response(await asyncio.to_thread(_settings_view, request))
+    if "tray" in b and request.app[TRAY]:
+        request.app[TRAY].show(bool(lib.settings.get("tray")))
+    return web.json_response({**await asyncio.to_thread(_settings_view, request), **_tray_out(request.app)})
 
 
 # ---------------------------------------------------------------- updates (see update.py)
@@ -1533,15 +1574,15 @@ async def original(request):
     return web.FileResponse(path, headers={"Cache-Control": "no-cache"})  # ranges supported: videos seek
 
 
-async def serve(lib: Library, port: int = 0, token: str | None = None, pick_folder=None, quit=None, relaunch=None):
+async def serve(lib: Library, port: int = 0, token: str | None = None, pick_folder=None, quit=None, relaunch=None, tray=None):
     """Start serving on 127.0.0.1 -> (runner, port, token)."""
-    app = make_app(lib, token, pick_folder=pick_folder, quit=quit, relaunch=relaunch)
+    app = make_app(lib, token, pick_folder=pick_folder, quit=quit, relaunch=relaunch, tray=tray)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", port)
     await site.start()
     real = site._server.sockets[0].getsockname()[1]
-    app[RUNNER] = runner
+    app[REMOTE]["runner"] = runner
     if lib.settings.get("remote"):  # Phone and tablet was on: paired devices can come back
         await remote_start(app)
     return runner, real, app[TOKEN]

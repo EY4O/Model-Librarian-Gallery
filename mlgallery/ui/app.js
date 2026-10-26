@@ -1832,7 +1832,11 @@ for (const b of $("kind-nav").querySelectorAll("[data-is]")) b.onclick = () => o
 const sbBar = progressBar(".sb"), sbLeft = h("span.sb-left");
 sbBar.hidden = true;
 $("status").after(sbBar, sbLeft);
-$("status").addEventListener("click", () => job.reopen?.());
+$("status").addEventListener("click", () => {
+  if (lastStatus?.paused && !lastStatus.job) api("/watching", { method: "POST", body: { paused: false } }).then(() => { toast("Watching the folders again: looking through them for what came meanwhile."); pollSoon(); }).catch((e) => toast(e.message, true));
+  else job.reopen?.();
+});
+window.mlgOpen = (view) => selectView(view);  // (the tray's menu: New downloads)
 let bg = null;  // {key, total, pace}: the background task being followed
 function bgProgress(key, done, total) {
   if (!bg || bg.key !== key) bg = { key, pace: new Pace() };
@@ -1863,6 +1867,7 @@ function statusLine(st) {
     return { text: `${label}: ${n.toLocaleString()} to go`, ...p };
   }
   bg = null;
+  if (st.paused) return { text: "Not watching the folders (paused from the tray): click to start again", f: undefined, left: null, resume: true };
   return { text: st.files ? `Up to date · ${plural(st.files, "file")}` : "Up to date", f: undefined, left: null };
 }
 
@@ -1886,8 +1891,8 @@ async function poll() {
     }
     const line = statusLine(st);
     $("status").textContent = line.text;
-    $("status").classList.toggle("job", !!(line.job && job.reopen));
-    $("status").title = line.job && job.reopen ? "Open it again" : "";
+    $("status").classList.toggle("job", !!((line.job && job.reopen) || line.resume));
+    $("status").title = line.job && job.reopen ? "Open it again" : line.resume ? "Watch the folders again" : "";
     sbBar.hidden = line.f === undefined;  // (undefined: no bar; null: one that sweeps, how much is left not known yet)
     if (line.f !== undefined) sbBar.set(line.f);
     sbLeft.textContent = fmtLeft(line.left);

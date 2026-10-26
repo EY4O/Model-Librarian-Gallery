@@ -26,6 +26,7 @@ class Watcher:
         self._stop = threading.Event()
         self._observer = None
         self.available = True
+        self.paused = False  # (from the tray: no looking for new files until it's resumed, which looks through them all)
 
     # ---------------------------------------------------------------- lifecycle
     def start(self) -> None:
@@ -73,6 +74,8 @@ class Watcher:
 
     # ---------------------------------------------------------------- events
     def touched(self, folder: dict, path: str) -> None:
+        if self.paused:
+            return
         rel = os.path.relpath(path, folder["path"]).replace("\\", "/")
         if rel.startswith("../") or not scan.kind_of(rel):
             return
@@ -82,6 +85,8 @@ class Watcher:
     def _loop(self) -> None:
         last_offline = last_gone = time.time()
         while not self._stop.wait(0.5):
+            if self.paused:
+                continue
             self._index_settled()
             if time.time() - last_gone > GONE_CHECK:
                 last_gone = time.time()
@@ -139,6 +144,8 @@ class _Handler:
         self.w, self.folder = watcher, folder
 
     def dispatch(self, event) -> None:
+        if self.w.paused:
+            return
         if event.is_directory:
             if event.event_type in ("moved", "deleted"):
                 self.w.lib.scan(self.folder["id"])  # a whole folder moved or went: a rescan sorts it out

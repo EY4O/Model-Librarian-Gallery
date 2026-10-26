@@ -45,6 +45,7 @@ export async function renderSettings(root, ctx) {
       field("Eagle libraries", h("label.check", { for: "set-eagle" }, eagle, " Leave them out (recommended)"), "Eagle manages the files in its *.library folders; the Gallery doesn't index or touch them.")),
     (lib.kinds || []).includes("illustrations") ? downloads(s, inbox, () => renderSettings(root, ctx)) : null,
     phones(remote, () => renderSettings(root, ctx)),
+    background(s, save),
     h("section.st-card.set", { "aria-label": "Thumbnails and videos" },
       h("div.st-card-head", {}, h("h2", {}, "Thumbnails and videos")),
       field("Thumbnail size", thumbSize, "A bigger size is made in the background as tiles need it; the smaller ones stay in the cache."),
@@ -182,6 +183,21 @@ async function pairDialog(had, again) {
     }
   }, 2000);
   dlg.addEventListener("close", () => { clearInterval(watch); again(); });
+}
+
+// ---------------------------------------------------------------- the tray: running with the window closed, and from sign-in
+function background(s, save) {
+  const tray = h("input", { type: "checkbox", id: "set-tray", checked: s.settings.tray, disabled: !s.tray_ok,
+    onchange: (e) => save({ tray: e.target.checked }, "Tray setting") });
+  const login = h("input", { type: "checkbox", id: "set-tray-login", checked: s.settings.tray_login, disabled: !s.tray_ok,
+    onchange: (e) => save({ tray_login: e.target.checked }, "Sign-in setting") });
+  return h("section.st-card.set", { "aria-label": "In the background" },
+    h("div.st-card-head", {}, h("h2", {}, "In the background")),
+    h("p.note.set-lede", {}, "In the tray, by the clock, the Gallery keeps working with its window closed: paired phones and tablets can open the library, new downloads are noticed (and told, if you like), and new files are indexed as they come. Click its icon to open the window; its menu has New downloads, Phone and tablet, Pause watching folders and Quit."),
+    field("Closing the window", h("label.check", { for: "set-tray" }, tray, " Keep running in the tray"),
+      s.tray_ok ? "Closing the window then only hides it: Quit from the tray icon's menu ends the Gallery." : "Only when the Gallery runs in its own window, on Windows."),
+    field("When you sign in", h("label.check", { for: "set-tray-login" }, login, " Start the Gallery in the tray"),
+      "With the library you opened last, its window closed until you open it. Turning this on keeps it running in the tray too."));
 }
 
 // ---------------------------------------------------------------- updates from GitHub Releases

@@ -1,6 +1,7 @@
-"""Start the Gallery: python -m mlgallery [--library DIR | --local | --data DIR] [--browser | --server] [--port N]
+"""Start the Gallery: python -m mlgallery [--library DIR | --local | --data DIR] [--browser | --server | --tray] [--port N]
 
   (default)   its own window (Edge WebView2, part of Windows), with the library opened last
+  --tray      in the tray, its window hidden until you open it (how it starts at sign-in: tray.py)
   --library   open this library (a folder with a .mlgallery folder in it; see libraries.py)
   --local     open this PC's library (the index in %LOCALAPPDATA%)
   --data      a data folder of its own, settings included (a throwaway, the tests)
@@ -129,6 +130,7 @@ def main(argv=None) -> int:
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--browser", action="store_true", help="open in your web browser instead of its own window")
     mode.add_argument("--server", action="store_true", help="run the server only and print its address")
+    mode.add_argument("--tray", action="store_true", help="start in the tray, the window hidden (Settings, Keep running in the tray)")
     ap.add_argument("--port", type=int, default=0, help="port on 127.0.0.1 (default: any free one)")
     args = ap.parse_args(argv)
 
@@ -141,6 +143,9 @@ def main(argv=None) -> int:
     data, root = pick["data"], pick["root"]
     lock = _Instance(data)
     if not lock.acquire():
+        from . import tray
+        if args.tray or tray.wake(data):  # in the tray: its window opens (at sign-in, it's simply there already)
+            return 0
         _message(f"{APP_NAME} is already open with {'the library ' + root if root else 'this library'}.")
         return 1
     running = None
@@ -160,8 +165,9 @@ def main(argv=None) -> int:
         libraries.remember(root)
     # how to open this same library again (Restart now, after an update)
     lib.reopen = ["--library", root] if root else ["--data", data] if args.data or os.environ.get("MLG_DATA") else ["--local"]
-    window = {"w": None}
+    window = {"w": None, "quitting": False, "told": False}
     stop = threading.Event()
+    icon = None  # the tray icon (in its own window, on Windows)
 
     def pick_folder():
         w = window["w"]
@@ -179,6 +185,7 @@ def main(argv=None) -> int:
             return None
 
     def quit_app():
+        window["quitting"] = True
         if window["w"]:
             _save_window_place(hwnd_of(), pick["home"])  # destroy() isn't a close: the closing event doesn't come
             window["w"].destroy()
@@ -206,6 +213,59 @@ def main(argv=None) -> int:
     if not (args.browser or args.server):
         hooks.update(pick_folder=pick_folder)
 
+    # ---------------------------------------------------------------- the tray (Settings, Keep running in the tray)
+    def in_tray() -> bool:
+        return bool(args.tray or lib.settings.get("tray"))
+
+    def open_window(view: str | None = None):
+        w = window["w"]
+        if not w:
+            return
+        try:
+            w.show()
+            w.restore()
+            hwnd = hwnd_of()
+            if hwnd and os.name == "nt":
+                from .winshell import to_front
+                to_front(hwnd)
+            if view:
+                w.evaluate_js(f"window.mlgOpen && window.mlgOpen({json.dumps(view)})")
+        except Exception:
+            pass
+
+    def tray_menu() -> list:
+        items = [{"label": "Open the Gallery", "do": open_window, "default": True}]
+        if "illustrations" in (lib.kinds or []):
+            try:
+                n = lib.inbox.count()
+            except Exception:
+                n = 0
+            items.append({"label": f"New downloads ({n:,})" if n else "New downloads", "do": lambda: open_window("downloads")})
+        items += [None,
+                  {"label": "Phone and tablet", "checked": bool(lib.settings.get("remote")), "do": lambda: switch_remote(not lib.settings.get("remote"))},
+                  {"label": "Pause watching folders", "checked": lib.watcher.paused, "do": lambda: lib.pause_watching(not lib.watcher.paused)},
+                  None, {"label": "Quit", "do": quit_app}]
+        return items
+
+    def switch_remote(on: bool):
+        from .server import remote_switch
+        try:
+            why = asyncio.run_coroutine_threadsafe(remote_switch(info["runner"].app, on), loop).result(15)
+        except Exception as ex:
+            why = str(ex)
+        if why and os.name == "nt":
+            from .winshell import notify
+            notify("Phone and tablet didn't start", why)
+
+    if not (args.browser or args.server) and os.name == "nt":
+        from .tray import Tray
+        icon = Tray(data, ICON, tray_menu, open_window, tip=f"{APP_NAME}{' - ' + os.path.basename(root) if root else ''}")
+        if icon.start():
+            icon.show(in_tray())
+            hooks.update(tray=icon)
+        else:
+            icon = None
+
     def run_server():
         asyncio.set_event_loop(loop)
         runner, port, token = loop.run_until_complete(serve(lib, args.port, **hooks))
@@ -232,13 +292,14 @@ def main(argv=None) -> int:
         else:
             import webview
             _own_taskbar_entry()
-            window["w"] = webview.create_window(APP_NAME, url, min_size=MIN_SIZE, background_color="#262626", **_window_place(pick["home"]))
+            hidden = bool(args.tray and icon)  # (started at sign-in: only the tray icon, until it's opened)
+            window["w"] = webview.create_window(APP_NAME, url, min_size=MIN_SIZE, background_color="#262626", hidden=hidden, **_window_place(pick["home"]))
 
             def shown():
                 hwnd = hwnd_of()
                 _set_window_icon(hwnd)
                 _pin_as_gallery(hwnd, pkg)
-                if hwnd and os.name == "nt":
+                if hwnd and os.name == "nt" and not hidden:
                     try:
                         from .winshell import to_front
                         to_front(hwnd)  # opened by another Gallery (switching libraries) Windows would leave it behind
@@ -247,12 +308,25 @@ def main(argv=None) -> int:
 
             def closing():
                 _save_window_place(hwnd_of(), pick["home"])
+                if icon and in_tray() and not window["quitting"]:  # into the tray: the Gallery keeps running
+                    threading.Thread(target=window["w"].hide, daemon=True).start()
+                    if not window["told"]:
+                        window["told"] = True
+                        try:
+                            from .winshell import notify
+                            notify(f"{APP_NAME} is still running", "In the tray, by the clock: click its icon to open it, or Quit from its menu.")
+                        except Exception:
+                            pass
+                    return False
+                return None
             window["w"].events.shown += shown
             window["w"].events.closing += closing
             webview.start(private_mode=False, storage_path=os.path.join(pick["home"], "webview"))
     except KeyboardInterrupt:
         pass
     finally:
+        if icon:
+            icon.stop()
         lib.stop()
         loop.call_soon_threadsafe(loop.stop)
         t.join(5)
