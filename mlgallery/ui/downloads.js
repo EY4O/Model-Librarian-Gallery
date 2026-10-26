@@ -142,6 +142,12 @@ export async function renderDownloads(root, ctx) {
         data.items.length ? h("p.dl-keys", {}, h("kbd", {}, "← → ↑ ↓"), " move ", h("kbd", {}, "F"), " file ", h("kbd", {}, "E"), " elsewhere ",
           h("kbd", {}, "D"), " dismiss ", h("kbd", {}, "X"), " select ", h("kbd", {}, "Space"), " look closer") : null),
         h("div.row", {},
+          h("button.btn", { type: "button", title: "Look in the folders again", onclick: async (e) => {
+            e.currentTarget.disabled = true;
+            await load();  // (the folders are read afresh each time)
+            ctx.counts();
+            toast(data ? (data.total ? `${plural(data.total, "download")} to file.` : "Nothing new to file.") : "Couldn't look just now.");
+          } }, icon("rescan"), "Refresh"),
           data.items.length ? h("button.btn", { type: "button", onclick: () => { data.items.forEach((it) => sel.add(it.key)); draw(); } }, `Select all ${data.items.length.toLocaleString()}`) : null,
           h("button.btn", { type: "button", onclick: () => ctx.show("settings") }, "Folders…"))),
       bar,

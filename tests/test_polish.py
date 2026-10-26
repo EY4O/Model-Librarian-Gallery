@@ -304,3 +304,38 @@ def test_moving_an_album_follows_it_in_smart_albums(lib, media):
     q = {a["name"]: a["query"] for a in lib.albums()}
     assert q["Best coast"] == 'album:"Holidays / Coast" rating:5' and q["Not trips"] == '-album:"Holidays" is:fav'
     assert [i["name"] for i in lib.files(q="album:\"Best coast\"")["items"]] == ["p0.png"]
+
+
+def test_tidying_up_albums_that_repeat_a_folder(lib, media):
+    from mlgallery import bulk, fileops
+    for i, rel in enumerate(["top.png", "Chars/Aurelia/a.png", "Chars/Aurelia/Old/b.png", "Chars/Mika/c.png", "Scenes/d.png", "Scenes/e.png"]):
+        (media / rel).parent.mkdir(parents=True, exist_ok=True)
+        image(media / rel, seed=i)
+    f = folder(lib, media)
+    scan.scan_folder(lib.db, f)
+    ids = {v["rel"]: v["id"] for v in lib.files(limit=50)["items"]}
+    put = lambda name, *rels: bulk.apply(lib.db, [ids[r] for r in rels], "album", name)
+    put("Chars / Aurelia", "Chars/Aurelia/a.png", "Chars/Aurelia/Old/b.png")  # the folder with the one inside it: a mirror
+    put("Renamed since", "Chars/Mika/c.png")                                   # another name, the same pictures: a mirror
+    put("Scenes", "Scenes/d.png")                                              # half the folder: no
+    put("Mixed", "Chars/Mika/c.png", "Scenes/e.png")                           # two folders: no
+    put("Everything", *ids)                                                    # the whole library folder: a mirror
+    lib.album_save(None, "Best", query="rating:5")                             # smart: never
+    got = {m["name"]: (m["rel"], m["n"]) for m in lib.album_mirrors()}
+    assert got == {"Chars / Aurelia": ("Chars/Aurelia", 2), "Renamed since": ("Chars/Mika", 1), "Everything": ("", 6)}
+    fileops.trash(lib.db, [ids["Scenes/e.png"]])  # (what's in the Trash counts on neither side)
+    assert "Scenes" in {m["name"] for m in lib.album_mirrors()}
+
+    # deleted together, one History step; Undo brings them back with their pictures, icons and colours
+    lib.set_look("album", next(a["id"] for a in lib.albums() if a["name"] == "Renamed since"), icon="svg:star", color="#ef5350")
+    before = {a["name"]: (a["n"], a.get("icon"), a.get("color")) for a in lib.albums()}
+    r = lib.albums_delete([m["id"] for m in lib.album_mirrors()])
+    assert r["deleted"] == 5 and [a["name"] for a in lib.albums()] == ["Best"]  # (Mixed too, now: with e.png in the Trash it's Mika's folder)
+    assert len(lib.files(limit=50)["items"]) == 5  # (the pictures stay)
+    fileops.undo(lib.db, r["op"])
+    assert {a["name"]: (a["n"], a.get("icon"), a.get("color")) for a in lib.albums()} == before
+    # one deleted alone is a History step too; a parent and what's inside it go together
+    single = lib.album_delete(next(a["id"] for a in lib.albums() if a["name"] == "Mixed"))
+    assert single["op"] and "Mixed" not in {a["name"] for a in lib.albums()}
+    fileops.undo(lib.db, single["op"])
+    assert "Mixed" in {a["name"] for a in lib.albums()}

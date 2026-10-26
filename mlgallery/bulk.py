@@ -155,6 +155,27 @@ def undo(db, kind: str, data) -> dict:
                 chars.match_file(c, i)
             c.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM file_tags)")
             return {"undone": len(data["items"])}
+        if kind == "dupes_kept":  # offered again
+            c.executemany("DELETE FROM dupes_kept WHERE files=?", [(k,) for k in data["keys"]])
+            return {"undone": len(data["keys"])}
+        if kind == "dupes_unkept":  # kept again
+            c.executemany("INSERT OR IGNORE INTO dupes_kept (files, at) VALUES (?, ?)", [(k, time.time()) for k in data["keys"]])
+            return {"undone": len(data["keys"])}
+        if kind == "album_delete":  # the albums back, with their files (into one of the same name, if one's been made since)
+            for a in data["albums"]:
+                have = c.execute("SELECT id FROM albums WHERE name=? COLLATE NOCASE", (a["name"],)).fetchone()
+                if have:
+                    aid = have[0]
+                else:
+                    free = not c.execute("SELECT 1 FROM albums WHERE id=?", (a["id"],)).fetchone()
+                    cover = a.get("cover") if a.get("cover") and c.execute("SELECT 1 FROM files WHERE id=?", (a["cover"],)).fetchone() else None
+                    aid = c.execute("INSERT INTO albums (id, name, cover, created, icon, color, query) VALUES (?,?,?,?,?,?,?)",
+                                    (a["id"] if free else None, a["name"], cover, a.get("created"), a.get("icon"), a.get("color"), a.get("query"))).lastrowid
+                for f in a["files"]:
+                    if c.execute("SELECT 1 FROM files WHERE id=?", (f["file_id"],)).fetchone():
+                        c.execute("INSERT OR IGNORE INTO album_files (album_id, file_id, source, removed, added) VALUES (?,?,?,?,?)",
+                                  (aid, f["file_id"], f["source"], f["removed"], f["added"]))
+            return {"undone": len(data["albums"])}
         if kind == "albums":
             aid = data["album"]
             if not c.execute("SELECT 1 FROM albums WHERE id=?", (aid,)).fetchone():

@@ -262,6 +262,10 @@ MIGRATIONS = [
      WHERE id IN (SELECT file_id FROM credits);
     CREATE INDEX files_site ON files (site) WHERE site IS NOT NULL;
     """,
+    # 13: duplicates you kept all of (Keep both): not offered again while the group is those same files
+    """
+    CREATE TABLE dupes_kept (files TEXT PRIMARY KEY, at REAL NOT NULL);  -- the group's file ids, sorted, with commas
+    """,
 ]
 CACHE = 256  # cached query results kept (each tied to the index as it was)
 

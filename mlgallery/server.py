@@ -130,9 +130,13 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_get("/api/albums", albums)
     r.add_post("/api/albums", album_create)
     r.add_post("/api/albums/move", album_move)
+    r.add_get("/api/albums/mirrors", album_mirrors)
+    r.add_post("/api/albums/delete", albums_delete)
     r.add_post("/api/albums/{aid}", album_update)
     r.add_delete("/api/albums/{aid}", album_delete)
     r.add_get("/api/duplicates", duplicates)
+    r.add_post("/api/duplicates/keep", duplicates_keep)
+    r.add_post("/api/duplicates/unkeep", duplicates_unkeep)
     r.add_post("/api/file/{id}/open-in-comfy", open_in_comfy)
     r.add_post("/api/file/{id}/recipe", save_recipe)
     r.add_post("/api/backup", backup_now)
@@ -1012,14 +1016,44 @@ async def album_update(request):
 
 async def album_delete(request):
     try:
-        ok = await asyncio.to_thread(_lib(request).album_delete, int(request.match_info["aid"]))
+        r = await asyncio.to_thread(_lib(request).album_delete, int(request.match_info["aid"]))
     except ValueError:
         return _err("bad id")
-    return web.json_response({"ok": True}) if ok else _err("not found", 404)
+    return web.json_response({"ok": True, **r}) if r else _err("not found", 404)
+
+
+async def album_mirrors(request):
+    """The albums holding exactly one folder's pictures (to tidy away: the folder has them anyway)."""
+    return web.json_response({"mirrors": await asyncio.to_thread(_lib(request).album_mirrors)})
+
+
+async def albums_delete(request):
+    """{ids: [...], what: a summary for History}: those albums gone, as one step Undo brings back."""
+    b = await _body(request)
+    ids = b.get("ids")
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, int) for i in ids):
+        return _err("ids: a list of album ids")
+    what = b.get("what") if isinstance(b.get("what"), str) else None
+    return web.json_response(await asyncio.to_thread(_lib(request).albums_delete, ids[:5000], what[:200] if what else None))
 
 
 async def duplicates(request):
     return web.json_response(await asyncio.to_thread(_lib(request).duplicates))
+
+
+async def duplicates_keep(request):
+    """{ids}: keep all of a duplicate group (it isn't offered again while it's those files)."""
+    ids = (await _body(request)).get("ids")
+    if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+        return _err("ids: the group's file ids")
+    try:
+        return web.json_response(await asyncio.to_thread(_lib(request).duplicates_keep, ids[:1000]))
+    except ValueError as ex:
+        return _err(str(ex), 422)
+
+
+async def duplicates_unkeep(request):
+    return web.json_response(await asyncio.to_thread(_lib(request).duplicates_unkeep))
 
 
 async def open_in_comfy(request):

@@ -340,6 +340,8 @@ function parentMenu(anchor, path) {
     { label: "Rename…", icon: "pen", onclick: () => renameParent(path) },
     { label: "New album inside…", icon: "plus", onclick: () => newAlbumIn(path) },
     { label: "Move to…", icon: "move", onclick: () => moveToDialog(path) },
+    null,
+    { label: `Delete the ${plural(insideCount(path), "album")} inside`, icon: "remove", danger: true, onclick: () => deleteBranch(path) },
   ]);
 }
 
@@ -381,7 +383,9 @@ function lookMenu(anchor, kind, it) {
         { label: "Move to…", icon: "move", onclick: () => moveToDialog(albumName(it.name)) }].filter(Boolean)),
     null,
     kind === "folder" ? { label: `Remove ${name} from the library`, icon: "remove", danger: true, onclick: () => removeFolder(it) }
-      : { label: "Delete the album", icon: "remove", danger: true, onclick: () => deleteAlbum(it) },
+      : { label: insideCount(it.name) ? "Delete just this album" : "Delete the album", icon: "remove", danger: true, onclick: () => deleteAlbum(it) },
+    ...(kind === "album" && insideCount(it.name)
+      ? [{ label: `Delete it and the ${plural(insideCount(it.name), "album")} inside`, icon: "remove", danger: true, onclick: () => deleteBranch(albumName(it.name)) }] : []),
   ]);
 }
 
@@ -447,10 +451,49 @@ async function renameAlbum(a) {
   } catch (e) { toast(e.message, true); }
 }
 
+// an album goes (its files stay where they are): one History step, so the toast's Undo (or Ctrl+Z) brings it back
 async function deleteAlbum(a) {
-  if (!await ask(`Delete the album ${a.name}?`, `Only the album goes: its ${plural(a.n, "file")} stay exactly where they are.`, { ok: "Delete the album", danger: true })) return;
-  await api(`/albums/${a.id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
+  try {
+    const r = await api(`/albums/${a.id}`, { method: "DELETE" });
+    org.done(r, `Deleted the album ${a.name}: its files stay where they are.`);
+  } catch (e) { toast(e.message, true); }
   loadAlbums();
+}
+
+// an album and the albums inside it, or (a name that's only their parent) those: one History step too
+async function deleteBranch(path) {
+  const ids = state.albums.filter((a) => sameName(a.name, path) || inside(a.name, path)).map((a) => a.id);
+  if (!ids.length) return;
+  try {
+    const r = await api("/albums/delete", { method: "POST", body: { ids, what: `Deleted ${path} and ${plural(ids.length, "album")}` } });
+    org.done(r, `Deleted ${plural(r.deleted, "album")} (${leafName(path)} and what's inside): their files stay where they are.`);
+  } catch (e) { toast(e.message, true); }
+  loadAlbums();
+}
+const insideCount = (path) => state.albums.filter((a) => inside(a.name, path)).length;
+
+// Tidy up: the albums holding exactly what one folder does (Eagle's folders, brought in as both), to delete in one go
+async function tidyAlbums() {
+  let mirrors;
+  try { mirrors = (await api("/albums/mirrors")).mirrors; } catch (e) { toast(e.message, true); return; }
+  if (!mirrors.length) return toast("No album only repeats a folder: each one holds something its folder doesn't.");
+  const boxes = mirrors.map((m) => h("input", { type: "checkbox", checked: true, value: m.id }));
+  const count = () => boxes.filter((b) => b.checked).length;
+  const { go } = org.dialog("Tidy up albums", h("div", {},
+    h("p.dialog-text", {}, `${plural(mirrors.length, "album")} hold exactly the pictures of a folder (with the folders inside it), so the folder has them anyway. Delete the ticked ones? The pictures stay where they are, and Undo brings the albums back.`),
+    h("ul.tidy-list", {}, mirrors.map((m, i) => h("li", {}, h("label", {}, boxes[i],
+      h("span.tl-name", { title: m.name }, m.name, h("span.tl-where", {}, `the same as ${m.folder}`
+        + ({ 0: "", 1: " · the album inside it stays" }[insideCount(m.name)] ?? ` · the ${insideCount(m.name)} albums inside it stay`))), h("span.n", {}, m.n.toLocaleString())))))), {
+    wide: true, danger: true, submitLabel: `Delete ${plural(mirrors.length, "album")}`,
+    submit: async () => {
+      const ids = boxes.filter((b) => b.checked).map((b) => Number(b.value));
+      if (!ids.length) throw new Error("Tick the albums to delete.");
+      const r = await api("/albums/delete", { method: "POST", body: { ids, what: `Tidied up ${plural(ids.length, "album")} that repeated a folder` } });
+      org.done(r, `Deleted ${plural(r.deleted, "album")} that only repeated a folder.`);
+      loadAlbums();
+    },
+  });
+  for (const b of boxes) b.addEventListener("change", () => { go.textContent = `Delete ${plural(count(), "album")}`; go.disabled = !count(); });
 }
 
 function actKey(e) {
@@ -1889,6 +1932,7 @@ $("view-duplicates").onclick = () => selectView("duplicates");
 $("view-history").onclick = () => selectView("history");
 $("view-settings").onclick = () => selectView("settings");
 $("album-new").onclick = newAlbum;
+$("album-tidy").onclick = tidyAlbums;
 $("empty-trash").onclick = () => org.emptyTrash(null, state.total);
 $("view-characters").onclick = () => selectView("characters");
 $("view-review").onclick = () => selectView("review");

@@ -1,7 +1,7 @@
 // Model Librarian Gallery: organising - the dialogs for tags, albums and moves, the Duplicates and History
 // pages, and Undo. A selection is a list of file ids, or a whole view ({view: {...}}).
 
-import { api, ask, baseName, fmtDate, fmtSize, h, icon, media, plural, stars, toast } from "./util.js";
+import { api, ask, baseName, fmtDate, fmtDur, fmtSize, h, icon, media, plural, stars, toast } from "./util.js";
 import { preview } from "./characters.js";
 
 let refreshAll = () => {};
@@ -290,6 +290,15 @@ export async function renderDuplicates(root) {
   if (d.stale) setTimeout(() => { if (root.isConnected && !root.hidden && root.querySelector("h1")?.textContent === "Duplicates") renderDuplicates(root); }, 4000);
   const extra = (g) => g.files.slice(1).map((f) => f.id);
   const all = d.groups.flatMap(extra);
+  const bothOf = (g) => (g.files.length === 2 ? "Keep both" : `Keep all ${g.files.length}`);
+  // they're not to be thinned out: the group goes from the list (remembered; it comes back if another copy turns up)
+  const keepAll = async (g, card) => {
+    try {
+      const r = await api("/duplicates/keep", { method: "POST", body: { ids: g.files.map((f) => f.id) } });
+      card?.remove();
+      done(r, `${g.files.length === 2 ? "Both kept" : `All ${g.files.length} kept`}: they won't be offered as duplicates again.`);
+    } catch (e) { toast(e.message, true); }
+  };
   root.replaceChildren(...[
     h("header.st-head", {}, h("h1", {}, "Duplicates"),
       all.length ? h("button.btn", { type: "button", onclick: async () => {
@@ -298,7 +307,11 @@ export async function renderDuplicates(root) {
     d.groups.length ? h("div.st-lede", {},
       h("p", {}, `${plural(d.groups.length, "group")}, ${fmtSize(d.wasted)} to free.`),
       h("p.st-none", {}, "Each keeps its first file: the rated or favourite one, then the one with generation data, then the biggest. Pick another to keep it instead; the rest go to the Trash."))
-      : h("p.st-none", {}, "No duplicates: no file is a copy of another, and no picture is saved twice."),
+      : h("p.st-none", {}, d.kept ? "No duplicates left to look at." : "No duplicates: no file is a copy of another, and no picture is saved twice."),
+    d.kept ? h("p.st-none", {}, `${plural(d.kept, "group")} you kept all of ${d.kept === 1 ? "isn't" : "aren't"} shown. `,
+      h("button.link", { type: "button", onclick: async () => {
+        try { const r = await api("/duplicates/unkeep", { method: "POST" }); done(r, `${plural(r.count, "group")} offered again.`); renderDuplicates(root); } catch (e) { toast(e.message, true); }
+      } }, "Show them again")) : null,
     ...d.groups.map((g) => {
       let keep = 0;
       const files = h("div.d-files");
@@ -310,40 +323,56 @@ export async function renderDuplicates(root) {
             f.rating ? stars(f.rating, { size: 10 }) : null),
           i === keep ? h("span.d-keep", {}, "Kept") : h("button.link", { type: "button", onclick: () => { keep = i; draw(); } }, "Keep this one instead")))));
       draw();
-      return h("section.st-card", { "aria-label": `${g.kind} group` },
-        h("div.st-card-head", {}, h("h2", {}, g.kind === "copies" ? "Copies of one file" : "The same picture, saved more than once"),
-          h("button.btn.small", { type: "button", title: "Look at them side by side, at full size", onclick: () => compare(g, keep, async (k) => {
+      const card = h("section.st-card", { "aria-label": `${g.kind} group` },
+        h("div.st-card-head", {}, h("h2", {}, g.kind === "copies" ? "Copies of one file" : g.files.some((f) => f.kind === "video") ? "The same video, saved more than once" : "The same picture, saved more than once"),
+          h("button.btn.small", { type: "button", title: "Look at them side by side, at full size (videos play together)", onclick: () => compare(g, keep, async (k) => {
             keep = k;
             draw();
             const others = g.files.filter((_, i) => i !== keep).map((f) => f.id);
             if (await trashFiles(others)) renderDuplicates(root);
-          }) }, "Compare"),
+          }, { both: bothOf(g), keepAll: () => keepAll(g, card) }) }, "Compare"),
+          h("button.btn.small", { type: "button", title: "They're not duplicates to thin out: don't offer them again", onclick: () => keepAll(g, card) }, bothOf(g)),
           h("button.btn.small", { type: "button", onclick: async () => {
             const others = g.files.filter((_, i) => i !== keep).map((f) => f.id);
             if (await trashFiles(others)) renderDuplicates(root);
           } }, `Trash the other ${g.files.length - 1}`)),
         files);
+      return card;
     }),
   ]);
 }
 
 // the copies of one picture side by side (four at a time, ← → for more), filling the window: fitted, or at actual size
-// (scrolling together); pick the one to keep
+// (scrolling together); videos play, pause and seek together, the kept one with sound. Pick the one to keep, or keep them all
 const SIDE = 4;
-function compare(g, keep, choose) {
+function compare(g, keep, choose, { both = "Keep all", keepAll = null } = {}) {
   let actual = false, page = Math.floor(keep / SIDE);
   const pages = Math.ceil(g.files.length / SIDE);
+  const videos = () => panes.map((p) => p.video).filter(Boolean);
+  const follow = (v, what) => {  // the others do as this one did
+    if (v._quiet) return;
+    for (const o of videos()) {
+      if (o === v) continue;
+      o._quiet = true;
+      if (what === "seek" || Math.abs(o.currentTime - v.currentTime) > 0.3) o.currentTime = Math.min(v.currentTime, o.duration || v.currentTime);
+      if (what === "play") o.play().catch(() => {});
+      if (what === "pause") o.pause();
+      setTimeout(() => { o._quiet = false; }, 50);
+    }
+  };
   const pane = (f, i) => {
-    const img = h("img", { src: media("file", f.id), alt: f.name, draggable: false });
+    const video = f.kind === "video" ? h("video", { src: media("file", f.id), controls: true, loop: true, playsInline: true, preload: "metadata", muted: i !== keep }) : null;
+    if (video) for (const t of ["play", "pause", "seeked"]) video.addEventListener(t, () => follow(video, t === "seeked" ? "seek" : t));
+    const img = video || h("img", { src: media("file", f.id), alt: f.name, draggable: false });
     const scroller = h("div.cmp-pic", {}, img);
     scroller.addEventListener("scroll", () => {  // at actual size, the others follow: the same spot in each
       if (!actual || scroller._following) return;
       for (const p of panes) if (p.scroller !== scroller) { p.scroller._following = true; p.scroller.scrollTop = scroller.scrollTop; p.scroller.scrollLeft = scroller.scrollLeft; requestAnimationFrame(() => { p.scroller._following = false; }); }
     });
-    return { scroller, el: h("figure.cmp-one" + (i === keep ? ".keep" : ""), {}, scroller,
+    return { scroller, video, el: h("figure.cmp-one" + (i === keep ? ".keep" : ""), {}, scroller,
       h("figcaption", {},
         h("span.cmp-name", { title: `${f.folder_path}\\${f.rel}` }, f.name),
-        h("span.cmp-sub", {}, [f.width ? `${f.width} × ${f.height}` : "", fmtSize(f.size), fmtDate(f.mtime), f.meta === 1 ? "generation data" : ""].filter(Boolean).join(" · ")),
+        h("span.cmp-sub", {}, [f.width ? `${f.width} × ${f.height}` : "", f.duration ? fmtDur(f.duration) : "", fmtSize(f.size), fmtDate(f.mtime), f.meta === 1 ? "generation data" : ""].filter(Boolean).join(" · ")),
         f.rating ? stars(f.rating, { size: 10 }) : null,
         h("button.btn.small" + (i === keep ? ".primary" : ""), { type: "button", onclick: () => { shut(); choose(i); } }, icon("check"), "Keep this one"))) };
   };
@@ -354,6 +383,7 @@ function compare(g, keep, choose) {
   const next = h("button.icon-btn", { type: "button", "aria-label": "The next ones", title: "The next ones (→)", onclick: () => turn(1) }, "›");
   const turn = (d) => {
     page = Math.max(0, Math.min(pages - 1, page + d));
+    for (const v of videos()) v.pause();
     const from = page * SIDE, shown = g.files.slice(from, from + SIDE);
     panes = shown.map((f, k) => pane(f, from + k));
     row.style.gridTemplateColumns = `repeat(${shown.length}, minmax(0, 1fr))`;
@@ -368,7 +398,7 @@ function compare(g, keep, choose) {
     box.classList.toggle("actual", actual);
     size.textContent = actual ? "Fit to the window" : "Actual size";
   } }, "Actual size");
-  const shut = () => { box.remove(); document.removeEventListener("keydown", esc, true); };
+  const shut = () => { for (const v of videos()) v.pause(); box.remove(); document.removeEventListener("keydown", esc, true); };
   const esc = (e) => {
     if (e.key === "Escape") shut();
     else if (e.key === "ArrowLeft" || e.key === "ArrowRight") turn(e.key === "ArrowLeft" ? -1 : 1);
@@ -377,7 +407,8 @@ function compare(g, keep, choose) {
     e.preventDefault();
   };
   const box = h("div.cmp", { role: "dialog", "aria-label": "Compare" },
-    h("header.cmp-bar", {}, h("span", {}, `${plural(g.files.length, "copy", "copies")}: keep one, the rest go to the Trash`), h("span.spacer"), prev, where, next, size,
+    h("header.cmp-bar", {}, h("span", {}, `${plural(g.files.length, "copy", "copies")}: keep one, the rest go to the Trash`), h("span.spacer"), prev, where, next,
+      keepAll ? h("button.btn.small", { type: "button", title: "They're not duplicates to thin out: don't offer them again", onclick: () => { shut(); keepAll(); } }, both) : null, size,
       h("button.icon-btn", { type: "button", "aria-label": "Close", title: "Close (Esc)", onclick: shut }, icon("remove"))),
     row);
   turn(0);

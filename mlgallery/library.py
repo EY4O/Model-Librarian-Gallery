@@ -40,6 +40,11 @@ KINDS = ("ai", "photos", "illustrations")  # AI generations, photos, illustratio
 WHO = ("character", "person")  # an entry in Characters / People: someone made up, or someone in your photos
 # what each file is, from what's been read of it: generation data, else a date taken (camera, phone), else neither
 FILE_IS = {"ai": "f.meta = 1", "photo": "f.meta <> 1 AND f.taken IS NOT NULL", "illustration": "f.meta <> 1 AND f.taken IS NULL"}
+def dupes_key(ids) -> str:
+    """A duplicates group as one text: its file ids, sorted (a group of other files is another group)."""
+    return ",".join(str(i) for i in sorted({int(i) for i in ids}))
+
+
 TRASHED_MOTION = "SELECT motion FROM files WHERE missing=2 AND motion IS NOT NULL"  # Live Photo videos in the Trash with their photo
 ITEM = ("f.id, f.name, f.rel, f.ext, f.kind, f.width, f.height, f.size, f.mtime, f.taken, f.shot, f.motion, f.duration, f.thumb, f.folder_id, f.meta,"
         " COALESCE(m.rating, 0) AS rating, COALESCE(m.favorite, 0) AS favorite")
@@ -918,6 +923,55 @@ class Library:
                     c.execute("UPDATE albums SET query=? WHERE id=?", (q2, aid))
         return {"moved": len(renamed), "name": new}
 
+    def album_mirrors(self) -> list[dict]:
+        """Albums holding exactly the pictures of one folder (with the folders inside it), whatever either is called -
+        Eagle's folders brought in as both, say: {id, name, n, folder_id, folder, rel}, rel the subfolder ('' for the folder)."""
+        with self.db.read() as c:
+            roots = {r[0]: r[1] for r in c.execute("SELECT id, path FROM folders")}
+            names = {r[0]: r[1] for r in c.execute("SELECT id, name FROM albums")}
+            held: dict[int, list] = {}
+            for aid, fid, rel in c.execute("SELECT af.album_id, f.folder_id, f.rel FROM album_files af JOIN albums al ON al.id=af.album_id"
+                                           " JOIN files f ON f.id=af.file_id WHERE af.removed=0 AND f.missing=0 AND al.query IS NULL"):
+                held.setdefault(aid, []).append((fid, rel))
+            out = []
+            for aid, files in held.items():
+                if len({fid for fid, _ in files}) != 1:
+                    continue  # (pictures from two library folders: no one folder holds them all)
+                fid = files[0][0]
+                common = files[0][1].split("/")[:-1]
+                for _, rel in files[1:]:  # the deepest folder holding them all
+                    d = rel.split("/")[:-1]
+                    k = 0
+                    while k < min(len(common), len(d)) and common[k].casefold() == d[k].casefold():
+                        k += 1
+                    common = common[:k]
+                sub = "/".join(common)
+                n = (c.execute("SELECT COUNT(*) FROM files WHERE folder_id=? AND missing=0 AND rel LIKE ? ESCAPE '\\'", (fid, f"{search._like(sub)}/%"))
+                     if sub else c.execute("SELECT COUNT(*) FROM files WHERE folder_id=? AND missing=0", (fid,))).fetchone()[0]
+                if n == len(files):  # it holds all of them, so the same pictures
+                    root = roots.get(fid, "")
+                    out.append({"id": aid, "name": names[aid], "n": n, "folder_id": fid, "rel": sub,
+                                "folder": os.path.join(os.path.basename(root.rstrip("\\/")) or root, *common)})
+        return sorted(out, key=lambda a: a["name"].casefold())
+
+    def albums_delete(self, ids, summary: str | None = None) -> dict:
+        """Albums gone (their files stay where they are) as one History step: Undo brings them back with their files."""
+        ids = sorted({int(i) for i in ids})
+        with self.db.write() as c:
+            gone = []
+            for aid in ids:
+                a = c.execute("SELECT id, name, cover, created, icon, color, query FROM albums WHERE id=?", (aid,)).fetchone()
+                if a:
+                    files = [dict(r) for r in c.execute("SELECT file_id, source, removed, added FROM album_files WHERE album_id=?", (aid,))]
+                    gone.append({**dict(a), "files": files})
+            if not gone:
+                return {"deleted": 0, "op": None}
+            c.execute(f"DELETE FROM album_files WHERE album_id IN ({','.join('?' * len(gone))})", [g["id"] for g in gone])
+            c.execute(f"DELETE FROM albums WHERE id IN ({','.join('?' * len(gone))})", [g["id"] for g in gone])
+            n = len(gone)
+            op = fileops.record(c, "album_delete", summary or (f"Deleted the album {gone[0]['name']}" if n == 1 else f"Deleted {n} albums"), {"albums": gone})
+        return {"deleted": n, "op": op}
+
     def _smart_count(self, q: str) -> tuple[int, int | None]:
         try:
             got = self.files(limit=1, q=q)
@@ -957,10 +1011,10 @@ class Library:
                     c.execute("DELETE FROM album_files WHERE album_id=?", (aid,))  # what it holds is what the search finds
         return next(a for a in self.albums() if a["id"] == aid)
 
-    def album_delete(self, aid: int) -> bool:
-        """The album goes; its files stay where they are."""
-        with self.db.write() as c:
-            return c.execute("DELETE FROM albums WHERE id=?", (int(aid),)).rowcount > 0
+    def album_delete(self, aid: int) -> dict | None:
+        """The album goes; its files stay where they are (a History step: Undo brings it back). None: no such album."""
+        r = self.albums_delete([aid])
+        return r if r["deleted"] else None
 
     def duplicates(self, limit: int = 300) -> dict:
         out, fresh = self.db.cached_lazy(("duplicates", limit), lambda: self._duplicates(limit))
@@ -969,7 +1023,7 @@ class Library:
     def _duplicates(self, limit: int = 300) -> dict:
         """Files that are the same: exact copies (the same bytes), and the same picture saved twice (another format
         or metadata). Each group lists its files, the one to keep first (with generation data, then the biggest, then the oldest)."""
-        cols = ("f.id, f.name, f.rel, f.size, f.mtime, f.width, f.height, f.kind, f.meta, f.folder_id, d.path AS folder_path,"
+        cols = ("f.id, f.name, f.rel, f.size, f.mtime, f.width, f.height, f.kind, f.duration, f.meta, f.folder_id, d.path AS folder_path,"
                 " COALESCE(m.rating, 0) rating, COALESCE(m.favorite, 0) favorite")
         live = "f.missing=0 AND d.online=1"
         with self.db.read() as c:
@@ -986,11 +1040,36 @@ class Library:
                 rows = c.execute(f"SELECT {cols} FROM files f JOIN folders d ON d.id=f.folder_id LEFT JOIN marks m ON m.file_id=f.id"
                                  f" WHERE f.id IN ({','.join('?' * len(ids))})", ids).fetchall()
                 groups.append({"kind": "same picture", "files": [dict(r) for r in rows]})
+            kept = {r[0] for r in c.execute("SELECT files FROM dupes_kept")}
+        offered = []
         for g in groups:
+            g["key"] = dupes_key(f["id"] for f in g["files"])
+            if g["key"] in kept:
+                continue  # you kept all of them (it's offered again if another copy turns up, or one goes)
             g["files"].sort(key=lambda f: (-(f["rating"] or 0), -(f["favorite"] or 0), f["meta"] != 1, -(f["size"] or 0), f["mtime"], f["id"]))  # then the one found first
             g["wasted"] = sum(f["size"] or 0 for f in g["files"][1:])
-        groups.sort(key=lambda g: -g["wasted"])
-        return {"groups": groups, "wasted": sum(g["wasted"] for g in groups)}
+            offered.append(g)
+        offered.sort(key=lambda g: -g["wasted"])
+        return {"groups": offered, "wasted": sum(g["wasted"] for g in offered), "kept": len(kept & {g["key"] for g in groups})}
+
+    def duplicates_keep(self, ids) -> dict:
+        """Keep both (or all): the group isn't offered again while it's these files. One History step."""
+        key = dupes_key(ids)
+        if key.count(",") < 1:
+            raise ValueError("A group is two files or more.")
+        with self.db.write() as c:
+            c.execute("INSERT OR REPLACE INTO dupes_kept (files, at) VALUES (?, ?)", (key, time.time()))
+            n = key.count(",") + 1
+            op = fileops.record(c, "dupes_kept", f"Kept {'both' if n == 2 else f'all {n}'} of a duplicate group", {"keys": [key]})
+        return {"op": op}
+
+    def duplicates_unkeep(self) -> dict:
+        """Offer the groups you kept again (one History step: Undo keeps them again)."""
+        with self.db.write() as c:
+            keys = [r[0] for r in c.execute("SELECT files FROM dupes_kept")]
+            c.execute("DELETE FROM dupes_kept")
+            op = fileops.record(c, "dupes_unkept", f"Offered {len(keys)} kept duplicate groups again", {"keys": keys}) if keys else None
+        return {"op": op, "count": len(keys)}
 
     def _warm(self) -> None:
         """When indexing has gone quiet, count up Statistics and the like ahead of time, so they open at once."""

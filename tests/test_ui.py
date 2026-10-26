@@ -699,6 +699,15 @@ def test_albums_and_subfolders_nest_in_the_sidebar(server):
             # a move (as a drag or Move to... makes) takes the album inside with it, and the sidebar follows
             await e.js("[...document.querySelectorAll('#albums .nav-item')].find(b => b.title === 'Nest / Inner').click(); true")
             await e.wait("document.getElementById('view-title').textContent === 'Nest / Inner'")
+            # a parent that's only a name can be deleted with what's inside it, from its right-click menu
+            await e.js("[...document.querySelectorAll('#albums .nav-item')].find(b => b.title === 'Nest').dispatchEvent(new MouseEvent('contextmenu', {bubbles: true})); true")
+            await e.wait("document.querySelector('.menu')?.innerText.includes('Delete the 2 albums inside')")
+            await e.key("Escape")
+            # Tidy up: Nest's albums hold a few of a folder's pictures, not all of them: not offered
+            await e.js("document.getElementById('album-tidy').click(); true")
+            await e.wait("document.querySelector('.tidy-list') || document.querySelector('.toast')?.textContent.startsWith('No album only repeats')")
+            assert not await e.js("[...document.querySelectorAll('.tidy-list .tl-name')].some(n => n.title.startsWith('Nest'))")
+            await e.js("document.querySelector('dialog[open]')?.close(); true")
             # a folder's subfolders: opened from its arrow, each a view of what's in it and deeper
             await e.js("document.querySelector('#folders .twist:not(.none)').click(); true")
             await e.wait("document.querySelectorAll('#folders .nav-item').length > 1")

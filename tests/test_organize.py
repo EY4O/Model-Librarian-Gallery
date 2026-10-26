@@ -196,6 +196,26 @@ def test_duplicates(lib, tmp_path):
     same = next(g for g in d["groups"] if g["kind"] == "same picture")
     assert {f["name"] for f in same["files"]} == {"f1.png", "f1-again.jpg"}
 
+    # Keep both: not offered again (one History step), until the group changes; Show them again offers them
+    r = lib.duplicates_keep([f["id"] for f in copies["files"]])
+    d = lib._duplicates()
+    assert [g["kind"] for g in d["groups"]] == ["same picture"] and d["kept"] == 1
+    fileops.undo(lib.db, r["op"])
+    assert len(lib._duplicates()["groups"]) == 2
+    lib.duplicates_keep([f["id"] for f in copies["files"]])
+    shutil.copy2(a / "f0.png", b / "copy-2.png")  # a third copy: another group, offered
+    for f in lib.folders():
+        scan.scan_folder(lib.db, f)
+    d = lib._duplicates()
+    assert len(next(g for g in d["groups"] if g["kind"] == "copies")["files"]) == 3 and d["kept"] == 0
+    lib.duplicates_keep([f["id"] for f in next(g for g in d["groups"] if g["kind"] == "copies")["files"]])
+    u = lib.duplicates_unkeep()
+    assert u["count"] == 2 and len(lib._duplicates()["groups"]) == 2
+    fileops.undo(lib.db, u["op"])
+    assert len(lib._duplicates()["groups"]) == 1
+    with pytest.raises(ValueError):
+        lib.duplicates_keep([copies["files"][0]["id"]])
+
 
 def test_select_a_whole_view(lib, tmp_path):
     a, b, fa, fb, ids = setup(lib, tmp_path)
