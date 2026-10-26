@@ -386,6 +386,13 @@ def test_what_each_file_is_in_a_mixed_library(lib, media):
     from mlgallery import stats
     t = stats.overview(lib, 0, None)["totals"]
     assert (t["with_data"], t["photos"], t["illustrations"]) == (1, 2, 1)
+    # Statistics for some kinds only: each count, the timeline and the folders keep to them; all of them is every file
+    one = stats.overview(lib, 0, None, fresh=True, parts=["photo"])
+    assert (one["totals"]["n"], one["totals"]["photos"], one["totals"]["with_data"], one["parts"]) == (2, 2, 0, ["photo"])
+    assert sum(p["images"] for p in one["timeline"]["points"]) == 2 and one["folders"][0]["n"] == 2
+    two = stats.overview(lib, 0, None, fresh=True, parts=["illustration", "ai"])
+    assert (two["totals"]["n"], two["totals"]["with_data"], two["totals"]["illustrations"], two["parts"]) == (2, 1, 1, ["ai", "illustration"])
+    assert stats.overview(lib, 0, None, fresh=True, parts=["ai", "photo", "illustration"])["totals"]["n"] == 4 == stats.overview(lib, 0, None, fresh=True, parts=["nonsense"])["totals"]["n"]
 
 
 def _meta_rows(lib):

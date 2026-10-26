@@ -12,10 +12,12 @@ export async function renderSettings(root, ctx) {
     [s, { folders }, lb, { folders: inbox }, remote] = await Promise.all([api("/settings"), api("/folders"), api("/libraries"), api("/inbox/folders"), api("/remote")]);
   } catch (e) { toast(e.message, true); return; }
   const save = async (patch, what) => {
+    const at = document.activeElement?.id;  // (the switch you were on: still there once the page is drawn again)
     try {
       await api("/settings", { method: "POST", body: patch });
       toast(`${what} saved.`);
-      renderSettings(root, ctx);
+      await renderSettings(root, ctx);
+      if (at) document.getElementById(at)?.focus();
     } catch (e) { toast(e.message, true); }
   };
   const text = (key, placeholder, what) => {
@@ -67,7 +69,10 @@ export async function renderSettings(root, ctx) {
       field("Data folder", h("div.row", {}, h("code", {}, s.data_dir), h("button.btn.small", { type: "button", onclick: () => api("/open-data", { method: "POST" }).catch((e) => toast(e.message, true)) }, "Open")),
         "The index, thumbnails, settings and backups. Your media is never written to, except when you move or delete files here."),
       field("Backups", h("div.row", {}, h("span", {}, s.last_backup ? `Last: ${s.last_backup.replace(/^library-|\.db$/g, "")}` : "None yet"),
-        h("button.btn.small", { type: "button", onclick: async () => { await api("/backup", { method: "POST" }); toast("Backed up."); renderSettings(root, ctx); } }, "Back up now")),
+        h("button.btn.small", { type: "button", onclick: async () => {
+          try { await api("/backup", { method: "POST" }); toast("Backed up."); } catch (e) { toast(e.message, true); }
+          renderSettings(root, ctx);
+        } }, "Back up now")),
         "A copy of the index each day; the last 7 are kept."),
       s.shortcut === null ? null : field("Start menu", h("div.row", {},
         s.shortcut ? h("span", {}, "The Gallery is in the Start menu.") : null,
@@ -95,7 +100,8 @@ function downloads(s, inbox, again) {
       h("button.btn.small", { type: "button", onclick: async () => { const p = await pickFolder("Another folder for new downloads", "Add"); if (p) set({ add: p }, `${baseName(p)} added.`); } }, "Add a folder")),
     h("p.note.set-lede", {}, "The pictures and videos in these folders are offered for filing (New downloads, in the sidebar): moved into the library with who made them and where they're from. Only the folders themselves are looked in, not the folders inside them."),
     field("Downloads", h("label.check", { for: "set-inbox-dl" }, dl, " Windows' Downloads folder"),
-      inbox.find((f) => f.downloads)?.path || (s.settings.inbox_downloads ? "Not found on this PC." : null)),
+      [inbox.find((f) => f.downloads)?.path || (s.settings.inbox_downloads ? "Not found on this PC." : null),
+        "With its Model Librarian Gallery folder inside, where the Chrome extension saves (off with it)."].filter(Boolean).join(" ")),
     others.length ? h("ol.set-folders", {}, others.map((f) => h("li", {},
       h("span.sf-name", {}, baseName(f.path)), h("code", {}, f.path),
       f.ok ? null : h("span.st-none", {}, f.why),
@@ -141,8 +147,8 @@ function phones(r, again) {
   return h("section.st-card.set", { "aria-label": "Phone and tablet" },
     h("div.st-card-head", {}, h("h2", {}, "Phone and tablet"),
       r.on && r.running ? h("button.btn.small", { type: "button", onclick: () => pairDialog(new Set(r.devices.map((d) => d.id)), again) }, "Pair a device…") : null),
-    h("p.note.set-lede", {}, "Look through the library on a phone or tablet: on your home Wi-Fi, or anywhere over Tailscale. It can rate, favourite, tag, put in albums, Swipe and delete to the Trash. Only devices you pair here are let in, and only from a private network, never the open internet. Settings, folders, moving and renaming files, Eagle and filing downloads stay on this PC."),
-    field("Phones and tablets", h("label.check", { for: "set-remote" }, on, " Let paired devices open the library"),
+    h("p.note.set-lede", {}, "Look through the library on a phone or tablet: on your home Wi-Fi, or anywhere over Tailscale. It can rate, favourite, tag, put in albums, Swipe and delete to the Trash. Only devices you pair here are let in, and only from private addresses (home networks and Tailscale). Settings, folders, moving and renaming files, Eagle and filing downloads stay on this PC."),
+    field("Phone and tablet", h("label.check", { for: "set-remote" }, on, " Let paired phones and tablets open the library"),
       r.on && !r.running ? "On, but not listening: another program has the port. Pick another one below."
         : "The first time, Windows asks whether the Gallery may use the network: allow it on private networks."),
     field("Port", h("div.inline.set-port", {}, port, h("button.btn", { type: "button", onclick: savePort }, "Save")),
@@ -177,12 +183,15 @@ async function pairDialog(had, again) {
     const added = now?.devices.find((d) => !had.has(d.id));
     if (added) {
       clearInterval(watch);
-      dlg.close();
       toast(`${added.name} is paired.`);
-      again();
+      dlg.close();  // (which draws the page again)
     }
   }, 2000);
-  dlg.addEventListener("close", () => { clearInterval(watch); again(); });
+  dlg.addEventListener("close", () => {
+    clearInterval(watch);
+    api("/remote/code/cancel", { method: "POST" }).catch(() => {});  // (a photo of the QR code can't pair anything later)
+    again();
+  });
 }
 
 // ---------------------------------------------------------------- the tray: running with the window closed, and from sign-in

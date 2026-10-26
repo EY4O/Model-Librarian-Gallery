@@ -90,3 +90,14 @@ def test_emptying_the_trash_clears_the_kept_originals(lib, media, monkeypatch):
     with pytest.raises(fileops.OpError, match="isn't kept"):
         fileops.undo(lib.db, r["op"])
     assert os.path.isfile(p)  # the edited file itself stays
+
+
+def test_two_edits_within_a_second_keep_the_original(lib, media):
+    from PIL import Image
+    p, fid = one(lib, media, "twice.png")
+    before = Image.open(p).size
+    r1 = edit.apply(lib.db, fid, rotate=90)
+    r2 = edit.apply(lib.db, fid, crop=[0, 0, 50, 50])  # (the same second, as often as not)
+    fileops.undo(lib.db, r2["op"])
+    fileops.undo(lib.db, r1["op"])
+    assert Image.open(p).size == before  # back to the very first, each original kept apart

@@ -754,6 +754,7 @@ def test_the_phone_layout(server):
             await e.wait("document.querySelector('.pv-pos')?.textContent.startsWith('2 of')")
             await e.js("document.querySelector('.pv-top [aria-label=Details]').click(); true")
             await e.wait("document.querySelector('.pv-sheet')?.innerText.includes('TAGS')")
+            assert "[object" not in await e.js("document.querySelector('.pv-sheet').innerText")  # (each part drawn, none as text)
             await e.js("document.querySelector('.pv-top [aria-label=Close]').click(); true")
             await e.wait("!document.querySelector('.p-viewer')")
             # Browse: the folders and albums, as in the sidebar

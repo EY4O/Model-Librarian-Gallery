@@ -67,6 +67,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_get("/api/remote", remote_get)
     r.add_post("/api/remote", remote_set)
     r.add_post("/api/remote/code", remote_code)
+    r.add_post("/api/remote/code/cancel", remote_code_cancel)
     r.add_post("/api/remote/forget", remote_forget)
     r.add_post("/api/remote/rename", remote_rename)
     r.add_static("/ui/", UI_DIR, show_index=False)
@@ -309,7 +310,7 @@ def _remote_view(request) -> dict:
 
 
 async def remote_get(request):
-    return web.json_response(_remote_view(request))
+    return web.json_response(await asyncio.to_thread(_remote_view, request))
 
 
 async def remote_switch(app, on: bool) -> str | None:
@@ -348,7 +349,7 @@ async def remote_set(request):
         if why:
             await asyncio.to_thread(lib.settings.update, {"remote": False})
             return _err(why, 409)
-    return web.json_response(_remote_view(request))
+    return web.json_response(await asyncio.to_thread(_remote_view, request))
 
 
 async def remote_code(request):
@@ -356,15 +357,20 @@ async def remote_code(request):
     if not _lib(request).settings.get("remote") or not request.app[REMOTE]["site"]:
         return _err("Turn Phone and tablet on first.", 409)
     code = request.app[DEVICES].new_code()
-    view = _remote_view(request)
+    view = await asyncio.to_thread(_remote_view, request)
     return web.json_response({**view, "code": code, "minutes": remote.CODE_FOR // 60,
                               "pair": [f"{a['url']}pair?c={code}" for a in view["addresses"]]})
+
+
+async def remote_code_cancel(request):
+    request.app[DEVICES].cancel()
+    return web.json_response({"ok": True})
 
 
 async def remote_forget(request):
     b = await _body(request)
     ok = await asyncio.to_thread(request.app[DEVICES].forget, str(b.get("id") or ""))
-    return web.json_response(_remote_view(request)) if ok else _err("not found", 404)
+    return web.json_response(await asyncio.to_thread(_remote_view, request)) if ok else _err("not found", 404)
 
 
 async def remote_rename(request):
@@ -373,7 +379,7 @@ async def remote_rename(request):
         ok = await asyncio.to_thread(request.app[DEVICES].rename, str(b.get("id") or ""), b.get("name"))
     except ValueError as ex:
         return _err(str(ex), 422)
-    return web.json_response(_remote_view(request)) if ok else _err("not found", 404)
+    return web.json_response(await asyncio.to_thread(_remote_view, request)) if ok else _err("not found", 404)
 
 
 async def _body(request: web.Request) -> dict:
@@ -399,7 +405,7 @@ async def status(request):
 async def watching(request):
     """{paused: true|false}: the folder watcher paused (as from the tray), or started again."""
     b = await _body(request)
-    await asyncio.to_thread(_lib(request).pause_watching, bool(b.get("paused")))
+    await asyncio.to_thread(_lib(request).pause_watching, b.get("paused") is True)
     return web.json_response({"paused": _lib(request).watcher.paused})
 
 
@@ -636,7 +642,9 @@ async def character_review(request):
 async def review_queue(request):
     q = request.query
     cid = int(q["character"]) if q.get("character", "").isdigit() else None
-    return web.json_response({"items": await asyncio.to_thread(_lib(request).review_queue, cid)})
+    lib = _lib(request)
+    items, counts = await asyncio.gather(asyncio.to_thread(lib.review_queue, cid), asyncio.to_thread(lib.review_counts))
+    return web.json_response({"items": items, "counts": {str(k): v for k, v in counts.items()}})
 
 
 async def trigger_words(request):
@@ -1322,7 +1330,8 @@ async def stats_view(request):
     from . import stats
     d = request.query.get("days", "30")
     days = int(d) if d.isdigit() and int(d) > 0 else None
-    return web.json_response(await asyncio.to_thread(stats.overview, _lib(request), days, _lib(request).models))
+    parts = [p for p in request.query.get("parts", "").split(",") if p]  # (some kinds of file only: ai, photo, illustration)
+    return web.json_response(await asyncio.to_thread(lambda: stats.overview(_lib(request), days, _lib(request).models, parts=parts)))
 
 
 def _settings_out(lib, updater: Updater, can_restart: bool) -> dict:

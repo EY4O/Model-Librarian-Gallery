@@ -106,5 +106,6 @@ body.p-viewing { overflow: hidden; }
 .phone .sw-star svg { width: 21px; height: 21px; }
 .phone .sw-act { padding: 10px 6px; font-size: 14px; gap: 5px; letter-spacing: .3px; }
 .phone .sw-act svg { width: 21px; height: 21px; }
+@media (max-width: 359px) { .phone .sw-act span { display: none; } .phone .sw-star { width: 25px; } }
 .phone .sw-sort { padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
 .phone .sw-albums { justify-content: flex-start; }

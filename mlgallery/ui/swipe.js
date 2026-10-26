@@ -238,8 +238,10 @@ export function swipeReview(opened, openedTitle, { onClose } = {}) {
     const have = new Map(albums.map((n) => [n.toLowerCase(), n]));
     const first = recent().map((n) => have.get(n.toLowerCase())).filter(Boolean);
     const rest = albums.filter((n) => !first.some((x) => x.toLowerCase() === n.toLowerCase()));
+    const leaves = albums.map((n) => leafName(n).toLowerCase());
+    const label = (n) => (leaves.filter((l) => l === leafName(n).toLowerCase()).length > 1 ? n.split(" / ").slice(-2).join(" / ") : leafName(n));
     shelf.replaceChildren(...[...first, ...rest].slice(0, 30).map((n) => h("button.sw-album", { type: "button", title: `Put it in ${n} and keep it`, onclick: () => decide("album", n) },
-      icon("album"), h("span", {}, leafName(n)))),
+      icon("album"), h("span", {}, label(n)))),
     h("button.sw-album.more", { type: "button", title: "Pick any album, or make one", onclick: chooseAlbum }, icon("more"), h("span", {}, "Choose…")));
   }
 

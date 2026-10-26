@@ -490,6 +490,9 @@ def undo(db, op_id: int) -> dict:
             if not cur or cur["folder_id"] != it["to_folder"] or cur["rel"] != it["to_rel"]:
                 failed.append(it["id"])  # moved again since, or gone: left alone
                 continue
+            if it["from_folder"] not in roots or it["to_folder"] not in roots:
+                failed.append(it["id"])  # (its folder isn't in the library any more)
+                continue
             src, dst = _full(roots[it["to_folder"]], it["to_rel"]), _full(roots[it["from_folder"]], it["from_rel"])
             try:
                 _move_file(src, dst)

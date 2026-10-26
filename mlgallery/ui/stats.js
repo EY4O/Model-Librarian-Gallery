@@ -1,7 +1,7 @@
 // Model Librarian Gallery: the Statistics screen. One request (/api/stats) per range; every bar and row
 // opens the library filtered to the files behind it.
 
-import { api, baseName, dayLabel, fmtNum, fmtSize, h, has, lib, plural, stacks, store, toast, who } from "./util.js";
+import { api, baseName, dayLabel, fmtNum, fmtSize, h, lib, plural, stacks, store, toast, who } from "./util.js";
 
 // photos and illustrations: files over time, one series (no model families)
 const asFiles = (mw) => ({ by: mw.by, series: [{ name: "Files", color: "#7c8cff", n: mw.series.reduce((a, s) => a + s.n, 0) }],
@@ -13,8 +13,27 @@ const KIND = { checkpoint: "CKPT", unet: "UNET", lora: "LORA" };
 let range = store.get("statsRange", "30");
 let gen = 0;
 
+// in a library for more than one kind of file: which of them Statistics counts (one or more; all of them to start)
+const PARTS = [["ai", "ai", "AI generations"], ["photos", "photo", "Photos"], ["illustrations", "illustration", "Illustrations"]];
+const offered = () => PARTS.filter(([kind]) => (lib.kinds || ["ai"]).includes(kind)).map(([, part]) => part);
+function chosen() {
+  const have = offered(), keep = (store.get("statsParts", null) || have).filter((p) => have.includes(p));
+  return keep.length ? keep : have;
+}
+const only = () => (chosen().length < offered().length ? chosen() : null);  // null: every file
+const shows = (part) => chosen().includes(part);
+// the same files in the library: is:photo for one of them, -is:illustration for two of three
+function partChips() {
+  const o = only();
+  if (!o) return [];
+  if (o.length === 1) return [{ key: "is", value: o[0] }];
+  const left = PARTS.map(([, p]) => p).filter((p) => !o.includes(p));
+  return left.map((p) => ({ key: "-is", value: p }));
+}
+
 const isoDay = (t) => { const d = new Date(t * 1000); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
-const sinceChip = () => (range === "all" ? [] : [{ key: "after", value: isoDay(Date.now() / 1000 - Number(range) * 86400) }]);
+// (the range's first day: today and the days before it, whole, as the server counts them)
+const sinceChip = () => (range === "all" ? [] : [{ key: "after", value: isoDay(Date.now() / 1000 - (Number(range) - 1) * 86400) }]);
 const quote = (v) => (/[\s"]/.test(v) ? `"${v.replaceAll('"', "")}"` : v);
 
 export async function renderStats(root, { open }) {
@@ -22,7 +41,7 @@ export async function renderStats(root, { open }) {
   root.setAttribute("aria-busy", "true");
   let data;
   try {
-    data = await api(`/stats?days=${range === "all" ? 0 : range}`);
+    data = await api(`/stats?days=${range === "all" ? 0 : range}${only() ? `&parts=${only().join(",")}` : ""}`);
   } catch (e) {
     toast(e.message, true);
     return;
@@ -31,18 +50,30 @@ export async function renderStats(root, { open }) {
   }
   if (me !== gen) return;
   if (data.stale) setTimeout(() => { if (me === gen && root.isConnected && !root.hidden) renderStats(root, { open }); }, 3000); // a fresh count is on its way
-  const go = (...chips) => open([...chips, ...sinceChip()]);
-  const ai = has("ai");  // models, LoRAs, prompts and settings only mean something for AI generations
+  const go = (...chips) => open([...chips, ...sinceChip(), ...partChips()]);
+  const ai = shows("ai");  // models, LoRAs, prompts and settings only mean something for AI generations
+  const again = () => renderStats(root, { open });
+  const kinds = offered().length > 1 ? h("div.seg", { role: "group", "aria-label": "Which files" }, PARTS.filter(([, p]) => offered().includes(p)).map(([, p, label]) => {
+    const on = shows(p);
+    return h("button" + (on ? ".on" : ""), { type: "button", "aria-pressed": String(on), title: on ? `Leave out ${label.toLowerCase()}` : `Count ${label.toLowerCase()} too`,
+      onclick: () => {
+        const next = on ? chosen().filter((x) => x !== p) : [...chosen(), p];
+        if (!next.length) return toast("Statistics counts one kind of file at least.");
+        store.set("statsParts", next);
+        again();
+      } }, label);
+  })) : null;
   root.replaceChildren(...[
     h("header.st-head", {},
       h("h1", {}, "Statistics"),
-      h("div.seg", { role: "group", "aria-label": "Time range" }, RANGES.map(([v, label]) => h("button" + (v === range ? ".on" : ""),
-        { type: "button", "aria-pressed": String(v === range), onclick: () => { range = v; store.set("statsRange", v); renderStats(root, { open }); } }, label)))),
-    data.totals.n ? null : h("p.st-empty", {}, range === "all" ? "Nothing indexed yet: add a folder to see statistics." : "Nothing made in this time range."),
+      h("div.st-filters", {}, kinds, h("div.seg", { role: "group", "aria-label": "Time range" }, RANGES.map(([v, label]) => h("button" + (v === range ? ".on" : ""),
+        { type: "button", "aria-pressed": String(v === range), onclick: () => { range = v; store.set("statsRange", v); again(); } }, label))))),
+    data.totals.n ? null : h("p.st-empty", {}, only() ? `No ${chosen().map((p) => PARTS.find((x) => x[1] === p)[2].toLowerCase()).join(" or ")} in this time range.`
+      : range === "all" ? "Nothing indexed yet: add a folder to see statistics." : "Nothing made in this time range."),
     kpis(data),
     data.totals.n && data.made_with.series.length ? (ai ? timeline(data.made_with, go, {
       title: "Made with, over time", sub: "by the model family each file was made with", caption: "Files made over time, by model family" })
-      : timeline(asFiles(data.made_with), go, { title: "Over time", sub: has("photos") ? "by the day each was taken (else modified)" : "how many files", caption: "Files over time" })) : null,
+      : timeline(asFiles(data.made_with), go, { title: "Over time", sub: shows("photo") ? "by the day each was taken (else modified)" : "how many files", caption: "Files over time" })) : null,
     data.totals.n && data.colors && data.colors.series.length ? timeline(data.colors, go, {
       title: "Colours, over time", sub: "the colours of your pictures, as shares of each column", caption: "The colours of the pictures over time, in percent",
       full: true, fmt: (v) => `${fmtNum(v)}%`, pick: (s) => go({ key: "color", value: s.name }) }) : null,
@@ -71,12 +102,13 @@ function kpis(d) {
   const t = d.totals;
   const pct = t.n ? Math.round((t.with_data / t.n) * 100) : 0;
   const tile = (label, value, note) => h("div.kpi", {}, h("span.k", {}, label), h("span.v", {}, value), note ? h("span.n", {}, note) : null);
-  const ai = has("ai");  // generation data, checkpoints and LoRAs: only AI generations have them
-  const mixed = lib.kinds && lib.kinds.length > 1;  // a library for more than one: what its files are
+  const ai = shows("ai");  // generation data, checkpoints and LoRAs: only AI generations have them
+  const mixed = chosen().length > 1;  // more than one kind counted: what its files are
   return h("div.kpis", {},
     tile(ai && !mixed ? "Made" : "Files", t.n.toLocaleString(), `${plural(t.images, "image")} · ${plural(t.videos, "video")}`),
-    mixed && tile("What they are", [has("ai") ? `${t.with_data.toLocaleString()} AI` : null, has("photos") ? `${t.photos.toLocaleString()} photos` : null,
-      has("illustrations") ? `${t.illustrations.toLocaleString()} illustrations` : null].filter(Boolean).join(" · "), "AI: generation data; photos: a date taken"),
+    mixed && tile("What they are", [shows("ai") ? `${t.with_data.toLocaleString()} AI` : null, shows("photo") ? `${t.photos.toLocaleString()} photos` : null,
+      shows("illustration") ? `${t.illustrations.toLocaleString()} illustrations` : null].filter(Boolean).join(" · "),
+      [shows("ai") ? "AI: generation data" : null, shows("photo") ? "photos: a date taken" : null, shows("illustration") ? "illustrations: neither" : null].filter(Boolean).join("; ")),
     ai && tile("With generation data", `${pct}%`, `${t.with_data.toLocaleString()} of ${t.n.toLocaleString()}`),
     ai && tile("Checkpoints used", d.models_used.toLocaleString(), d.checkpoints[0] ? `most: ${d.checkpoints[0].name}` : null),
     ai && tile("LoRAs used", d.loras_used.toLocaleString(), d.loras[0] ? `most: ${d.loras[0].name}` : null),
@@ -148,7 +180,7 @@ function timeline(mw, go, { title, sub, caption, full = false, fmt = (v) => v.to
   const swatch = (s) => h("i.sw", { style: { background: s.color } });
   const cols = pts.map((p) => {
     const total = sum(p);
-    const label = mw.by === "week" ? `Week of ${dayLabel(p.at)}` : dayLabel(p.at);
+    const label = mw.by === "week" ? `Week of ${new Date(p.at + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}` : dayLabel(p.at);
     const parts = series.filter((s) => val(p, s));
     return h("button.tl-col", { type: "button", "aria-label": `${label}: ${parts.map((s) => `${s.name} ${val(p, s)}`).join(", ") || "nothing"}`, disabled: !total,
       onclick: () => {

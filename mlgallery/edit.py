@@ -136,8 +136,12 @@ def apply(db, fid: int, rotate=0, flip=False, crop=None, copy=False, of=None) ->
             new = c.execute("SELECT id FROM files WHERE folder_id=? AND rel=?", (r["folder_id"], rel)).fetchone()
             op = fileops.record(c, "edit", f"Saved an edited copy of {r['name']}", {"copy": new[0] if new else None})
         return {"op": op, "id": new[0] if new else None, "name": name}
-    backup_rel = f"{fileops.TRASH}/edits/{time.strftime('%Y%m%d-%H%M%S')}/{r['rel']}"
-    backup = fileops._full(r["root"], backup_rel)
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    for n in range(1, 1000):  # (a second edit within the same second: its own folder, not the first one's original overwritten)
+        backup_rel = f"{fileops.TRASH}/edits/{stamp}{'' if n == 1 else f'-{n}'}/{r['rel']}"
+        backup = fileops._full(r["root"], backup_rel)
+        if not os.path.exists(backup):
+            break
     os.makedirs(os.path.dirname(backup), exist_ok=True)
     shutil.copy2(src, backup)
     _save(im, info, fmt, src + ".mlg-edit")

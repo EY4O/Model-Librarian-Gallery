@@ -15,6 +15,8 @@ def album_id(c, name: str, create: bool = True) -> int | None:
     if not name:
         return None
     r = c.execute("SELECT id, query FROM albums WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+    if not r:  # (Été for été: folded as the sidebar folds them, past A-Z)
+        r = next((x for x in c.execute("SELECT id, query, name FROM albums") if search.album_name(x[2]).casefold() == name.casefold()), None)
     if r:
         return r[0] if r[1] is None else None
     return c.execute("INSERT INTO albums (name, created) VALUES (?,?)", (name, time.time())).lastrowid if create else None
@@ -131,9 +133,19 @@ def apply(db, ids, action: str, value=None) -> dict:
     return {"op": op, "count": len(ids)}
 
 
+def alive(c, items: list, key: str = "file_id") -> list:
+    """The items whose file is still in the index (one emptied from the Trash since is gone: nothing to put back)."""
+    ids = sorted({int(it[key]) for it in items})
+    have = set()
+    for part in chars._chunks(ids):
+        have |= {r[0] for r in c.execute(f"SELECT id FROM files WHERE id IN ({','.join('?' * len(part))})", part)}
+    return [it for it in items if int(it[key]) in have]
+
+
 def undo(db, kind: str, data) -> dict:
     with db.write() as c:
         if kind == "marks":
+            data = alive(c, data)
             for m in data:
                 if m.get("source") is None and m.get("rating") is None and not m.get("favorite"):
                     c.execute("DELETE FROM marks WHERE file_id=?", (m["file_id"],))
@@ -142,6 +154,7 @@ def undo(db, kind: str, data) -> dict:
                               (m["file_id"], m.get("rating"), m.get("favorite") or 0, m.get("source") or "user", time.time()))
             return {"undone": len(data)}
         if kind == "tags":
+            data = {**data, "items": alive(c, data["items"])}
             for it in data["items"]:
                 tid = metadata.tag_id(c, it["tag"])
                 was = it["was"]
@@ -177,6 +190,7 @@ def undo(db, kind: str, data) -> dict:
                                   (aid, f["file_id"], f["source"], f["removed"], f["added"]))
             return {"undone": len(data["albums"])}
         if kind == "albums":
+            data = {**data, "items": alive(c, data["items"])}
             aid = data["album"]
             if not c.execute("SELECT 1 FROM albums WHERE id=?", (aid,)).fetchone():
                 return {"undone": 0}
@@ -203,6 +217,7 @@ def undo(db, kind: str, data) -> dict:
                               (was["state"], was["source"], was["at"], it["file_id"], cid))
             return {"undone": len(data["items"])}
         if kind == "credits":
+            data = alive(c, data)
             for it in data:
                 was = it["was"]
                 c.execute("DELETE FROM credits WHERE file_id=? AND src='user'", (it["file_id"],))

@@ -134,7 +134,7 @@ export async function renderCharacter(root, id, ctx) {
           : h("p.st-none", {}, "No checkpoint recorded in its files."),
         c.timeline.length > 1 ? h("div.c-months", { "aria-label": "Files per month" }, months(c.timeline)) : null)]),
     queue.items.length ? h("section.st-card", { "aria-label": "To review" },
-      h("div.st-card-head", {}, h("h2", {}, `To review (${queue.items.length.toLocaleString()})`), h("span", {}, `Is ${c.name} in these? Y for yes, N for no`)),
+      h("div.st-card-head", {}, h("h2", {}, `To review (${(queue.counts?.[id] ?? queue.items.length).toLocaleString()})`), h("span", {}, `Is ${c.name} in these? Y for yes, N for no`)),
       reviewGrid(queue.items, ctx, () => renderCharacter(root, id, ctx), { single: true })) : null,
     recent.items.length ? h("section.st-card", { "aria-label": "Latest" },
       h("div.st-card-head", {}, h("h2", {}, "Latest"), h("button.link", { type: "button", onclick: filter }, `All ${c.n.toLocaleString()}`)),
@@ -278,13 +278,15 @@ export async function renderReview(root, ctx) {
   }
   root.replaceChildren(...[
     h("header.st-head", {}, h("h1", {}, "To review"), h("div.keys", {}, h("kbd", {}, "Y"), " it's them ", h("kbd", {}, "N"), " it isn't ", h("kbd", {}, "← →"), " next")),
-    queue.items.length ? null : h("div.c-empty", {}, h("h2", {}, "Nothing to review"), h("p", {}, "When a weak rule (a tag) matches a file, it waits here for a yes or no.")),
+    queue.items.length ? null : h("div.c-empty", {}, h("h2", {}, "Nothing to review"), h("p", {}, "When a weak rule matches a file, it waits here for a yes or no.")),
     ...[...groups.entries()].map(([cid, g]) => h("section.st-card", { "aria-label": g.name },
-      h("div.st-card-head", {}, h("div", {}, h("h2", {}, h("button.link", { type: "button", onclick: () => ctx.show("character", cid) }, g.name), ` · ${g.items.length.toLocaleString()}`),
-        h("p.st-none", {}, "A weak rule (a tag) matched these: is it them?")),
+      h("div.st-card-head", {}, h("div", {}, h("h2", {}, h("button.link", { type: "button", onclick: () => ctx.show("character", cid) }, g.name),
+        ` · ${(queue.counts?.[cid] ?? g.items.length).toLocaleString()}`),
+        h("p.st-none", {}, (queue.counts?.[cid] || 0) > g.items.length ? `A weak rule matched these: is it them? The newest ${g.items.length.toLocaleString()} are shown; the rest come next.`
+          : "A weak rule matched these: is it them?")),
         h("div.row", {},
-          h("button.btn.small", { type: "button", onclick: () => decideAll(cid, g, "confirm") }, `All are ${g.name}`),
-          h("button.btn.small", { type: "button", onclick: () => decideAll(cid, g, "reject") }, `None are ${g.name}`))),
+          h("button.btn.small", { type: "button", onclick: () => decideAll(cid, g, "confirm") }, (queue.counts?.[cid] || 0) > g.items.length ? `These are all ${g.name}` : `All are ${g.name}`),
+          h("button.btn.small", { type: "button", onclick: () => decideAll(cid, g, "reject") }, (queue.counts?.[cid] || 0) > g.items.length ? `None of these are ${g.name}` : `None are ${g.name}`))),
       reviewGrid(g.items, ctx, () => { ctx.refresh(); renderReview(root, ctx); }, { single: true }))),
   ].filter(Boolean));
   async function decideAll(cid, g, verdict) {

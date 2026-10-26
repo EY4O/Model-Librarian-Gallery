@@ -78,7 +78,7 @@ export async function renderArtist(root, id, ctx) {
           h("button.btn.primary", { type: "button", onclick: () => filter(), disabled: !a.n }, icon("grid"), "Show all pictures"),
           h("button.btn", { type: "button", onclick: () => editArtist(a, ctx) }, "Edit"),
           h("button.btn.danger.c-del", { type: "button", onclick: async () => {
-            if (!await ask(`Take ${a.name} off the list?`, "The artist you typed for their pictures goes too. A name found in a picture itself (its file, its name, where it was downloaded from) brings the artist back as it's read again.", { ok: "Take them off", danger: true })) return;
+            if (!await ask(`Take ${a.name} off the list?`, "The artist you typed for their pictures goes too. A name found in a picture itself (its file, its name, where it was downloaded from) brings the artist straight back: to keep them off, say No artist for those pictures.", { ok: "Take them off", danger: true })) return;
             await api(`/artists/${id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
             ctx.show("artists");
           } }, "Delete")))),
@@ -168,7 +168,8 @@ export function creditEditor(info, { onFilter, onChanged }) {
       if (e.key === "Escape") src.hidden = true;
     });
     const typed = cr.found.find((r) => r.src === "user");
-    const others = cr.found.filter((r) => r.src !== "user" && r.artist && (!cr.artist || r.artist.toLowerCase() !== cr.artist.name.toLowerCase()));
+    const norm = (n) => n.toLowerCase().replace(/[_\-.]+/g, " ").replace(/\s+/g, " ").trim();  // (mika_art is Mika Art, as the Gallery matches names)
+    const others = cr.found.filter((r) => r.src !== "user" && r.artist && (!cr.artist || ![cr.artist.name, ...(cr.artist.aliases || [])].some((n) => norm(n) === norm(r.artist))));
     wrap.replaceChildren(...[
       h("div.credit-row", {},
         cr.artist ? h("span.chip.tag", { title: FROM[cr.artist_from] || "" }, h("button.link", { type: "button", onclick: () => onFilter("artist", cr.artist.name) }, cr.artist.name),

@@ -270,6 +270,10 @@ MIGRATIONS = [
 CACHE = 256  # cached query results kept (each tied to the index as it was)
 
 
+class NewerLibrary(RuntimeError):
+    """The index is from a newer Gallery (its tables may have changed in ways this one doesn't know)."""
+
+
 class Database:
     def __init__(self, path: str):
         self.path = path
@@ -343,6 +347,8 @@ class Database:
 
     def _migrate(self, c: sqlite3.Connection) -> None:
         have = c.execute("PRAGMA user_version").fetchone()[0]
+        if have > len(MIGRATIONS):
+            raise NewerLibrary(f"This library was opened by a newer Model Librarian Gallery: update this one to open it (Settings, Updates).")
         for n, sql in enumerate(MIGRATIONS[have:], start=have + 1):
             try:  # a migration applies whole or not at all
                 c.executescript(f"BEGIN;\n{sql}\nPRAGMA user_version={n};\nCOMMIT;")

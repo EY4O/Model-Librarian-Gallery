@@ -95,7 +95,7 @@ def _hash(key: str) -> str:
 def device_name(user_agent: str) -> str:
     ua = user_agent or ""
     for rx, name in ((r"iPad", "iPad"), (r"iPhone", "iPhone"), (r"Android.*Mobile", "Android phone"), (r"Android", "Android tablet"),
-                     (r"Macintosh", "Mac"), (r"Windows", "Windows PC"), (r"Linux", "Linux")):
+                     (r"Macintosh", "iPad or Mac"), (r"Windows", "Windows PC"), (r"Linux", "Linux")):  # (an iPad's Safari says it's a Mac)
         if re.search(rx, ua):
             return name
     return "Device"
@@ -118,16 +118,24 @@ class Devices:
 
     def pair(self, code: str, user_agent: str) -> str | None:
         """A device that came with the code -> its key for the cookie (the code is then used up)."""
-        if not self.code or time.time() > self.code[1] or not secrets.compare_digest(str(code or "").upper().replace("-", ""), self.code[0]):
+        typed = re.sub(r"[\s-]", "", str(code or "")).upper()  # (ABCD-2345, abcd 2345, with a space after it...)
+        if not self.code or time.time() > self.code[1] or not secrets.compare_digest(typed, self.code[0]):
             return None
         self.code = None
         did, secret = secrets.token_hex(6), secrets.token_urlsafe(24)
-        devices = [d for d in self.settings.get("remote_devices") or [] if isinstance(d, dict)]
-        name = device_name(user_agent)
-        n = sum(1 for d in devices if str(d.get("name", "")).startswith(name))
-        devices.append({"id": did, "name": f"{name} {n + 1}" if n else name, "hash": _hash(secret), "added": time.time(), "seen": time.time()})
-        self.settings.update({"remote_devices": devices[-20:]})
+        kind = device_name(user_agent)
+
+        def add(devices):
+            devices = [d for d in devices or [] if isinstance(d, dict)]
+            names = {str(d.get("name", "")) for d in devices}
+            name = kind if kind not in names else next(f"{kind} {n}" for n in range(2, 1000) if f"{kind} {n}" not in names)  # (the lowest number free)
+            return (devices + [{"id": did, "name": name, "hash": _hash(secret), "added": time.time(), "seen": time.time()}])[-20:]
+        self.settings.change("remote_devices", add)
         return f"{did}.{secret}"
+
+    def cancel(self) -> None:
+        """The pairing dialog closed: its code doesn't pair anything any more."""
+        self.code = None
 
     def check(self, cookie: str | None) -> dict | None:
         """The device this cookie is (still paired), or None."""
@@ -138,23 +146,19 @@ class Devices:
         for d in self.settings.get("remote_devices") or []:
             if isinstance(d, dict) and d.get("id") == did and secrets.compare_digest(str(d.get("hash", "")), _hash(secret)):
                 if time.time() - float(d.get("seen") or 0) > 300:  # (when it was last here: written now and then, not on every request)
-                    self.settings.fresh()
-                    devices = [dict(x, seen=time.time()) if isinstance(x, dict) and x.get("id") == did else x for x in self.settings.get("remote_devices") or []]
-                    if any(isinstance(x, dict) and x.get("id") == did for x in devices):
-                        self.settings.update({"remote_devices": devices})
+                    self.settings.change("remote_devices", lambda devices: [dict(x, seen=time.time()) if isinstance(x, dict) and x.get("id") == did else x
+                                                                              for x in devices or []])  # (one removed meanwhile stays removed)
                 return d
         return None
 
     def forget(self, did: str) -> bool:
-        devices = [d for d in self.settings.get("remote_devices") or [] if isinstance(d, dict)]
-        rest = [d for d in devices if d.get("id") != did]
-        self.settings.update({"remote_devices": rest})
-        return len(rest) < len(devices)
+        had = []
+        self.settings.change("remote_devices", lambda devices: [d for d in devices or [] if isinstance(d, dict) and not (d.get("id") == did and not had.append(d))])
+        return bool(had)
 
     def rename(self, did: str, name: str) -> bool:
         name = re.sub(r"\s+", " ", str(name or "")).strip()[:40]
         if not name:
             raise ValueError("A device needs a name.")
-        devices = [dict(d, name=name) if isinstance(d, dict) and d.get("id") == did else d for d in self.settings.get("remote_devices") or []]
-        self.settings.update({"remote_devices": devices})
-        return any(isinstance(d, dict) and d.get("id") == did for d in devices)
+        got = self.settings.change("remote_devices", lambda devices: [dict(d, name=name) if isinstance(d, dict) and d.get("id") == did else d for d in devices or []])
+        return any(isinstance(d, dict) and d.get("id") == did for d in got or [])

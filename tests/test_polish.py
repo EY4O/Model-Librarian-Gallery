@@ -339,3 +339,17 @@ def test_tidying_up_albums_that_repeat_a_folder(lib, media):
     assert single["op"] and "Mixed" not in {a["name"] for a in lib.albums()}
     fileops.undo(lib.db, single["op"])
     assert "Mixed" in {a["name"] for a in lib.albums()}
+
+
+def test_album_names_alike_but_for_their_case_are_one_name(lib, media):
+    from mlgallery import bulk
+    pictures(lib, media)
+    lib.album_save(None, "Été")
+    with pytest.raises(ValueError):
+        lib.album_save(None, "été")  # (SQLite's NOCASE leaves É alone: the Gallery doesn't)
+    ids = [i["id"] for i in lib.files()["items"]]
+    bulk.apply(lib.db, ids[:1], "album", "ÉTÉ")
+    assert [a["name"] for a in lib.albums()] == ["Été"] and lib.albums()[0]["n"] == 1
+    lib.album_save(None, "Hiver / Été")
+    with pytest.raises(ValueError):
+        lib.album_move("Hiver / Été", "Été")

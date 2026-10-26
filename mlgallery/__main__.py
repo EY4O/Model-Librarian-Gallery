@@ -155,7 +155,13 @@ def main(argv=None) -> int:
         except OSError:
             pass
 
-    lib = Library(data, pick["home"], root)
+    from .db import NewerLibrary
+    try:
+        lib = Library(data, pick["home"], root)
+    except NewerLibrary as ex:
+        _message(str(ex))
+        lock.release()
+        return 1
     lib.note = pick["note"]
     try:
         libraries.prepare(lib)  # opened from another drive letter or place: its folders follow it
@@ -215,7 +221,7 @@ def main(argv=None) -> int:
 
     # ---------------------------------------------------------------- the tray (Settings, Keep running in the tray)
     def in_tray() -> bool:
-        return bool(args.tray or lib.settings.get("tray"))
+        return bool(lib.settings.get("tray") or (args.tray and icon and icon.wanted))  # (--tray: until the tray's turned off)
 
     def open_window(view: str | None = None):
         w = window["w"]
@@ -261,7 +267,7 @@ def main(argv=None) -> int:
         from .tray import Tray
         icon = Tray(data, ICON, tray_menu, open_window, tip=f"{APP_NAME}{' - ' + os.path.basename(root) if root else ''}")
         if icon.start():
-            icon.show(in_tray())
+            icon.show(bool(args.tray or lib.settings.get("tray")))
             hooks.update(tray=icon)
         else:
             icon = None

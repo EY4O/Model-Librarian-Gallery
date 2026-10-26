@@ -227,3 +227,74 @@ def test_folder_and_album_icons_and_colours(lib, media):
     assert run(lib, go) == [200, 200, 200, 422, 422, 404]
     assert {k: lib.folders()[0][k] for k in ("icon", "color")} == {"icon": "svg:sparkle", "color": "#a78bfa"}
     assert {k: lib.albums()[0][k] for k in ("icon", "color")} == {"icon": "n:12", "color": None}
+
+
+# ---------------------------------------------------------------- found in the 1.9 QA pass
+def _two(lib, media):
+    from test_photos import folder
+    for i in range(2):
+        image(media / f"u{i}.png", seed=i)
+    f = folder(lib, media)
+    scan.scan_folder(lib.db, f)
+    return f, [r["id"] for r in lib.files()["items"]]
+
+
+def test_undo_leaves_out_files_gone_from_the_index(lib, media):
+    from mlgallery import bulk
+    f, ids = _two(lib, media)
+    for action, value in (("rate", 4), ("tag", "dusk"), ("album", "Gone"), ("artist", "Ren")):
+        r = bulk.apply(lib.db, ids, action, value)
+        with lib.db.write() as c:  # as if one had been emptied from the Trash since
+            c.execute("DELETE FROM files WHERE id=?", (ids[0],))
+        assert fileops.undo(lib.db, r["op"])["undone"] >= 1, action  # (the other put back; no crash)
+        scan.scan_folder(lib.db, f)
+        ids = [r["id"] for r in lib.files()["items"]]
+
+
+def test_undoing_a_move_after_its_folder_left_the_library(lib, media, tmp_path):
+    from test_photos import folder
+    f, ids = _two(lib, media)
+    other = tmp_path / "other"
+    other.mkdir()
+    g = folder(lib, other)
+    r = fileops.move(lib.db, ids[:1], g["id"], "")
+    lib.remove_folder(f["id"])
+    with pytest.raises(fileops.OpError):  # (said, not a crash: there's nowhere to put it back)
+        fileops.undo(lib.db, r["op"])
+
+
+def test_to_review_shows_each_characters_own(lib):
+    with lib.db.write() as c:
+        c.execute("INSERT INTO folders (id, path, added, online) VALUES (1, 'X:/none', 0, 1)")
+        for i in range(30):
+            c.execute("INSERT INTO files (id, folder_id, rel, name, ext, kind, size, mtime, shot, missing, first_seen, last_seen) VALUES (?, 1, ?, ?, '.png', 'image', 1, ?, ?, 0, 0, 0)",
+                      (i + 1, f"f{i}.png", f"f{i}.png", i, i))
+        a = c.execute("INSERT INTO characters (name) VALUES ('Aurelia')").lastrowid
+        z = c.execute("INSERT INTO characters (name) VALUES ('Zed')").lastrowid
+        for i in range(25):
+            c.execute("INSERT INTO file_characters (file_id, character_id, state, source, at) VALUES (?, ?, 'review', 'tag', 0)", (i + 1, a))
+        for i in range(25, 30):
+            c.execute("INSERT INTO file_characters (file_id, character_id, state, source, at) VALUES (?, ?, 'review', 'tag', 0)", (i + 1, z))
+    q = lib.review_queue(limit=10)
+    assert [r["character"] for r in q].count("Aurelia") == 10 and [r["character"] for r in q].count("Zed") == 5  # (Zed isn't crowded out)
+    assert q[0]["file_id"] == 25  # (newest first)
+    assert lib.review_counts() == {a: 25, z: 5}
+
+
+def test_a_library_from_a_newer_gallery_isnt_opened(tmp_path):
+    import sqlite3
+    from mlgallery.db import MIGRATIONS, Database, NewerLibrary
+    Database(str(tmp_path / "library.db"))
+    c = sqlite3.connect(str(tmp_path / "library.db"))
+    c.execute(f"PRAGMA user_version={len(MIGRATIONS) + 1}")
+    c.commit()
+    c.close()
+    with pytest.raises(NewerLibrary):
+        Database(str(tmp_path / "library.db"))
+
+
+def test_a_statistics_range_is_whole_days():
+    from mlgallery import stats
+    t = time.localtime(stats._midnight(0))
+    assert (t.tm_hour, t.tm_min, t.tm_sec) == (0, 0, 0) and stats._midnight(0) <= time.time() < stats._midnight(0) + 86400 + 3600
+    assert round((stats._midnight(0) - stats._midnight(6)) / 86400) == 6

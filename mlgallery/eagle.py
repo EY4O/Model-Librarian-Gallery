@@ -21,7 +21,7 @@ import re
 import shutil
 import time
 
-from . import bulk, colors, credits, fileops, metadata, scan
+from . import bulk, colors, credits, fileops, metadata, scan, search
 
 API = "http://localhost:41595"
 MAX_ITEMS = 100_000
@@ -291,7 +291,7 @@ def copy_in(db, plan: dict, folder_id: int, sub: str | None = None, progress=Non
 def apply_import(db, plan: dict) -> dict:
     """Give the matched files Eagle's tags, folders (as albums), ratings and notes. One History step, undoable."""
     now = time.time()
-    tagged, filed, rated, noted, sourced = [], [], [], [], []
+    tagged, filed, rated, noted, sourced, made_albums = [], [], [], [], [], []
     with db.write() as c:
         for it in plan["matched"]:
             fid = it["file_id"]
@@ -303,9 +303,12 @@ def apply_import(db, plan: dict) -> dict:
                 c.execute("INSERT INTO file_tags (file_id, tag_id, source) VALUES (?, ?, 'user') ON CONFLICT (file_id, tag_id) DO UPDATE SET removed=0", (fid, tid))
                 tagged.append({"file_id": fid, "tag": t, "was": dict(cur) if cur else None})
             for a in it.get("albums") or []:
+                had = c.execute("SELECT 1 FROM albums WHERE name=? COLLATE NOCASE", (search.album_name(a),)).fetchone()
                 aid = bulk.album_id(c, a[:100])
                 if not aid:
                     continue
+                if not had:
+                    made_albums.append(aid)
                 cur = c.execute("SELECT source, removed FROM album_files WHERE album_id=? AND file_id=?", (aid, fid)).fetchone()
                 if cur and not cur["removed"]:
                     continue
@@ -340,7 +343,8 @@ def apply_import(db, plan: dict) -> dict:
         copied = sorted({i["file_id"] for i in plan["matched"] if i.get("copied_rel")})
         op = fileops.record(c, "eagle", f"Brought in {n} file{'s' if n != 1 else ''}' tags, albums and ratings from Eagle ({plan['name']})"
                             + (f", {len(copied)} of them copied in" if copied else ""),
-                            {"tags": tagged, "albums": filed, "marks": rated, "notes": noted, "copied": copied, "sources": sourced})
+                            {"tags": tagged, "albums": filed, "marks": rated, "notes": noted, "copied": copied, "sources": sourced,
+                             "new_albums": sorted(set(made_albums))})
     return {"op": op, "files": n, "tags": len(tagged), "albums": len(filed), "ratings": len(rated), "notes": len(noted)}
 
 
@@ -348,6 +352,7 @@ def undo_import(db, data: dict) -> dict:
     """Each list backwards, so a file changed twice (two Eagle items of one picture) ends as it was."""
     from . import characters as chars
     with db.write() as c:
+        data = {**data, **{k: bulk.alive(c, data.get(k) or []) for k in ("tags", "albums", "marks", "notes")}}  # (files emptied from the Trash since: nothing to put back)
         for it in reversed(data["tags"]):
             tid = metadata.tag_id(c, it["tag"])
             if it["was"] is None:
@@ -379,8 +384,9 @@ def undo_import(db, data: dict) -> dict:
             metadata.refresh_search(c, fid)
             chars.match_file(c, fid)
         c.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM file_tags)")
-        c.execute("DELETE FROM albums WHERE id NOT IN (SELECT album_id FROM album_files) AND id IN (%s)" % ",".join(str(int(a["album"])) for a in data["albums"])
-                  if data["albums"] else "SELECT 1")
+        made = data["new_albums"] if "new_albums" in data else [a["album"] for a in data["albums"]]  # (an import from before 1.9.1 didn't say which it made)
+        if made:
+            c.execute("DELETE FROM albums WHERE id NOT IN (SELECT album_id FROM album_files) AND id IN (%s)" % ",".join(str(int(a)) for a in made))
     out = {"undone": len(data["tags"]) + len(data["albums"]) + len(data["marks"]) + len(data.get("notes") or [])}
     if data.get("copied"):  # the copies it made go to the Gallery's Trash (Eagle's own files were never touched)
         r = fileops.trash(db, data["copied"])

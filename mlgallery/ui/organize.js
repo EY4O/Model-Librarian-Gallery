@@ -17,18 +17,20 @@ export function done(res, text) {
   refreshAll();
 }
 
+const stuck = new Set();  // steps Ctrl+Z has tried that can't be undone (all the way): it goes on to the one before
 export async function undo(opId) {
   try {
     const r = await api(`/ops/${opId}/undo`, { method: "POST" });
+    if (r.failed?.length) stuck.add(opId);
     toast(r.failed?.length ? `Undone, except ${plural(r.failed.length, "file")} that changed since.` : "Undone.");
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { stuck.add(opId); toast(e.message, true); }
   refreshAll();
 }
 
 // Ctrl+Z: the latest thing that can be undone
 export async function undoLast() {
   const { ops } = await api("/ops").catch(() => ({ ops: [] }));
-  const last = ops.find((o) => o.undoable);
+  const last = ops.find((o) => o.undoable && !stuck.has(o.id));
   if (!last) return toast("Nothing to undo.");
   await undo(last.id);
 }
@@ -288,7 +290,8 @@ export async function renderDuplicates(root) {
   let d;
   try { d = await api("/duplicates"); } catch (e) { toast(e.message, true); return; } finally { root.removeAttribute("aria-busy"); }
   if (d.stale) setTimeout(() => { if (root.isConnected && !root.hidden && root.querySelector("h1")?.textContent === "Duplicates") renderDuplicates(root); }, 4000);
-  const extra = (g) => g.files.slice(1).map((f) => f.id);
+  const keepOf = new Map();  // each group's file to keep (the first, unless you picked another)
+  const extra = (g) => g.files.filter((_, i) => i !== (keepOf.get(g) ?? 0)).map((f) => f.id);
   const all = d.groups.flatMap(extra);
   const bothOf = (g) => (g.files.length === 2 ? "Keep both" : `Keep all ${g.files.length}`);
   // they're not to be thinned out: the group goes from the list (remembered; it comes back if another copy turns up)
@@ -296,13 +299,14 @@ export async function renderDuplicates(root) {
     try {
       const r = await api("/duplicates/keep", { method: "POST", body: { ids: g.files.map((f) => f.id) } });
       card?.remove();
+      d.groups.splice(d.groups.indexOf(g), 1);  // (and not in Keep one of each any more)
       done(r, `${g.files.length === 2 ? "Both kept" : `All ${g.files.length} kept`}: they won't be offered as duplicates again.`);
     } catch (e) { toast(e.message, true); }
   };
   root.replaceChildren(...[
     h("header.st-head", {}, h("h1", {}, "Duplicates"),
       all.length ? h("button.btn", { type: "button", onclick: async () => {
-        if (await trashFiles(all)) renderDuplicates(root);
+        if (await trashFiles(d.groups.flatMap(extra))) renderDuplicates(root);
       } }, `Keep one of each, Trash the other ${all.length.toLocaleString()}`) : null),
     d.groups.length ? h("div.st-lede", {},
       h("p", {}, `${plural(d.groups.length, "group")}, ${fmtSize(d.wasted)} to free.`),
@@ -315,7 +319,7 @@ export async function renderDuplicates(root) {
     ...d.groups.map((g) => {
       let keep = 0;
       const files = h("div.d-files");
-      const draw = () => files.replaceChildren(...g.files.map((f, i) => h("div.d-file" + (i === keep ? ".keep" : ""), {},
+      const draw = () => (keepOf.set(g, keep), files).replaceChildren(...g.files.map((f, i) => h("div.d-file" + (i === keep ? ".keep" : ""), {},
         h("button.d-thumb", { type: "button", title: "Look closer", onclick: () => preview(f) }, h("img", { src: media("thumb", f.id), alt: "", loading: "lazy" })),
         h("div.d-meta", {},
           h("span.d-name", { title: `${f.folder_path}\\${f.rel}` }, f.name),
@@ -354,10 +358,14 @@ function compare(g, keep, choose, { both = "Keep all", keepAll = null } = {}) {
     for (const o of videos()) {
       if (o === v) continue;
       o._quiet = true;
-      if (what === "seek" || Math.abs(o.currentTime - v.currentTime) > 0.3) o.currentTime = Math.min(v.currentTime, o.duration || v.currentTime);
+      const settle = () => { clearTimeout(o._settle); o._settle = setTimeout(() => { o._quiet = false; }, 120); };
+      if (what === "seek" || Math.abs(o.currentTime - v.currentTime) > 0.3) {
+        o.addEventListener("seeked", settle, { once: true });  // (its own seek: not one to pass on)
+        o.currentTime = Math.min(v.currentTime, o.duration || v.currentTime);
+      } else settle();
       if (what === "play") o.play().catch(() => {});
       if (what === "pause") o.pause();
-      setTimeout(() => { o._quiet = false; }, 50);
+      setTimeout(() => { if (o._quiet) settle(); }, 1500);  // (a seek that never says it's done)
     }
   };
   const pane = (f, i) => {
@@ -382,7 +390,9 @@ function compare(g, keep, choose, { both = "Keep all", keepAll = null } = {}) {
   const prev = h("button.icon-btn", { type: "button", "aria-label": "The ones before", title: "The ones before (←)", onclick: () => turn(-1) }, "‹");
   const next = h("button.icon-btn", { type: "button", "aria-label": "The next ones", title: "The next ones (→)", onclick: () => turn(1) }, "›");
   const turn = (d) => {
-    page = Math.max(0, Math.min(pages - 1, page + d));
+    const to = Math.max(0, Math.min(pages - 1, page + d));
+    if (d && to === page) return;  // (no page that way: what's playing goes on)
+    page = to;
     for (const v of videos()) v.pause();
     const from = page * SIDE, shown = g.files.slice(from, from + SIDE);
     panes = shown.map((f, k) => pane(f, from + k));

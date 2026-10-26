@@ -40,6 +40,8 @@ KINDS = ("ai", "photos", "illustrations")  # AI generations, photos, illustratio
 WHO = ("character", "person")  # an entry in Characters / People: someone made up, or someone in your photos
 # what each file is, from what's been read of it: generation data, else a date taken (camera, phone), else neither
 FILE_IS = {"ai": "f.meta = 1", "photo": "f.meta <> 1 AND f.taken IS NOT NULL", "illustration": "f.meta <> 1 AND f.taken IS NULL"}
+
+
 def dupes_key(ids) -> str:
     """A duplicates group as one text: its file ids, sorted (a group of other files is another group)."""
     return ",".join(str(i) for i in sorted({int(i) for i in ids}))
@@ -597,15 +599,24 @@ class Library:
         with self.db.write() as c:
             chars.undecide(c, int(cid), int(file_id))
 
-    def review_queue(self, cid: int | None = None, limit: int = 200) -> list[dict]:
-        """Files waiting for a yes or no, with the character and the rule kind that suggested it."""
+    def review_queue(self, cid: int | None = None, limit: int = 60) -> list[dict]:
+        """Files waiting for a yes or no, with the character and the rule kind that suggested it: up to `limit` of each
+        character's (newest first), so one with many doesn't keep the others from showing."""
         with self.db.read() as c:
             rows = c.execute(
-                "SELECT fc.file_id, fc.character_id, ch.name AS character, fc.source, f.name, f.kind, f.thumb, f.width, f.height, f.mtime"
+                "SELECT * FROM (SELECT fc.file_id, fc.character_id, ch.name AS character, fc.source, f.name, f.kind, f.thumb, f.width, f.height, f.mtime,"
+                " ROW_NUMBER() OVER (PARTITION BY fc.character_id ORDER BY f.shot DESC) k"
                 " FROM file_characters fc JOIN characters ch ON ch.id=fc.character_id JOIN files f ON f.id=fc.file_id JOIN folders d ON d.id=f.folder_id"
                 " WHERE fc.state='review' AND f.missing=0 AND d.online=1" + (" AND fc.character_id=?" if cid else "") +
-                " ORDER BY ch.name COLLATE NOCASE, f.shot DESC LIMIT ?", ((int(cid), limit) if cid else (limit,))).fetchall()
-        return [dict(r) for r in rows]
+                ") WHERE k <= ? ORDER BY character COLLATE NOCASE, k", ((int(cid), limit) if cid else (limit,))).fetchall()
+        return [{k: r[k] for k in r.keys() if k != "k"} for r in rows]
+
+    def review_counts(self) -> dict[int, int]:
+        """How many files wait for a yes or no, per character (all of them, not only the ones shown)."""
+        with self.db.read() as c:
+            return {r[0]: r[1] for r in c.execute(
+                "SELECT fc.character_id, COUNT(*) FROM file_characters fc JOIN files f ON f.id=fc.file_id JOIN folders d ON d.id=f.folder_id"
+                " WHERE fc.state='review' AND f.missing=0 AND d.online=1 GROUP BY fc.character_id")}
 
     def trigger_words(self, lora: str) -> list[str]:
         """Words to recognise a LoRA's character by: its trained words (from the sidecar files next to the LoRA,
@@ -713,8 +724,11 @@ class Library:
             raise ValueError("A link is a web address, like https://www.pixiv.net/users/12345.")
         links = list(dict.fromkeys(credits.clean_url(x) for x in typed))
         with self.db.write() as c:
-            clash = c.execute("SELECT id FROM artists WHERE name=? COLLATE NOCASE", (name,)).fetchone()
-            if clash and clash[0] != aid:
+            clash = c.execute("SELECT id, auto FROM artists WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+            hidden = clash and clash["auto"] and not c.execute("SELECT 1 FROM files WHERE artist_id=? AND missing=0", (clash["id"],)).fetchone()
+            if clash and aid is None and hidden:  # (the Gallery's own, not in the list: yours now)
+                aid = clash["id"]
+            elif clash and clash["id"] != aid:
                 raise ValueError(f"There's already an artist called {name}: give this one that as another name to make them one.")
             if aid is None:
                 aid = c.execute("INSERT INTO artists (name, created, auto) VALUES (?,?,0)", (name, time.time())).lastrowid
@@ -814,8 +828,13 @@ class Library:
             if was is None:
                 c.execute("DELETE FROM marks WHERE file_id=?", (fid,))
             elif isinstance(was, dict):
+                try:
+                    rating = max(0, min(5, int(was.get("rating") or 0)))  # (it comes back from the page: kept to what a rating can be)
+                except (TypeError, ValueError):
+                    rating = 0
+                source = was.get("source") if was.get("source") in ("user", "workflow", "eagle") else "user"
                 c.execute("INSERT OR REPLACE INTO marks (file_id, rating, favorite, source, updated) VALUES (?,?,?,?,?)",
-                          (fid, was.get("rating"), int(bool(was.get("favorite"))), was.get("source") or "user", was.get("updated") or time.time()))
+                          (fid, rating, int(bool(was.get("favorite"))), source, time.time()))
 
     def sort_reset(self, sort: str = "newest", folder: int | None = None, kind: str | None = None, q: str = "") -> int:
         """Review a view again from the start: its pictures aren't reviewed any more."""
@@ -911,8 +930,9 @@ class Library:
             renamed = [(i, " / ".join([new, *n.split(" / ")[depth:]])) for i, n in moving]
             ids = {i for i, _ in moving}
             taken = {n.casefold() for i, n in rows if i not in ids}
+            names = [n.casefold() for _, n in renamed]
             for _, n in renamed:
-                if n.casefold() in taken:
+                if n.casefold() in taken or names.count(n.casefold()) > 1:
                     raise ValueError(f"There's already an album called {n}.")
                 if len(n) > 100:
                     raise ValueError(f"{n} is too long a name (100 letters at most).")
@@ -1003,8 +1023,8 @@ class Library:
             if was and search.album_name(was[0]) != name:
                 self.album_move(was[0], name)
         with self.db.write() as c:
-            clash = c.execute("SELECT id FROM albums WHERE name=? COLLATE NOCASE", (name,)).fetchone()
-            if clash and clash[0] != aid:
+            clash = next((r[0] for r in c.execute("SELECT id, name FROM albums") if search.album_name(r[1]).casefold() == name.casefold()), None)
+            if clash and clash != aid:  # (Été and été too, which SQLite's NOCASE doesn't fold)
                 raise ValueError(f"There's already an album called {name}.")
             if aid is None:
                 aid = c.execute("INSERT INTO albums (name, created) VALUES (?,?)", (name, time.time())).lastrowid

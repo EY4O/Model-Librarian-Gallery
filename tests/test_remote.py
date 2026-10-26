@@ -153,3 +153,28 @@ def test_a_device_is_let_in_only_once_paired_and_only_so_far(lib, media, monkeyp
         finally:
             await c.close()
     asyncio.run(go())
+
+
+def test_pairing_details_from_the_qa_pass(lib):
+    d = remote.Devices(lib.settings)
+    ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"
+    keys = []
+    for _ in range(3):
+        code = d.new_code()
+        keys.append(d.pair(f" {code[:4]} {code[4:].lower()} ", ua))  # (spaces, a space after: typed as people type)
+    assert all(keys)
+    assert [x["name"] for x in d.list()] == ["iPhone", "iPhone 2", "iPhone 3"]
+    d.forget(d.list()[1]["id"])
+    code = d.new_code()
+    d.pair(code, ua)
+    assert sorted(x["name"] for x in d.list()) == ["iPhone", "iPhone 2", "iPhone 3"]  # (the lowest number free, never two alike)
+    code = d.new_code()
+    d.cancel()
+    assert d.pair(code, ua) is None  # (the dialog closed: its code is gone)
+    assert remote.device_name("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari") == "iPad or Mac"
+    # another Gallery on this PC removes one meanwhile: the "last here" written now doesn't bring it back
+    from mlgallery.config import Settings
+    gone = d.list()[0]["id"]
+    Settings(lib.home).change("remote_devices", lambda devices: [x for x in devices if x["id"] != gone])
+    d.check(keys[0])
+    assert gone not in [x["id"] for x in Settings(lib.home).get("remote_devices")]

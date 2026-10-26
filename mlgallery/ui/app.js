@@ -60,7 +60,7 @@ function renderChips() {
   $("chips").replaceChildren(...state.chips.map((c, i) => h("span.chip", { title: chipText(c) },
     h("span.k", {}, c.key), c.key === "color" && colorOf(c.value) ? h("i.chip-sw", { style: { background: colorOf(c.value) } }) : null, h("span.v", {}, c.value),
     h("button.x", { type: "button", "aria-label": `Remove ${chipText(c)}`, onclick: () => { state.chips.splice(i, 1); searchChanged(); $("q").focus(); } }, icon("remove")))));
-  renderSide();  // a shortcut to one part of a mixed library lights up while it's the search
+  sideSoon();  // a shortcut to one part of a mixed library lights up while it's the search
   $("q-clear").hidden = !state.chips.length && !state.text;
   $("q").placeholder = state.chips.length ? "" : "Search prompts, models, tags…";
   $("f-fav").setAttribute("aria-pressed", String(state.chips.some((c) => c.key === "is" && c.value === "fav")));
@@ -177,7 +177,10 @@ async function loadFolders() {
   renderSide();
 }
 
+let sideFrame = 0;
+const sideSoon = () => { cancelAnimationFrame(sideFrame); sideFrame = requestAnimationFrame(() => renderSide()); };
 function renderSide() {
+  cancelAnimationFrame(sideFrame);
   const total = state.folders.reduce((s, f) => s + (f.online ? f.file_count : 0), 0);
   $("all-count").textContent = total ? total.toLocaleString() : "";
   // a shortcut to one part of a mixed library is what's selected while it's the whole search (is:photo...), not All
@@ -199,7 +202,7 @@ function renderSide() {
       f.online ? h("span.n", {}, f.file_count.toLocaleString())
         : h("span.off", { title: "Not reachable right now (a drive that isn't plugged in?): its files are kept" }, "offline"),
       h("span.acts", {},
-        h("span.act", { role: "button", tabIndex: 0, title: "Look for new and changed files", "aria-label": `Rescan ${baseName(f.path)}`,
+        h("span.act", { role: "button", tabIndex: 0, title: "Look again: for new and changed files", "aria-label": `Look again in ${baseName(f.path)}`,
           onclick: (e) => { e.stopPropagation(); rescan(f); }, onkeydown: actKey }, icon("rescan")),
         h("span.act", { role: "button", tabIndex: 0, title: "Remove from the library (the folder and its files stay where they are)",
           "aria-label": `Remove ${baseName(f.path)}`, onclick: (e) => { e.stopPropagation(); removeFolder(f); }, onkeydown: actKey }, icon("remove")))),
@@ -465,7 +468,8 @@ async function deleteBranch(path) {
   const ids = state.albums.filter((a) => sameName(a.name, path) || inside(a.name, path)).map((a) => a.id);
   if (!ids.length) return;
   try {
-    const r = await api("/albums/delete", { method: "POST", body: { ids, what: `Deleted ${path} and ${plural(ids.length, "album")}` } });
+    const own = state.albums.some((a) => sameName(a.name, path));
+    const r = await api("/albums/delete", { method: "POST", body: { ids, what: own ? `Deleted ${path} and the ${plural(ids.length - 1, "album")} inside it` : `Deleted the ${plural(ids.length, "album")} in ${path}` } });
     org.done(r, `Deleted ${plural(r.deleted, "album")} (${leafName(path)} and what's inside): their files stay where they are.`);
   } catch (e) { toast(e.message, true); }
   loadAlbums();
@@ -507,6 +511,7 @@ const pageCtx = { open: (chips) => openFromStats(chips), show: (view, id) => sel
 
 function selectView(view, arg = null, sub = null) {
   closeMenu();
+  closeViewer();
   if (view === "random" && state.view === "random") state.seed = 1 + Math.floor(Math.random() * 1e9); // Random again: a new shuffle
   state.view = view;
   state.folder = view === "folder" ? arg : null;
@@ -868,7 +873,7 @@ function selChanged() {
     { label: "Send to Eagle…", icon: "send", onclick: () => org.sendToEagle(sel, n) },
     has("illustrations") ? { label: "Set the artist…", icon: "person", onclick: () => org.artistDialog(sel, n) } : null,
     null,
-    { label: "Not favourites", icon: "heart", onclick: () => bulk("favorite", false) },
+    { label: "Take out of favourites", icon: "heart", onclick: () => bulk("favorite", false) },
     state.view === "album" ? null : { label: "Take out of an album…", icon: "album", onclick: () => org.albumDialog(sel, n, { remove: "" }) },
     { label: "Rename…", icon: "pen", onclick: () => org.renameDialog(sel, n, { pattern: has("illustrations") ? "{artist}_{date}_{n}" : aiOnly() ? "{model}_{seed}" : "{date}_{n}" }) },
   ].filter((x, i, a) => x !== null || (i > 0 && a[i - 1] !== null))) }, icon("more"));
@@ -1077,9 +1082,12 @@ function showCount() {
 
 function showEmpty() {
   const empty = $("empty");
-  if (state.total || isPage()) { empty.hidden = true; return; }
+  if (state.total || isPage()) { empty.hidden = true; delete empty.dataset.shows; return; }
   empty.hidden = false;
+  if (state.folders.length) delete empty.dataset.shows;
   if (!state.folders.length) {
+    if (empty.dataset.shows === "start") return;  // (drawn already: it stays as it is, the focus with it)
+    empty.dataset.shows = "start";
     empty.replaceChildren(h("h2", {}, "Add a folder to start"),
       h("p", {}, "Pick a folder with your images and videos, such as ComfyUI's output folder. The Gallery reads it and moves or deletes files only when you ask."),
       h("button.btn.primary", { type: "button", onclick: addFolder }, "Add a folder"),
@@ -1097,7 +1105,8 @@ function showEmpty() {
   } else if (lastStatus && (lastStatus.scanning || lastStatus.queued)) {
     empty.replaceChildren(h("h2", {}, "Indexing…"), h("p", {}, "Your files appear here as they're found."));
   } else {
-    empty.replaceChildren(h("h2", {}, "Nothing here"), h("p", {}, state.kind ? "No files of that kind in this view." : "No images or videos were found in this folder."));
+    empty.replaceChildren(h("h2", {}, "Nothing here"), h("p", {}, state.kind ? "No files of that kind in this view."
+      : state.view === "folder" ? "No images or videos were found in this folder." : "No images or videos here."));
   }
 }
 
@@ -1125,7 +1134,7 @@ function clearSearch() {
 
 // ---------------------------------------------------------------- marks: rating and favourite
 function updateItem(id, patch) {
-  for (const items of state.pages.values()) for (const it of items) if (it.id === id) Object.assign(it, patch);
+  for (const pages of [state.pages, state.shownPages]) for (const items of pages?.values() || []) for (const it of items) if (it.id === id) Object.assign(it, patch);
   draw();
   if (viewing >= 0 && itemAt(viewing)?.id === id) renderMarks(itemAt(viewing));
 }
@@ -1410,7 +1419,11 @@ function noteEditor(info) {
     } catch (e) { toast(e.message, true); }
   };
   box.addEventListener("blur", save);
-  box.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); box.blur(); } });
+  box.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); box.blur(); e.stopPropagation(); return; }  // (blur saves it)
+    e.stopPropagation();
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); box.blur(); }
+  });
   const hint = h("span.note-hint", { "aria-live": "polite" }, info.note?.source === "eagle" ? "From Eagle" : info.note?.source === "site" ? "From the page it was saved from" : "");
   return h("div.note-wrap", {}, box, hint);
 }
@@ -1727,9 +1740,14 @@ function tagEditor(info) {
     if (e.key === "Enter" && input.value.trim()) { e.preventDefault(); change({ add: [input.value.trim()] }); input.value = ""; }
     e.stopPropagation(); // typing here isn't a shortcut
   });
-  input.addEventListener("input", async () => {
-    const { items } = await api(`/suggest?field=tag&q=${encodeURIComponent(input.value)}`).catch(() => ({ items: [] }));
-    list.replaceChildren(...items.map((t) => h("option", { value: t.name })));
+  let asked = 0, wait = null;
+  input.addEventListener("input", () => {
+    clearTimeout(wait);
+    wait = setTimeout(async () => {
+      const me = ++asked;
+      const { items } = await api(`/suggest?field=tag&q=${encodeURIComponent(input.value)}`).catch(() => ({ items: [] }));
+      if (me === asked) list.replaceChildren(...items.map((t) => h("option", { value: t.name })));
+    }, 150);
   });
   render(info.tags);
   return wrap;
@@ -1748,6 +1766,7 @@ function setDetails(open) {
 
 function closeViewer() {
   if ($("viewer").hidden) return;
+  if (slides) slideshow(false);
   if (vz.edited) cancelEdit();
   $("viewer").hidden = true;
   $("v-media").replaceChildren();
@@ -1871,6 +1890,7 @@ function statusLine(st) {
   return { text: st.files ? `Up to date · ${plural(st.files, "file")}` : "Up to date", f: undefined, left: null };
 }
 
+let pollCount = 0;
 async function poll() {
   clearTimeout(pollTimer);
   try {
@@ -1918,7 +1938,7 @@ async function poll() {
     $("inbox-count").textContent = st.inbox ? st.inbox.toLocaleString() : "";
     $("inbox-count").hidden = !st.inbox;
     if (st.update && st.update !== toldUpdate) { toldUpdate = st.update; toast(`Model Librarian Gallery ${st.update} is out: Settings, Updates.`); }
-    loadCharacters(); // matches change as files are read
+    if (busy || st.meta_pending || ++pollCount % 8 === 0) loadCharacters(); // matches change as files are read
     pollTimer = setTimeout(poll, busy ? 1500 : 4000);
   } catch {
     pollTimer = setTimeout(poll, 4000);
@@ -1961,7 +1981,7 @@ $("side-show").onclick = () => setSide(false);
 function viewPanel(anchor) {
   const seg = (opts, cur, pick) => {
     const wrap = h("div.seg.small", { role: "group" });
-    const paint = (v) => wrap.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.v === v)));
+    const paint = (v) => wrap.querySelectorAll("button").forEach((b) => { b.setAttribute("aria-pressed", String(b.dataset.v === v)); b.classList.toggle("on", b.dataset.v === v); });
     for (const [v, label] of opts) wrap.append(h("button", { type: "button", "data-v": v, onclick: () => { paint(v); pick(v); } }, label));
     paint(cur);
     return wrap;
@@ -2109,7 +2129,13 @@ function showHelp() {
 
 document.addEventListener("keydown", (e) => {
   const inField = e.target.closest?.("input, select, textarea");
-  if (e.key === "?" && !inField && !document.querySelector("dialog[open]")) { e.preventDefault(); showHelp(); return; }
+  if (e.key === "?" && !inField && !document.querySelector("dialog[open], .menu, .preview, .swipe, .cmp")) { e.preventDefault(); showHelp(); return; }
+  if (!$("viewer").hidden && inField && e.key === "Escape" && !document.querySelector("dialog[open], .menu")) {
+    e.preventDefault();  // (the zoom slider, a list: Esc closes the viewer; a box you type in: Esc leaves it first)
+    if (e.target.matches("input[type=range], select")) closeViewer();
+    else e.target.blur();
+    return;
+  }
   if (slides && !$("viewer").hidden && !(e.key.toLowerCase() === "p" && !inField) && e.key !== " ") slideshow(false);  // anything else you do stops it (typing a tag too)
   if (document.querySelector("dialog[open], .preview, .menu, .swipe, .cmp")) return;  // (an overlay has the keys)
   if (!$("viewer").hidden && !inField && viewerKey(e)) { e.preventDefault(); return; }
@@ -2139,7 +2165,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if ((e.ctrlKey && e.key.toLowerCase() === "f") || (e.key === "/" && !inField)) {
-    if (!$("viewer").hidden) return;
+    if (!$("viewer").hidden) { if (e.ctrlKey) e.preventDefault(); return; }  // (not the browser's find bar over the picture)
     e.preventDefault();
     $("q").focus();
     $("q").select();

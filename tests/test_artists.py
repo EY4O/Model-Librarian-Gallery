@@ -485,3 +485,89 @@ def test_the_artists_page_goes_to_that_artist_only(inbox, media):
     settled(a)
     lib.inbox.file([lib.inbox.items()["items"][0]["key"]], f["id"], "", artist="Real Artist")  # you know better
     assert {a_["name"]: a_["links"] for a_ in lib.artists()["artists"]} == {"Real Artist": []}
+
+
+# ---------------------------------------------------------------- found in a QA pass
+@pytest.mark.parametrize("name,want", [("$hiro", "hiro"), (".hack", "hack"), ("art.library", "art.library (artist)"), ("@eaDir", "@eaDir (artist)"),
+                                       ("Mika Art", "Mika Art"), ("...", "Unknown")])
+def test_an_artists_folder_is_one_the_library_looks_in(name, want):
+    from mlgallery import downloads
+    assert downloads.safe_folder(name) == want and not scan.skip_dir(downloads.safe_folder(name), True)
+
+
+def test_a_download_is_never_filed_where_the_library_doesnt_look(inbox, media):
+    lib, f, dl = inbox
+    a = image(dl / "one.png", seed=1)
+    settled(a)
+    key = lib.inbox.items()["items"][0]["key"]
+    with pytest.raises(fileops.OpError):
+        lib.inbox.file([key], f["id"], "Artists/.hidden")
+    assert os.path.isfile(a) and lib.inbox.items()["total"] == 1  # still waiting, where it was
+
+
+def test_a_library_folder_inside_downloads_leaves_downloads_on(inbox, media, tmp_path):
+    lib, f, dl = inbox
+    inside = dl / "gallery-dl"
+    inside.mkdir()
+    lib.add_folder(str(inside))
+    assert all(x["ok"] for x in lib.inbox.folders() if os.path.normcase(x["path"]) == os.path.normcase(str(dl)))
+    with pytest.raises(ValueError):
+        lib.inbox.add_folder(str(inside))  # (the library folder itself still isn't one)
+
+
+def test_what_a_note_says_is_tidied(tmp_path):
+    from mlgallery import downloads
+    (tmp_path / "Model Librarian Gallery").mkdir()
+    p = image(tmp_path / "Model Librarian Gallery" / "x.png", seed=1)
+    noted(p, artist="Anonymous", site="Pixiv", page="https://www.pixiv.net/artworks/5")
+    n = downloads.read_note(str(p))
+    assert "artist" not in n and n["site"] == "pixiv"  # (junk isn't an artist; a site as the Gallery writes it)
+
+
+def test_undo_puts_back_what_you_typed_for_a_record_taken_over_and_the_artists_link(inbox, media):
+    lib, f, dl = inbox
+    import shutil
+    kept = image(media / "keep.png", seed=4)
+    index(lib, f)
+    fid = items(lib)["keep.png"]["id"]
+    lib.set_credit(fid, artist="Original")
+    shutil.copy2(kept, dl / "again.png")
+    os.remove(kept)
+    scan.scan_folder(lib.db, f)
+    settled(dl / "again.png")
+    r = lib.inbox.file([lib.inbox.items()["items"][0]["key"]], f["id"], "", artist="Typed")
+    assert lib.info(fid)["credit"]["artist"]["name"] == "Typed"
+    fileops.undo(lib.db, r["op"])
+    with lib.db.read() as c:
+        assert c.execute("SELECT artist FROM credits WHERE file_id=? AND src='user'", (fid,)).fetchone()[0] == "Original"
+    # a note's artist page is taken off again, so the artist the Gallery made goes, and the name's free for one of yours
+    a = image(ext_folder(lib, dl) / "5_p0.png", seed=6)
+    noted(a, page="https://www.pixiv.net/artworks/5", artist="Mika", artist_url="https://www.pixiv.net/users/9")
+    settled(a)
+    r = lib.inbox.file([next(it["key"] for it in lib.inbox.items()["items"] if it["name"] == "5_p0.png")], f["id"], "")
+    assert lib.artists()["artists"][0]["links"] == ["https://www.pixiv.net/users/9"]
+    fileops.undo(lib.db, r["op"])
+    assert not any(x["name"] == "Mika" for x in lib.artists()["artists"])
+    assert lib.artist_save(None, "Mika")
+
+
+def test_an_artist_only_in_the_trash_doesnt_block_the_name(lib, media):
+    illustrations(lib)
+    image(media / "Artists" / "Ren" / "a.png", seed=1)
+    f = folder(lib, media)
+    index(lib, f)
+    fileops.trash(lib.db, [items(lib)["a.png"]["id"]])
+    assert not any(x["name"] == "Ren" for x in lib.artists()["artists"])
+    aid = lib.artist_save(None, "Ren")  # (the Gallery's own, hidden: taken over, not a clash)
+    assert aid and any(x["name"] == "Ren" for x in lib.artists()["artists"])
+
+
+def test_a_listing_made_while_dismissing_isnt_kept(inbox, media):
+    lib, f, dl = inbox
+    a = image(dl / "one.png", seed=1)
+    settled(a)
+    first = lib.inbox.entries()
+    lib.inbox._listing = (lib.inbox._listing[0], first)  # (as if made just before)
+    lib.inbox.dismiss([first[0]["key"]])
+    lib.inbox._listing = (lib.inbox._listing[0] if lib.inbox._listing else None, first)  # a listing still being made stores the old one...
+    assert lib.inbox.entries() == []  # ...but it isn't taken: dismissing started a new one

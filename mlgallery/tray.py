@@ -121,6 +121,7 @@ def _api():
         ("CreatePopupMenu", vp, []), ("AppendMenuW", ctypes.c_int, [vp, ui, sz, ctypes.c_wchar_p]), ("SetMenuDefaultItem", ctypes.c_int, [vp, ui, ui]),
         ("TrackPopupMenu", ctypes.c_int, [vp, ui, ctypes.c_int, ctypes.c_int, ctypes.c_int, vp, vp]), ("DestroyMenu", ctypes.c_int, [vp]),
         ("SetForegroundWindow", ctypes.c_int, [vp]), ("GetCursorPos", ctypes.c_int, [ctypes.c_void_p]), ("GetSystemMetrics", ctypes.c_int, [ctypes.c_int]),
+        ("SetTimer", sz, [vp, sz, ui, vp]), ("KillTimer", ctypes.c_int, [vp, sz]),
     ]:
         f = getattr(u, name)
         f.restype, f.argtypes = res, args
@@ -139,6 +140,7 @@ class Tray:
         self.cls, self.icon_path, self.menu, self.on_open, self.tip = class_name(data_dir), icon_path, menu, on_open, tip
         self.hwnd = None
         self.shown = False
+        self.wanted = False  # (shown when asked, even if the notification area wasn't up yet: added when it comes)
         self._ready = threading.Event()
         self._icon = None
         self._proc = None
@@ -208,9 +210,18 @@ class Tray:
                 self._do(self.on_open)
                 return 0
             if msg == SHOW:
+                self.wanted = bool(wp)
                 self._notify(0 if wp else 2)  # NIM_ADD / NIM_DELETE
+                if wp and not self.shown:
+                    self._u.SetTimer(hwnd, 1, 2000, None)  # (the notification area not up yet, at sign-in: again in a moment)
                 return 0
-            if msg == self._taskbar and self.shown:
+            if msg == 0x0113:  # WM_TIMER
+                if not self.wanted or self.shown:
+                    self._u.KillTimer(hwnd, 1)
+                else:
+                    self._notify(0)
+                return 0
+            if msg == self._taskbar and self.wanted:
                 self.shown = False
                 self._notify(0)
                 return 0

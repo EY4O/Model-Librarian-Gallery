@@ -67,8 +67,11 @@ def read_note(path: str) -> dict | None:
         return None
     text = lambda k, n=300: str(raw.get(k) or "").strip()[:n] or None  # noqa: E731
     tags = [str(t).strip()[:100] for t in raw.get("tags") or [] if isinstance(t, (str, int)) and str(t).strip()][:64] if isinstance(raw.get("tags"), list) else []
-    return {k: v for k, v in {"page": credits.clean_url(raw.get("page")), "src": credits.clean_url(raw.get("src")), "site": text("site", 40),
-                              "post": text("post", 80), "artist": credits.clean_name(raw.get("artist"), junk=False),
+    site = text("site", 40)
+    if site:  # (pixiv, Pixiv: one site, under the Gallery's own key for it)
+        site = next((k for k, v in credits.SITES.items() if site.lower() in (k.lower(), str(v).lower())), site.lower())
+    return {k: v for k, v in {"page": credits.clean_url(raw.get("page")), "src": credits.clean_url(raw.get("src")), "site": site,
+                              "post": text("post", 80), "artist": credits.clean_name(raw.get("artist"), junk=True),
                               "artist_url": credits.clean_url(raw.get("artist_url")), "title": text("title"), "description": text("description", 3000),
                               "tags": tags}.items() if v}
 
@@ -87,9 +90,11 @@ def key_of(path: str) -> str:
 
 
 def safe_folder(name: str) -> str:
-    """A name Windows takes for a folder (an artist's, for Artists\\<name>)."""
-    v = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", name or "").strip().rstrip(". ")
-    return re.sub(r"\s+", " ", v)[:80] or "Unknown"
+    """A name Windows takes for a folder (an artist's, for Artists\\<name>), and one the library looks in (not $hiro
+    or .hack: scan.skip_dir leaves folders so named out, and what's filed there would never be indexed)."""
+    v = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", name or "").strip().rstrip(". ").lstrip(".$ ")
+    v = re.sub(r"\s+", " ", v)[:80] or "Unknown"
+    return f"{v} (artist)" if scan.skip_dir(v, True) else v
 
 
 def _inside(path: str, root: str) -> bool:
@@ -103,6 +108,7 @@ class Inbox:
         self._lock = threading.Lock()
         self._listing: tuple | None = None  # (what it was made from, the entries)
         self._found: dict[tuple, dict] = {}  # (path, size, mtime) -> what was found about it (fingerprint, credits)
+        self._changes = 0  # dismissing, filing, putting back...: a listing made before one isn't kept
 
     # ---------------------------------------------------------------- where
     def folders(self) -> list[dict]:
@@ -117,7 +123,7 @@ class Inbox:
             if k in seen:
                 continue
             seen.add(k)
-            in_lib = any(_inside(path, r) or _inside(r, path) for r in lib_folders)
+            in_lib = any(_inside(path, r) for r in lib_folders)  # (in one, or one itself; one inside it is fine: only the top level's offered)
             out.append({"path": path, "downloads": is_dl, "ok": os.path.isdir(path) and not in_lib,
                         "why": "It's a library folder (or holds one): its pictures are in the library already." if in_lib else
                                "" if os.path.isdir(path) else "It isn't there (or not reachable right now)."})
@@ -127,7 +133,7 @@ class Inbox:
         path = os.path.abspath(os.path.expanduser(str(path or "").strip().strip('"')))
         if not os.path.isdir(path):
             raise ValueError("That folder doesn't exist (or isn't reachable right now).")
-        if any(_inside(path, f["path"]) or _inside(f["path"], path) for f in self.lib.folders()):
+        if any(_inside(path, f["path"]) for f in self.lib.folders()):
             raise ValueError("That's a library folder (or holds one): its pictures are in the library already.")
         have = [p for p in self.lib.settings.get("inbox_folders") or [] if isinstance(p, str)]
         if not any(os.path.normcase(p) == os.path.normcase(path) for p in have):
@@ -155,7 +161,7 @@ class Inbox:
                 stamp.append((p, os.stat(p).st_mtime_ns))  # a folder's time changes when a file comes or goes in it
             except OSError:
                 stamp.append((p, None))
-        made_from = (tuple(stamp), int(time.time() // 10))  # (and every 10 s: one still being written settles; filing, dismissing... start afresh)
+        made_from = (tuple(stamp), int(time.time() // 10), self._changes)  # (and every 10 s: one still being written settles; filing, dismissing... start afresh)
         with self._lock:
             if self._listing and self._listing[0] == made_from:
                 return self._listing[1]
@@ -195,7 +201,7 @@ class Inbox:
     def notify_loop(self, stop, every: float = 15) -> None:
         """New pictures in a downloads folder: a Windows notification (when it's on, in a library for illustrations).
         Only ones that arrive while the Gallery is open: what was there when it started was there already."""
-        seen = None
+        seen = None  # every download offered while it's run: one offered again (or put back by an Undo) isn't news
         while not stop.wait(every):
             try:
                 if not self.lib.settings.get("inbox_notify") or "illustrations" not in (self.lib.kinds or []):
@@ -209,7 +215,7 @@ class Inbox:
                         from .winshell import notify
                         notify(f"{len(new)} new download{'s' if len(new) != 1 else ''} to file" if len(new) > 1 else "A new download to file",
                                ", ".join(e["name"] for e in new[:3]) + ("…" if len(new) > 3 else "") + " (New downloads, in the Gallery)")
-                seen = keys
+                seen = keys | (seen or set())
             except Exception:
                 continue
 
@@ -217,14 +223,18 @@ class Inbox:
         """What's known about one download: its fingerprint, and who made it / where it's from."""
         k = (e["path"], e["size"], e["mtime"])
         got = self._found.get(k)
-        if got is not None and "note" not in got and os.path.isfile(e["path"] + SIDECAR):
-            got = None  # its note came after it: read again, with it
+        try:
+            side = os.stat(e["path"] + SIDECAR).st_mtime_ns
+        except OSError:
+            side = None
+        if got is not None and side != got.get("side"):
+            got = None  # its note came after it (or changed): read again, with it
         if got is None:
             try:
                 fp = scan.fingerprint(e["path"], e["size"])
             except OSError:
                 fp = None
-            got = {"fp": fp, "found": credits.found(e["path"], e["name"], e["name"], e["kind"])}
+            got = {"fp": fp, "found": credits.found(e["path"], e["name"], e["name"], e["kind"]), "side": side}
             note = read_note(e["path"])  # saved by the Chrome extension: the page it's from, its artist, title and tags
             if note:
                 got["note"] = note
@@ -308,13 +318,23 @@ class Inbox:
             raise fileops.OpError("That folder isn't in the library.")
         if not d["online"] or not os.path.isdir(d["path"]):
             raise fileops.OpError("That folder isn't reachable right now (a drive that isn't plugged in?).")
+        skipped = next((p for p in sub.split("/") if p and scan.skip_dir(p, bool(self.lib.settings.get("skip_eagle")))), None)
+        if skipped:
+            raise fileops.OpError(f"The library leaves folders named {skipped} out (hidden, system or Eagle's): pick another name.")
         sub = fileops._real_sub(d["path"], sub)
         dest = os.path.join(d["path"], *sub.split("/")) if sub else d["path"]
         moved, failed, taken = [], [], set()
+        abouts = {e["key"]: self._about(e) for e in picked}  # (before they move: on another drive, where it was downloaded from doesn't go with it)
+        # a download that's the same as a file the index has lost track of (deleted, or on a drive that isn't there) takes
+        # over that file's record, ratings and all: undoing it must give the record back as it was now, not delete it
         with db.read() as c:
+            newest = c.execute("SELECT COALESCE(MAX(id), 0) FROM files").fetchone()[0]
+            before = {}
             held = fileops._held(c, d["id"], sub)
             for e in picked:
-                about = self._about(e)  # (before it moves: on another drive, where it was downloaded from doesn't go with it)
+                about = abouts[e["key"]]
+                for r in c.execute("SELECT id, folder_id, rel, missing FROM files WHERE fp=? AND size=?", (about["fp"], e["size"])) if about["fp"] else ():
+                    before[r["id"]] = dict(r)
                 name = fileops._free_name(dest, e["name"], taken, held)
                 rel = f"{sub}/{name}" if sub else name
                 try:
@@ -327,14 +347,6 @@ class Inbox:
         if not moved:
             raise fileops.OpError(failed[0]["error"] if failed else "Nothing was filed.")
         folder = {"id": d["id"], "path": d["path"]}
-        # a download that's the same as a file the index has lost track of (deleted, or on a drive that isn't there) takes
-        # over that file's record, ratings and all: undoing it must give the record back, not delete it
-        with db.read() as c:
-            newest = c.execute("SELECT COALESCE(MAX(id), 0) FROM files").fetchone()[0]
-            before = {}
-            for m in moved:
-                for r in c.execute("SELECT id, folder_id, rel, missing FROM files WHERE fp=? AND size=?", (m["fp"], m["size"])) if m["fp"] else ():
-                    before[r["id"]] = dict(r)
         for _ in range(3):  # the folder watcher may be indexing the same new files right now: then they're there already
             try:
                 scan.index_files(db, folder, [m["to_rel"] for m in moved], skip_eagle=bool(self.lib.settings.get("skip_eagle")))
@@ -345,11 +357,18 @@ class Inbox:
             done = []
             for m in moved:
                 r = c.execute("SELECT id FROM files WHERE folder_id=? AND rel=?", (m["to_folder"], m["to_rel"])).fetchone()
-                if not r:
+                if not r:  # (not indexed: back where it came from, rather than lost in a folder nothing looks in)
+                    try:
+                        fileops._move_file(os.path.join(dest, m["to_rel"].split("/")[-1]), m["from"])
+                    except (OSError, fileops.OpError):
+                        pass
+                    failed.append({"key": key_of(m["from"]), "name": os.path.basename(m["from"]), "error": "the library didn't take it in there"})
                     continue
                 m["id"] = r[0]
                 if r[0] <= newest and r[0] in before:
                     m["was"] = before[r[0]]
+                    u = c.execute("SELECT artist, site, post, url FROM credits WHERE file_id=? AND src='user'", (r[0],)).fetchone()
+                    m["user_was"] = dict(u) if u else None  # (what you'd typed for it: yours again on Undo)
                 credits.store(c, r[0], m.pop("found"))  # shown at once (the file, its name, its download; its folder's read next)
                 if artist is not None:
                     credits.set_user(c, r[0], artist=artist)
@@ -366,11 +385,13 @@ class Inbox:
                     links = json.loads(c.execute("SELECT links FROM artists WHERE id=?", (aid,)).fetchone()[0] or "[]")
                     if url not in links:
                         c.execute("UPDATE artists SET links=? WHERE id=?", (json.dumps((links + [url])[:16]), aid))
+                        m["link"] = [aid, url]  # (taken off again on Undo)
             c.execute("INSERT INTO library_meta (key, value) VALUES ('inbox_last', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                       (json.dumps({"folder": d["id"], "sub": sub}),))
             n = len(done)
             op = fileops.record(c, "file", f"Filed {n} download{'s' if n != 1 else ''} in {os.path.basename(dest) or dest}",
-                                [{k: m[k] for k in ("id", "from", "to_folder", "to_rel", "was", "note", "added_tags", "added_note") if k in m} for m in done]) if done else None
+                                [{k: m[k] for k in ("id", "from", "to_folder", "to_rel", "was", "user_was", "link", "note", "added_tags", "added_note") if k in m}
+                                 for m in done]) if done else None
             fileops._recount(c)
         for m in done:  # its note has been read into the index: it goes (Undo writes it back beside the download)
             if m.get("note"):
@@ -379,6 +400,7 @@ class Inbox:
                 except OSError:
                     pass
         self._listing = None
+        self._changes += 1
         self.lib.thumbs.nudge()
         self.lib.meta.nudge()
         self.lib.credits.nudge()
@@ -390,12 +412,14 @@ class Inbox:
         with self.lib.db.write() as c:
             c.executemany("INSERT OR REPLACE INTO inbox_dismissed (path, size, mtime) VALUES (?,?,?)", [(e["path"], e["size"], e["mtime"]) for e in picked])
         self._listing = None
+        self._changes += 1
         return len(picked)
 
     def undismiss(self) -> int:
         with self.lib.db.write() as c:
             n = c.execute("DELETE FROM inbox_dismissed").rowcount
         self._listing = None
+        self._changes += 1
         return n
 
     def recycle(self, keys) -> dict:
@@ -411,6 +435,7 @@ class Inbox:
             except OSError as ex:
                 failed.append({"key": e["key"], "name": e["name"], "error": str(ex)})
         self._listing = None
+        self._changes += 1
         return {"recycled": gone, "failed": failed}
 
     def path_of(self, key: str) -> dict | None:
@@ -491,6 +516,17 @@ def undo(db, data) -> dict:
                 if it.get("added_note"):
                     c.execute("DELETE FROM file_notes WHERE file_id=? AND source='site'", (it["id"],))
                 c.execute("DELETE FROM credits WHERE file_id=? AND src='note'", (it["id"],))
+                if "user_was" in it:  # yours again, as it was
+                    credits.set_user(c, it["id"], artist=None, url=None)
+                    u = it["user_was"]
+                    if u:
+                        c.execute("INSERT INTO credits (file_id, src, artist, site, post, url) VALUES (?, 'user', ?,?,?,?)",
+                                  (it["id"], u["artist"], u["site"], u["post"], u["url"]))
+            if it.get("link"):  # the artist's page the note gave them
+                aid, url = it["link"]
+                row = c.execute("SELECT links FROM artists WHERE id=?", (aid,)).fetchone()
+                if row:
+                    c.execute("UPDATE artists SET links=? WHERE id=?", (json.dumps([u for u in json.loads(row[0] or "[]") if u != url]), aid))
             if not was:
                 c.execute("DELETE FROM files WHERE id=?", (it["id"],))
             else:  # the record it took over goes back where it was, missing as it was

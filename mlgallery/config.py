@@ -96,6 +96,27 @@ class Settings:
     def all(self) -> dict:
         return dict(self._values)
 
+    def change(self, key: str, fn) -> object:
+        """One setting changed from what it is in the file right now (read and written under the lock: another Gallery
+        on this PC, or another thread, changing it meanwhile isn't undone). -> the new value."""
+        with self._lock:
+            try:
+                with open(self.path, encoding="utf-8") as f:
+                    stored = json.load(f)
+                if isinstance(stored, dict):
+                    self._values.update({k: v for k, v in stored.items() if k in DEFAULTS})
+            except (OSError, ValueError):
+                pass
+            value = fn(self._values.get(key, DEFAULTS.get(key)))
+            if key in DEFAULTS and isinstance(value, type(DEFAULTS[key])):
+                self._values[key] = value
+            write_atomic(self.path, json.dumps(self._values, indent=1).encode("utf-8"))
+            try:
+                self._mtime = os.stat(self.path).st_mtime_ns
+            except OSError:
+                pass
+            return self._values.get(key)
+
     def update(self, patch: dict) -> dict:
         with self._lock:
             try:  # another Gallery on this PC (another library) may have changed other settings meanwhile: keep those

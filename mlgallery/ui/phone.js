@@ -94,7 +94,7 @@ async function refresh() {
   if (S.page !== "grid") return S.page === "browse" ? openBrowse() : null;
   const run = ++S.run, y = window.scrollY;
   try {
-    const d = await api(`/files?${params(0, Math.min(Math.max(S.items.length, PAGE), 1200))}`);
+    const d = await api(`/files?${params(0, Math.min(Math.max(S.items.length, PAGE), 1000))}`);  // (the most the server sends at once: the rest come as you scroll)
     if (run !== S.run) return;
     S.items = d.items;
     S.total = d.total;
@@ -242,7 +242,14 @@ function rateMenu(anchor) {
 }
 
 function startSwipe() {
-  swipeReview({ sort: "newest", folder: S.view.folder, q: viewQuery() }, S.view.title, { onClose: (t) => { if (t.kept || t.deleted) refresh(); } });
+  history.pushState({ swipe: true }, "");  // (the phone's Back closes it)
+  const back = () => document.querySelector(".swipe [aria-label='Close the review']")?.click();
+  addEventListener("popstate", back, { once: true });
+  swipeReview({ sort: "newest", folder: S.view.folder, q: viewQuery() }, S.view.title, { onClose: (t) => {
+    removeEventListener("popstate", back);
+    if (history.state?.swipe) history.back();
+    if (t.kept || t.deleted) refresh();
+  } });
 }
 
 // ---------------------------------------------------------------- Browse: the views, folders, albums, artists, characters
@@ -461,7 +468,7 @@ async function details(it) {
     const one = (action, value, text) => api("/ops/bulk", { method: "POST", body: { selection: [it.id], action, value } }).then((r) => { org.done(r, text); again(); }).catch((e) => toast(e.message, true));
     const people = (info.characters || []).filter((c) => c.state !== "rejected");
     const gen = info.generation || {};
-    sheet.replaceChildren(h("div.pv-grab"),
+    sheet.replaceChildren(...[h("div.pv-grab"),  // (a list of parts, some of them only sometimes: flattened, the absent ones left out)
       h("p.pv-title", {}, info.name),
       h("p.pv-meta", {}, [info.width && `${info.width} × ${info.height}`, fmtSize(info.size), info.shot && fmtDate(info.shot), info.rel.includes("/") ? info.rel.replace(/\/[^/]*$/, "") : null].filter(Boolean).join(" · ")),
       h("h3", {}, "Tags"),
@@ -492,7 +499,7 @@ async function details(it) {
           if (note == null) return;
           try { await api(`/file/${it.id}/note`, { method: "POST", body: { note } }); again(); } catch (e) { toast(e.message, true); }
         } }, "Change")),
-      gen.positive ? [h("h3", {}, "Prompt"), h("p.pv-text", {}, gen.positive)] : null);
+      gen.positive ? [h("h3", {}, "Prompt"), h("p.pv-text", {}, gen.positive)] : null].flat().filter(Boolean));
   };
   sheet.append(h("div.pv-grab"), h("p.pv-meta", {}, "Loading…"));
   org.onChange(() => { refresh(); loadLists(); if (sheet.isConnected) again(); });
