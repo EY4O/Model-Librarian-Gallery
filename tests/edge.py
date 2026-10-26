@@ -72,13 +72,17 @@ class Edge:
         try:
             await self.ws.close()
         finally:
-            self.proc.kill()
+            # the whole tree: Edge's own child processes would otherwise hold its profile folder open
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)], capture_output=True)
             try:
                 self.proc.wait(10)
-            except subprocess.TimeoutExpired:  # Edge's own child processes holding on: end the whole tree
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)], capture_output=True)
-                self.proc.wait(10)
-            shutil.rmtree(self.profile, ignore_errors=True)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            for _ in range(20):  # (the last of them let go of their files a moment later)
+                shutil.rmtree(self.profile, ignore_errors=True)
+                if not os.path.exists(self.profile):
+                    break
+                time.sleep(0.25)
 
     async def call(self, method, **params):
         self.n += 1

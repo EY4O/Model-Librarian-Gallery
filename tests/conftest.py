@@ -1,3 +1,4 @@
+import atexit
 import os
 import shutil
 import sys
@@ -46,4 +47,6 @@ def image(path, size=(64, 48), seed=1):
 # Model Librarian's real library is never looked at by the tests (a test that wants one makes its own)
 os.environ.setdefault("MLG_ML_DATA", os.path.join(HERE, "no-model-librarian-here"))
 # nor is this PC's own Gallery folder (settings, the recent libraries): the tests get a throwaway one
-os.environ.setdefault("MLG_HOME", tempfile.mkdtemp(prefix="mlg-home-"))
+if "MLG_HOME" not in os.environ:
+    os.environ["MLG_HOME"] = tempfile.mkdtemp(prefix="mlg-home-")
+    atexit.register(shutil.rmtree, os.environ["MLG_HOME"], True)  # (gone again when the run ends)
