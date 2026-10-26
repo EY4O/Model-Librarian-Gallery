@@ -58,7 +58,8 @@ class Edge:
         if not ws_url:
             raise RuntimeError("Edge didn't start")
         self.ws = await websockets.connect(ws_url, max_size=64 * 1024 * 1024)
-        await self.call("Emulation.setDeviceMetricsOverride", width=self.width, height=self.height, deviceScaleFactor=1, mobile=False)
+        scale = float(os.environ.get("MEDIA_SCALE", "1"))  # 2 for high-density screenshots (tools/shots.py); tests run at 1
+        await self.call("Emulation.setDeviceMetricsOverride", width=self.width, height=self.height, deviceScaleFactor=scale, mobile=False)
         await self.call("Page.enable")
         await self.call("Runtime.enable")
         # page errors are collected, so a test can check there were none

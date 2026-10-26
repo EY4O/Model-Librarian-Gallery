@@ -103,6 +103,7 @@ def main():
                                 stdout=subprocess.PIPE, text=True, env=env)
         url = proc.stdout.readline().strip()
         api_for(url)("/folders", {"path": media})
+        api_for(url)("/library/kind", {"kinds": ["ai"]})  # the sample library is AI generations: answers the first-run question
     api = api_for(url)
     wait_idle(api)
     # a few marks, so the grid shows them
