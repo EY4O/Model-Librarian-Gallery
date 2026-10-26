@@ -39,6 +39,15 @@ BACKUPS = 7  # daily copies of the index kept
 KINDS = ("ai", "photos", "illustrations")  # AI generations, photos, illustrations (downloaded or your own): one or more
 WHO = ("character", "person")  # an entry in Characters / People: someone made up, or someone in your photos
 # what each file is, from what's been read of it: generation data, else a date taken (camera, phone), else neither
+REVIEW_RUN = 120  # seconds: answers in To review this close together are one History step
+
+
+def _review_summary(name: str, items: list) -> str:
+    yes = sum(1 for it in items if it["verdict"] == "confirm")
+    n = len(items)
+    return f"Reviewed {n} file{'s' if n != 1 else ''} for {name}: {yes} yes, {n - yes} no"
+
+
 FILE_IS = {"ai": "f.meta = 1", "photo": "f.meta <> 1 AND f.taken IS NOT NULL", "illustration": "f.meta <> 1 AND f.taken IS NULL"}
 
 
@@ -587,13 +596,49 @@ class Library:
                 f"SELECT strftime('%Y-%m', f.shot, 'unixepoch', 'localtime') AS month, COUNT(*) n {counted} GROUP BY month ORDER BY month", (cid,))]
         return out
 
-    def character_review(self, cid: int, file_ids, verdict: str) -> None:
+    def character_review(self, cid: int, file_ids, verdict: str) -> dict:
+        """Yes or no for files in To review. A History step; answers for one character a little after one another join
+        the same step ("Reviewed 14 files for Aurelia"), and Undo takes them all back - a rule that muted itself too."""
         if verdict not in ("confirm", "reject"):
             raise ValueError("verdict is confirm or reject")
+        cid = int(cid)
+        ids = list(dict.fromkeys(int(f) for f in file_ids))[:5000]
         with self.db.write() as c:
-            if not c.execute("SELECT 1 FROM characters WHERE id=?", (int(cid),)).fetchone():
+            ch = c.execute("SELECT name FROM characters WHERE id=?", (cid,)).fetchone()
+            if not ch:
                 raise KeyError(cid)
-            chars.decide(c, int(cid), [int(f) for f in file_ids][:5000], verdict)
+            was = {r["file_id"]: dict(state=r["state"], source=r["source"], at=r["at"]) for r in c.execute(
+                f"SELECT file_id, state, source, at FROM file_characters WHERE character_id=? AND file_id IN ({','.join('?' * len(ids))})", (cid, *ids))} if ids else {}
+            quiet = {r[0] for r in c.execute("SELECT id FROM character_rules WHERE character_id=? AND muted=1", (cid,))}
+            chars.decide(c, cid, ids, verdict)
+            muted = sorted({r[0] for r in c.execute("SELECT id FROM character_rules WHERE character_id=? AND muted=1", (cid,))} - quiet)
+            items = [{"file_id": f, "was": was.get(f), "verdict": verdict, "muted": muted if k == len(ids) - 1 else []} for k, f in enumerate(ids)]
+            last = c.execute("SELECT id, at, kind, undone, data FROM ops ORDER BY id DESC LIMIT 1").fetchone()
+            run = json.loads(last["data"]) if last and last["kind"] == "review" and not last["undone"] and time.time() - last["at"] < REVIEW_RUN else None
+            if run and run.get("character") == cid:
+                run["items"] += items
+                op = last["id"]
+                c.execute("UPDATE ops SET at=?, summary=?, data=? WHERE id=?", (time.time(), _review_summary(ch[0], run["items"]), json.dumps(run), op))
+            else:
+                op = fileops.record(c, "review", _review_summary(ch[0], items), {"character": cid, "items": items})
+        return {"op": op}
+
+    def review_take_back(self, cid: int) -> dict | None:
+        """Z on To review: the last answer for this character taken back (out of its History step). -> its file, or None."""
+        with self.db.write() as c:
+            last = c.execute("SELECT id, data FROM ops WHERE kind='review' AND undone IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+            run = json.loads(last["data"]) if last else None
+            if not run or run.get("character") != int(cid) or not run["items"]:
+                return None
+            it = run["items"].pop()
+            bulk.review_restore(c, int(cid), [it])
+            if run["items"]:
+                name = c.execute("SELECT name FROM characters WHERE id=?", (int(cid),)).fetchone()
+                c.execute("UPDATE ops SET summary=?, data=? WHERE id=?", (_review_summary(name[0] if name else "", run["items"]), json.dumps(run), last["id"]))
+            else:
+                c.execute("DELETE FROM ops WHERE id=?", (last["id"],))  # (nothing left in it)
+        self.db.user_change()
+        return {"file_id": it["file_id"]}
 
     def character_reset(self, cid: int, file_id: int) -> None:
         with self.db.write() as c:
@@ -938,6 +983,7 @@ class Library:
                     raise ValueError(f"{n} is too long a name (100 letters at most).")
             for i, n in renamed:
                 c.execute("UPDATE albums SET name=? WHERE id=?", (n, i))
+            changed_queries = []
             # smart albums whose search names one of them: the new name in it
             def renamed_filter(m):  # (an album, or a name that's only their parent)
                 name = search.album_name(m.group(2) if m.group(2) is not None else m.group(3))
@@ -948,7 +994,12 @@ class Library:
                 q2 = search.ALBUM_FILTER.sub(renamed_filter, q)
                 if q2 != q:
                     c.execute("UPDATE albums SET query=? WHERE id=?", (q2, aid))
-        return {"moved": len(renamed), "name": new}
+                    changed_queries.append([aid, q, q2])
+            same_place = old.rsplit(" / ", 1)[0] == new.rsplit(" / ", 1)[0] if " / " in old and " / " in new else " / " not in old and " / " not in new
+            what = f"Renamed the album {old} to {new.split(' / ')[-1]}" if same_place else f"Moved the album {old} to {new}"
+            op = fileops.record(c, "album_move", what + (f" (with the {len(renamed) - 1} inside it)" if len(renamed) > 1 else ""),
+                                {"names": [[i, n, m] for (i, n), (_, m) in zip(moving, renamed)], "queries": changed_queries})
+        return {"moved": len(renamed), "name": new, "op": op}
 
     def album_mirrors(self) -> list[dict]:
         """Albums holding exactly the pictures of one folder (with the folders inside it), whatever either is called -
@@ -1017,11 +1068,11 @@ class Library:
         name = search.album_name(name)  # (a / in it puts it inside another: "Trips / Coast" is in Trips)
         if not name:
             raise ValueError("An album needs a name.")
+        moved = None
         if aid is not None:  # renamed: the albums inside it go with it
             with self.db.read() as c:
                 was = c.execute("SELECT name FROM albums WHERE id=?", (int(aid),)).fetchone()
-            if was and search.album_name(was[0]) != name:
-                self.album_move(was[0], name)
+            moved = self.album_move(was[0], name) if was and search.album_name(was[0]) != name else None
         with self.db.write() as c:
             clash = next((r[0] for r in c.execute("SELECT id, name FROM albums") if search.album_name(r[1]).casefold() == name.casefold()), None)
             if clash and clash != aid:  # (Été and été too, which SQLite's NOCASE doesn't fold)
@@ -1036,7 +1087,8 @@ class Library:
                 c.execute("UPDATE albums SET query=? WHERE id=?", (query, aid))
                 if query is not None:
                     c.execute("DELETE FROM album_files WHERE album_id=?", (aid,))  # what it holds is what the search finds
-        return next(a for a in self.albums() if a["id"] == aid)
+        out = next(a for a in self.albums() if a["id"] == aid)
+        return {**out, "op": moved["op"]} if moved else out  # (a rename: its History step, for Undo)
 
     def album_delete(self, aid: int) -> dict | None:
         """The album goes; its files stay where they are (a History step: Undo brings it back). None: no such album."""

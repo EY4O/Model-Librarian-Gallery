@@ -120,6 +120,21 @@ export const store = {
   get(k, d) { try { const v = localStorage.getItem("mlg." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem("mlg." + k, JSON.stringify(v)); } catch {} },
 };
+// an overlay (the viewer, Swipe, Compare, a preview) holds the keyboard: what's behind it is out of reach (inert) for Tab
+// and clicks until it closes. `keep`: page parts that stay usable beside it (the sidebar, by the viewer), `also`: parts of
+// those to hold back all the same. Menus, dialogs and messages opened later aren't touched. -> let go (focus back where it was)
+export function holdFocus(el, { keep = [], also = [] } = {}) {
+  const back = document.activeElement;
+  const held = [...[...document.body.children].filter((x) => x !== el && !keep.includes(x) && !x.matches("script, dialog, .toast, .menu")), ...also]
+    .filter((x) => x && !x.inert && !x.contains(el));
+  for (const x of held) x.inert = true;
+  if (!el.contains(document.activeElement)) (el.querySelector("[autofocus]") || el).focus?.({ preventScroll: true });
+  return () => {
+    for (const x of held) x.inert = false;
+    if (back?.isConnected && !back.closest?.("[inert]")) back.focus?.({ preventScroll: true });
+  };
+}
+
 export async function copyText(text, what = "Copied") {
   try { await navigator.clipboard.writeText(text); toast(`${what}.`); } catch { toast("Couldn't copy here: select the text and press Ctrl+C.", true); }
 }

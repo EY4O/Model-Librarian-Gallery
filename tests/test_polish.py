@@ -353,3 +353,23 @@ def test_album_names_alike_but_for_their_case_are_one_name(lib, media):
     lib.album_save(None, "Hiver / Été")
     with pytest.raises(ValueError):
         lib.album_move("Hiver / Été", "Été")
+
+
+def test_moving_and_renaming_albums_can_be_undone(lib, media):
+    from mlgallery import bulk
+    pictures(lib, media)
+    ids = [i["id"] for i in lib.files()["items"]]
+    bulk.apply(lib.db, ids[:1], "album", "Trips / Coast")
+    bulk.apply(lib.db, ids[1:2], "album", "Trips / Coast / Rocks")
+    lib.album_save(None, "Best coast", query='album:"Trips / Coast" rating:5')
+    r = lib.album_move("Trips / Coast", "Coast")
+    assert r["op"] and sorted(a["name"] for a in lib.albums()) == ["Best coast", "Coast", "Coast / Rocks"]
+    fileops.undo(lib.db, r["op"])
+    assert sorted(a["name"] for a in lib.albums()) == ["Best coast", "Trips / Coast", "Trips / Coast / Rocks"]
+    assert next(a for a in lib.albums() if a["name"] == "Best coast")["query"] == 'album:"Trips / Coast" rating:5'
+    a = next(a for a in lib.albums() if a["name"] == "Trips / Coast")
+    renamed = lib.album_save(a["id"], "Trips / Shore")  # a rename is a step too
+    assert renamed["op"] and "Trips / Shore / Rocks" in [x["name"] for x in lib.albums()]
+    lib.album_save(None, "Trips / Coast")  # (its old name taken meanwhile: that one stays as it is)
+    fileops.undo(lib.db, renamed["op"])
+    assert sorted(x["name"] for x in lib.albums()) == ["Best coast", "Trips / Coast", "Trips / Coast / Rocks", "Trips / Shore"]

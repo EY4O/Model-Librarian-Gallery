@@ -522,7 +522,7 @@ def undo(db, op_id: int) -> dict:
             if r["op"]:
                 c.execute("DELETE FROM ops WHERE id=?", (r["op"],))  # the undo itself isn't a new step
         result = {"undone": r["trashed"], "failed": [f["id"] for f in r["failed"]]}
-    elif kind in ("marks", "tags", "albums", "credits", "characters", "album_delete", "dupes_kept", "dupes_unkept"):
+    elif kind in ("marks", "tags", "albums", "credits", "characters", "album_delete", "dupes_kept", "dupes_unkept", "album_move", "review"):
         from . import bulk
         result = bulk.undo(db, kind, data)
     elif kind == "eagle":

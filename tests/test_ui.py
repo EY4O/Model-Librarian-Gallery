@@ -762,3 +762,47 @@ def test_the_phone_layout(server):
             await e.wait("document.querySelector('.p-browse')?.innerText.includes('FOLDERS')")
             assert not await e.js("window.__errors.length"), await e.js("window.__errors")
     asyncio.run(go())
+
+
+def test_the_sidebar_tree_by_keyboard_and_overlays_holding_the_focus(server):
+    url, api = server
+
+    async def go():
+        async with page(url) as e:
+            await e.wait("document.querySelectorAll('.tile').length > 4")
+            # the folder tree: a tree of rows (no button inside one), one of them in the Tab order
+            assert await e.js("document.getElementById('folders').getAttribute('role')") == "tree"
+            assert await e.js("document.querySelectorAll('[role=treeitem] button, [role=treeitem] [role=button]').length") == 0
+            assert await e.js("[...document.querySelectorAll('#folders [role=treeitem]')].filter(r => r.tabIndex === 0).length") == 1
+            await e.js("document.querySelector('#folders [role=treeitem]').focus(); true")
+            key = lambda k: e.js(f"document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {{key: '{k}', bubbles: true}})); true")
+            if await e.js("document.querySelector('#folders [role=treeitem]').getAttribute('aria-expanded') === 'true'"):
+                await key("ArrowLeft")  # (open from an earlier test: closed first)
+                await e.wait("document.querySelector('#folders [role=treeitem]').getAttribute('aria-expanded') === 'false'")
+            await key("ArrowRight")  # opens it
+            await e.wait("document.querySelector('#folders [role=treeitem]').getAttribute('aria-expanded') === 'true'")
+            await key("ArrowRight")  # then into it
+            await e.wait("document.activeElement?.getAttribute('aria-level') === '2'")
+            await key("Enter")  # shows that subfolder
+            await e.wait("document.getElementById('view-title').textContent.includes(' / ') && document.activeElement?.getAttribute('aria-level') === '2'")
+            await key("ArrowLeft")  # back to the folder it's in
+            await e.wait("document.activeElement?.getAttribute('aria-level') === '1'")
+            await key("ArrowLeft")  # and closed
+            await e.wait("document.querySelector('#folders [role=treeitem]').getAttribute('aria-expanded') === 'false'")
+            await e.js("document.getElementById('view-all').click(); true")
+            # the viewer holds Tab: the grid behind it is out of reach, the sidebar beside it isn't; closed, focus is back on the tile
+            await e.wait("document.querySelectorAll('.tile').length > 4")
+            await e.js("document.querySelector('.tile').focus(); document.querySelector('.tile').click(); true")
+            await e.wait("!document.getElementById('viewer').hidden")
+            assert await e.js("document.querySelector('main.main').inert && !document.getElementById('side').closest('[inert]')")
+            await e.key("Escape")
+            await e.wait("document.getElementById('viewer').hidden")
+            assert await e.js("!document.querySelector('main.main').inert && document.activeElement.classList.contains('tile')")
+            # Swipe holds it too, all of the page behind
+            await e.click("#view-swipe")
+            await e.wait("document.querySelector('.swipe')")
+            assert await e.js("document.getElementById('app').inert && document.querySelector('.swipe').contains(document.activeElement)")
+            await e.key("Escape")
+            await e.wait("!document.querySelector('.swipe') && !document.getElementById('app').inert")
+            assert not await e.js("window.__errors.length"), await e.js("window.__errors")
+    asyncio.run(go())

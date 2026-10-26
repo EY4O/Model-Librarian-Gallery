@@ -4,7 +4,7 @@
 // days, an album or a folder. Kept pictures are remembered as reviewed, so the next review of a view starts with the ones
 // you haven't seen; deleted ones go to the Gallery's Trash (one History step each, as ever).
 
-import { albumName, api, ask, fmtDate, h, icon, leafName, media, menu, plural, store, toast } from "./util.js";
+import { albumName, api, ask, fmtDate, h, holdFocus, icon, leafName, media, menu, plural, store, toast } from "./util.js";
 
 const FAR = 110;  // pixels a swipe must go to count
 const quote = (v) => (/[\s"]/.test(v) ? `"${v.replaceAll('"', "")}"` : v);
@@ -26,11 +26,12 @@ export function swipeReview(opened, openedTitle, { onClose } = {}) {
   const stage = h("div.sw-stage");
   const where = h("p.sw-where", { "aria-live": "polite" });
   const pick = h("button.sw-pick", { type: "button", "aria-haspopup": "menu", onclick: () => pickView() });
-  const close = () => { box.remove(); document.removeEventListener("keydown", key, true); onClose?.(tally); };
+  const close = () => { box.remove(); document.removeEventListener("keydown", key, true); letGo?.(); onClose?.(tally); };
+  let letGo = null;
   const rates = h("div.sw-rate", { role: "group", "aria-label": "Rate and keep (1 to 5)" },
     [1, 2, 3, 4, 5].map((n) => h("button.sw-star", { type: "button", title: `Rate ${n} and keep (${n})`, "aria-label": `Rate ${n} and keep`, onclick: () => decide("rate", n) }, icon("star"))));
   const shelf = h("div.sw-albums", { role: "group", "aria-label": "Sort to album" });
-  const box = h("div.swipe", { role: "dialog", "aria-label": `Swipe review: ${title}` },
+  const box = h("div.swipe", { role: "dialog", "aria-modal": "true", "aria-label": `Swipe review: ${title}` },
     h("header.sw-bar", {},
       h("button.sw-icon", { type: "button", "aria-label": "Close the review", title: "Close (Esc)", onclick: close }, icon("remove")),
       pick,
@@ -287,7 +288,7 @@ export function swipeReview(opened, openedTitle, { onClose } = {}) {
   document.addEventListener("keydown", key, true);
   document.body.append(box);
   box.tabIndex = -1;
-  box.focus();  // (not the sidebar's Swipe button: Enter there would open another)
+  letGo = holdFocus(box);  // (the page behind out of reach; focus on the review, not the sidebar's Swipe button: Enter there would open another)
   stage.replaceChildren(h("p.sw-wait", {}, "Gathering the pictures…"));
   counter();
   shelve();

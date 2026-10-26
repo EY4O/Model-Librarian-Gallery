@@ -103,6 +103,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_post("/api/characters/{cid}", character_update)
     r.add_delete("/api/characters/{cid}", character_delete)
     r.add_post("/api/characters/{cid}/review", character_review)
+    r.add_post("/api/characters/{cid}/review/back", review_take_back)
     r.add_post("/api/file/{id}/characters", file_character)
     r.add_get("/api/artists", artists_list)
     r.add_post("/api/artists", artist_create)
@@ -631,12 +632,18 @@ async def character_review(request):
     if not isinstance(ids, list):
         return _err("files is a list of file ids")
     try:
-        await asyncio.to_thread(_lib(request).character_review, cid, ids, b.get("verdict"))
+        r = await asyncio.to_thread(_lib(request).character_review, cid, ids, b.get("verdict"))
     except KeyError:
         return _err("not found", 404)
     except (ValueError, TypeError) as ex:
         return _err(str(ex))
-    return web.json_response({"ok": True})
+    return web.json_response({"ok": True, **r})
+
+
+async def review_take_back(request):
+    """Z in To review: the last answer for this character taken back."""
+    r = await asyncio.to_thread(_lib(request).review_take_back, _cid(request))
+    return web.json_response(r) if r else _err("Nothing to take back.", 404)
 
 
 async def review_queue(request):

@@ -3,7 +3,7 @@
 // scrolls the same at 200 files or 250,000. Day headings come from a per-day count (one small request),
 // so every tile's place is known without fetching the pages above it.
 
-import { $, KINDS, LOOK_COLORS, LOOK_ICONS, Pace, TOKEN, aiOnly, albumName, albumTree, api, dirTree, fmtLeft, has, inside, job, leafName, parentName, progressBar, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lib, lookIcon, media, menu, plural, sameName, stars, store, toast, who } from "./util.js";
+import { $, KINDS, LOOK_COLORS, LOOK_ICONS, Pace, TOKEN, aiOnly, albumName, albumTree, api, dirTree, fmtLeft, has, holdFocus, inside, job, leafName, parentName, progressBar, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lib, lookIcon, media, menu, plural, sameName, stars, store, toast, who } from "./util.js";
 import { renderStats } from "./stats.js";
 import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
 import { creditEditor, renderArtist, renderArtists } from "./artists.js";
@@ -192,20 +192,20 @@ function renderSide() {
   $("view-downloads").classList.toggle("sel", state.view === "downloads");
   const trees = new Map(state.folders.map((f) => [f.id, dirTree(state.dirs[f.id] || [])]));
   const anyDirs = [...trees.values()].some((t) => t.kids.size);
+  const had = document.activeElement?.closest?.("#folders [role=treeitem], #albums [role=treeitem]")?.dataset.key;  // (drawn again: focus stays on it)
   const items = state.folders.flatMap((f) => {
     const sel = state.view === "folder" && state.folder === f.id && !state.sub, tree = trees.get(f.id), key = `f:${f.id}`;
-    return [h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", title: f.path, onclick: () => selectView("folder", f.id),
-      "aria-current": sel ? "true" : null, oncontextmenu: (e) => { e.preventDefault(); lookMenu(e.currentTarget, "folder", f); } },
+    return [h("div.nav-item" + (sel ? ".sel" : ""), { ...treeRow(key, null, 1, tree.kids.size > 0, sel), title: f.path, onclick: () => selectView("folder", f.id),
+      oncontextmenu: (e) => { e.preventDefault(); lookMenu(e.currentTarget, "folder", f); } },
       anyDirs ? twist(key, tree.kids.size > 0) : null,
       lookIcon(f, "folder"),
       h("span.label", {}, baseName(f.path)),
       f.online ? h("span.n", {}, f.file_count.toLocaleString())
         : h("span.off", { title: "Not reachable right now (a drive that isn't plugged in?): its files are kept" }, "offline"),
       h("span.acts", {},
-        h("span.act", { role: "button", tabIndex: 0, title: "Look again: for new and changed files", "aria-label": `Look again in ${baseName(f.path)}`,
-          onclick: (e) => { e.stopPropagation(); rescan(f); }, onkeydown: actKey }, icon("rescan")),
-        h("span.act", { role: "button", tabIndex: 0, title: "Remove from the library (the folder and its files stay where they are)",
-          "aria-label": `Remove ${baseName(f.path)}`, onclick: (e) => { e.stopPropagation(); removeFolder(f); }, onkeydown: actKey }, icon("remove")))),
+        h("span.act", { "aria-hidden": "true", title: "Look again: for new and changed files", onclick: (e) => { e.stopPropagation(); rescan(f); } }, icon("rescan")),
+        h("span.act", { "aria-hidden": "true", title: "Remove from the library (the folder and its files stay where they are)",
+          onclick: (e) => { e.stopPropagation(); removeFolder(f); } }, icon("remove")))),
     ...(opened.has(key) ? dirRows(f, tree, 1) : [])];
   });
   $("folders").replaceChildren(...(items.length ? items
@@ -213,7 +213,46 @@ function renderSide() {
   const tree = albumTree(state.albums);
   $("albums").replaceChildren(...(state.albums.length ? albumRows(tree, 0, [...tree.kids.values()].some((n) => n.kids.size))
     : [h("p.nav-empty", {}, "Albums gather files from any folder.")]));
+  for (const box of [$("folders"), $("albums")]) roving(box, had);
   renderToolbar();
+}
+
+// ---------------------------------------------------------------- the folder and album trees, by keyboard as File Explorer's:
+// Up and Down between rows, Right opens one (or goes into it), Left closes it (or goes to the one it's in), Enter shows
+// it, the menu key (or Shift+F10) its right-click menu. One row is in the Tab order: the one shown, else the first.
+const treeRow = (key, parent, level, kids, sel) => ({ role: "treeitem", tabIndex: -1, "data-key": key, "data-parent": parent || null, "aria-level": level,
+  "aria-expanded": kids ? String(opened.has(key)) : null, "aria-selected": String(!!sel), "aria-current": sel ? "true" : null });
+
+function roving(box, had) {
+  const rows = [...box.querySelectorAll("[role=treeitem]")];
+  const at = rows.find((r) => r.dataset.key === had) || rows.find((r) => r.getAttribute("aria-selected") === "true") || rows[0];
+  if (at) at.tabIndex = 0;
+  if (had && at && at.dataset.key === had) at.focus({ preventScroll: true });
+}
+
+for (const box of [$("folders"), $("albums")]) {
+  box.setAttribute("role", "tree");
+  box.setAttribute("aria-label", box.id === "folders" ? "Folders" : "Albums");
+  box.addEventListener("keydown", (e) => {
+    const row = e.target.closest?.("[role=treeitem]");
+    if (!row || e.ctrlKey || e.altKey || e.metaKey) return;
+    const rows = [...box.querySelectorAll("[role=treeitem]")], i = rows.indexOf(row);
+    const go = (r) => { if (!r) return; for (const x of rows) x.tabIndex = -1; r.tabIndex = 0; r.focus(); };
+    const key = row.dataset.key, kids = row.hasAttribute("aria-expanded"), open = row.getAttribute("aria-expanded") === "true";
+    const toggle = (on) => { setOpen(key, on); renderSide(); box.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus(); };
+    if (e.shiftKey && e.key === "F10" || e.key === "ContextMenu") row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    else if (e.shiftKey) return;
+    else if (e.key === "ArrowDown") go(rows[i + 1]);
+    else if (e.key === "ArrowUp") go(rows[i - 1]);
+    else if (e.key === "Home") go(rows[0]);
+    else if (e.key === "End") go(rows[rows.length - 1]);
+    else if (e.key === "ArrowRight") { if (kids && !open) toggle(true); else if (kids) go(rows[i + 1]); }
+    else if (e.key === "ArrowLeft") { if (kids && open) toggle(false); else if (row.dataset.parent) go(box.querySelector(`[data-key="${CSS.escape(row.dataset.parent)}"]`)); }
+    else if (e.key === "Enter" || e.key === " ") row.click();
+    else return;
+    e.preventDefault();
+    e.stopPropagation();  // (the grid's arrow keys aren't the tree's)
+  });
 }
 
 // which folders and albums are open in the sidebar ("f:<id>/<subfolder>", "a:<album name>"), kept between sessions
@@ -223,17 +262,18 @@ function setOpen(key, on) {
   store.set("open", [...opened].slice(-500));
 }
 const twist = (key, has) => (has
-  ? h("span.twist" + (opened.has(key) ? ".open" : ""), { role: "button", tabIndex: 0, "aria-label": opened.has(key) ? "Close" : "Open", "aria-expanded": String(opened.has(key)),
-    onclick: (e) => { e.stopPropagation(); setOpen(key, !opened.has(key)); renderSide(); }, onkeydown: actKey }, icon("twist"))
-  : h("span.twist.none"));
+  ? h("span.twist" + (opened.has(key) ? ".open" : ""), { "aria-hidden": "true", title: opened.has(key) ? "Close" : "Open",
+    onclick: (e) => { e.stopPropagation(); setOpen(key, !opened.has(key)); renderSide(); } }, icon("twist"))
+  : h("span.twist.none", { "aria-hidden": "true" }));
 const indent = (depth) => (depth ? { paddingLeft: `${10 + depth * 16}px` } : null);
 
 function dirRows(f, node, depth) {
   return [...node.kids.values()].flatMap((d) => {
     const key = `f:${f.id}/${d.rel}`, sel = state.view === "folder" && state.folder === f.id && state.sub === d.rel;
     const reveal = () => api(`/folders/${f.id}/reveal`, { method: "POST", body: { rel: d.rel } }).catch((e) => toast(e.message, true));
-    return [h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", title: `${f.path}\\${d.rel.replaceAll("/", "\\")}`, style: indent(depth),
-      onclick: () => selectView("folder", f.id, d.rel), "aria-current": sel ? "true" : null,
+    const up = d.rel.includes("/") ? `f:${f.id}/${d.rel.slice(0, d.rel.lastIndexOf("/"))}` : `f:${f.id}`;
+    return [h("div.nav-item" + (sel ? ".sel" : ""), { ...treeRow(key, up, depth + 1, d.kids.size > 0, sel), title: `${f.path}\\${d.rel.replaceAll("/", "\\")}`, style: indent(depth),
+      onclick: () => selectView("folder", f.id, d.rel),
       oncontextmenu: (e) => { e.preventDefault(); menu(e.currentTarget, [{ label: "Show in Explorer", icon: "explorer", onclick: reveal }]); } },
       twist(key, d.kids.size > 0), icon("folder"), h("span.label", {}, d.name), h("span.n", {}, d.n.toLocaleString())),
       ...(d.kids.size && opened.has(key) ? dirRows(f, d, depth + 1) : [])];
@@ -249,8 +289,8 @@ function albumRows(node, depth, nested) {
     const a = n.album, g = groups.get(n.path.toLowerCase()), key = `a:${n.path.toLowerCase()}`;
     const sel = state.view === "album" && sameName(state.album, n.path);
     const count = g ? g.n : a ? a.n : 0;
-    const row = h("button.nav-item" + (sel ? ".sel" : ""), { type: "button", draggable: "true", style: indent(depth), title: n.path,
-      onclick: () => selectView("album", n.path), "aria-current": sel ? "true" : null,
+    const row = h("div.nav-item" + (sel ? ".sel" : ""), { ...treeRow(key, parentName(n.path) ? `a:${parentName(n.path).toLowerCase()}` : null, depth + 1, n.kids.size > 0, sel),
+      draggable: "true", style: indent(depth), title: n.path, onclick: () => selectView("album", n.path),
       oncontextmenu: (e) => { e.preventDefault(); a ? lookMenu(e.currentTarget, "album", a) : parentMenu(e.currentTarget, n.path); },
       ondragstart: (e) => { dragging = n.path; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", n.path); },
       ondragend: () => { dragging = null; },
@@ -261,9 +301,8 @@ function albumRows(node, depth, nested) {
       a ? lookIcon(a, a.query != null ? "filter" : "album") : icon("album"),
       h("span.label", { title: a?.query != null ? `Smart album: ${a.query}` : n.path }, n.name), h("span.n", {}, count.toLocaleString()),
       h("span.acts", {},
-        h("span.act", { role: "button", tabIndex: 0, title: "Rename", "aria-label": `Rename ${n.path}`, onkeydown: actKey,
-          onclick: async (e) => { e.stopPropagation(); a ? renameAlbum(a) : renameParent(n.path); } }, icon("tag")),
-        a ? h("span.act", { role: "button", tabIndex: 0, title: "Delete the album (its files stay where they are)", "aria-label": `Delete ${n.path}`, onkeydown: actKey,
+        h("span.act", { "aria-hidden": "true", title: "Rename", onclick: async (e) => { e.stopPropagation(); a ? renameAlbum(a) : renameParent(n.path); } }, icon("tag")),
+        a ? h("span.act", { "aria-hidden": "true", title: "Delete the album (its files stay where they are)",
           onclick: async (e) => { e.stopPropagation(); deleteAlbum(a); } }, icon("remove")) : null));
     return [row, ...(n.kids.size && opened.has(key) ? albumRows(n, depth + 1, nested) : [])];
   });
@@ -299,10 +338,11 @@ async function moveAlbum(path, to) {
   try {
     const r = await api("/albums/move", { method: "POST", body: { path, to } });
     followMove(path, r.name);
-    await loadAlbums();
-    if (state.view === "album") reload(false);
+    org.done(r, movedText(path, r));  // (with Undo; the albums and the view drawn again)
   } catch (e) { toast(e.message, true); }
 }
+const movedText = (path, r) => (parentName(path) === parentName(r.name) ? `Renamed ${leafName(path)} to ${leafName(r.name)}` : `Moved ${leafName(path)} ${parentName(r.name) ? `into ${parentName(r.name)}` : "to the top"}`)
+  + (r.moved > 1 ? `, with the ${plural(r.moved - 1, "album")} inside it.` : ".");
 
 async function renameParent(path) {
   const name = await askText(`Rename ${leafName(path)}`, "Name", path, { ok: "Rename" });
@@ -331,8 +371,7 @@ function moveToDialog(path) {
       const to = pick.value ? `${pick.value} / ${leafName(path)}` : leafName(path);
       const r = await api("/albums/move", { method: "POST", body: { path, to } });
       followMove(path, r.name);
-      await loadAlbums();
-      if (state.view === "album") reload(false);
+      org.done(r, movedText(path, r));
     },
   });
 }
@@ -449,8 +488,7 @@ async function renameAlbum(a) {
   try {
     const r = await api(`/albums/${a.id}`, { method: "POST", body: { name } });  // (the albums inside it go with it)
     followMove(a.name, r.name);
-    await loadAlbums();
-    if (state.view === "album") reload(false);
+    org.done(r, movedText(a.name, { ...r, moved: 1 }));
   } catch (e) { toast(e.message, true); }
 }
 
@@ -498,10 +536,6 @@ async function tidyAlbums() {
     },
   });
   for (const b of boxes) b.addEventListener("change", () => { go.textContent = `Delete ${plural(count(), "album")}`; go.disabled = !count(); });
-}
-
-function actKey(e) {
-  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.currentTarget.click(); }
 }
 
 const PAGES = new Set(["stats", "characters", "character", "review", "artists", "artist", "downloads", "duplicates", "history", "settings"]); // screens of their own, instead of the grid
@@ -1177,6 +1211,10 @@ function openViewer(i) {
   const v = $("viewer");
   const wasHidden = v.hidden;
   v.hidden = false;
+  if (wasHidden) {  // (the grid behind it out of reach for Tab; the sidebar beside it still there)
+    if (!v.hasAttribute("tabindex")) v.tabIndex = -1;
+    viewerHold = holdFocus(v, { keep: [$("app")], also: [document.querySelector("main.main")] });
+  }
   $("v-name").textContent = item.name;
   $("v-pos").textContent = `${(i + 1).toLocaleString()} of ${state.total.toLocaleString()}`;
   $("v-prev").disabled = i <= 0;
@@ -1764,8 +1802,11 @@ function setDetails(open) {
   store.set("details", open);
 }
 
+let viewerHold = null;
 function closeViewer() {
   if ($("viewer").hidden) return;
+  viewerHold?.();
+  viewerHold = null;
   if (slides) slideshow(false);
   if (vz.edited) cancelEdit();
   $("viewer").hidden = true;

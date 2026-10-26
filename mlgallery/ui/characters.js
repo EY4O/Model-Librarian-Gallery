@@ -1,6 +1,6 @@
 // Model Librarian Gallery: characters - the list, one character's page, the editor, and To review.
 
-import { api, ask, fmtNum, h, has, icon, media, mixedWho, plural, stacks, toast, who } from "./util.js";
+import { api, ask, fmtNum, h, has, icon, media, mixedWho, plural, stacks, toast, who, holdFocus } from "./util.js";
 
 const KIND = { lora: "LORA", word: "WORD", tag: "TAG" };
 const KIND_HELP = {
@@ -21,14 +21,15 @@ function thumb(id, alt = "") {
 
 // a quick look at one file, over everything (Esc or a click closes it)
 export function preview(file) {
-  const close = () => { box.remove(); document.removeEventListener("keydown", key, true); };
+  const close = () => { box.remove(); document.removeEventListener("keydown", key, true); letGo(); };
   const key = (e) => { if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); close(); } };
   const src = file.src || media("file", file.file_id ?? file.id);  // (a download: its own address)
-  const box = h("div.preview", { role: "dialog", "aria-label": file.name || "Preview", onclick: close },
+  const box = h("div.preview", { role: "dialog", "aria-modal": "true", tabIndex: -1, "aria-label": file.name || "Preview", onclick: close },
     file.kind === "video" ? h("video", { src, controls: true, autoplay: true, loop: true, onclick: (e) => e.stopPropagation() }) : h("img", { src, alt: file.name || "" }),
     h("div.preview-name", {}, file.name || ""));
   document.addEventListener("keydown", key, true);
   document.body.append(box);
+  const letGo = holdFocus(box);
 }
 
 function strengthBadge(rule, onToggle) {
@@ -91,7 +92,7 @@ export async function renderCharacter(root, id, ctx) {
   const rulesNow = () => c.rules.map((r) => ({ kind: r.kind, value: r.value, strength: r.strength, muted: r.muted }));
   root.replaceChildren(...[
     h("div.c-crumb", {}, h("button.link", { type: "button", onclick: () => ctx.show("characters") }, who()), " / ", c.name),
-    h("header.c-head", {},
+    h("header.c-head", { "data-review-cid": id },
       h("div.c-portrait", {}, thumb(c.cover, c.name)),
       h("div.c-title", {},
         h("h1", {}, c.name, mixedWho() ? h("span.c-who", {}, c.who === "person" ? "Person" : "Character") : null),
@@ -277,7 +278,7 @@ export async function renderReview(root, ctx) {
     groups.get(it.character_id).items.push(it);
   }
   root.replaceChildren(...[
-    h("header.st-head", {}, h("h1", {}, "To review"), h("div.keys", {}, h("kbd", {}, "Y"), " it's them ", h("kbd", {}, "N"), " it isn't ", h("kbd", {}, "← →"), " next")),
+    h("header.st-head", {}, h("h1", {}, "To review"), h("div.keys", {}, h("kbd", {}, "Y"), " it's them ", h("kbd", {}, "N"), " it isn't ", h("kbd", {}, "Z"), " take back ", h("kbd", {}, "← →"), " next")),
     queue.items.length ? null : h("div.c-empty", {}, h("h2", {}, "Nothing to review"), h("p", {}, "When a weak rule matches a file, it waits here for a yes or no.")),
     ...[...groups.entries()].map(([cid, g]) => h("section.st-card", { "aria-label": g.name },
       h("div.st-card-head", {}, h("div", {}, h("h2", {}, h("button.link", { type: "button", onclick: () => ctx.show("character", cid) }, g.name),
@@ -298,9 +299,29 @@ export async function renderReview(root, ctx) {
   }
 }
 
+// Z: the last yes or no for this character taken back, and the page drawn again with it waiting once more
+async function takeBack(cid) {
+  try {
+    await api(`/characters/${cid}/review/back`, { method: "POST" });
+    toast("Taken back: it's waiting for a yes or no again.");
+    reviewAgain?.();
+  } catch (e) { toast(e.message === "Nothing to take back." ? "Nothing to take back here." : e.message, true); }
+}
+let reviewAgain = null, lastCid = null;  // (how to draw the page that's showing again; whose answer was last)
+// Z on To review (or that character's page), with no card in front of it: after the last one's answered, say
+document.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "z" || e.ctrlKey || e.metaKey || e.altKey || !lastCid || e.target.closest?.("input, select, textarea, dialog, .r-card")) return;
+  const page = document.getElementById("stats");
+  if (!page || page.hidden || !(page.querySelector("h1")?.textContent === "To review" || page.querySelector(`[data-review-cid="${lastCid}"]`))) return;
+  e.preventDefault();
+  takeBack(lastCid);
+});
+
 function reviewGrid(items, ctx, after, { single = false } = {}) {
+  reviewAgain = after;
   const grid = h("div.r-grid", { role: "list" });
   const decide = async (it, card, verdict) => {
+    lastCid = it.character_id;
     card.classList.add(verdict === "confirm" ? "yes" : "no");
     card.querySelectorAll("button").forEach((b) => { b.disabled = true; });
     try {
@@ -324,6 +345,7 @@ function reviewGrid(items, ctx, after, { single = false } = {}) {
       const k = e.key.toLowerCase();
       if (k === "y") { e.preventDefault(); decide(it, card, "confirm"); }
       else if (k === "n") { e.preventDefault(); decide(it, card, "reject"); }
+      else if (k === "z" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); takeBack(it.character_id); }
       else if (k === " " || k === "enter") { if (e.target === card) { e.preventDefault(); preview(it); } }
       else if (e.key === "ArrowRight") { e.preventDefault(); card.nextElementSibling?.focus(); }
       else if (e.key === "ArrowLeft") { e.preventDefault(); card.previousElementSibling?.focus(); }

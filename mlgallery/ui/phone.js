@@ -3,7 +3,7 @@
 // characters. It does what a paired device may: look, rate, favourite, tag, albums, characters, the artist and a note,
 // the Trash (and putting back), and Swipe. Settings, folders, moving and renaming stay on the PC.
 
-import { albumTree, api, askText, dirTree, fmtDate, fmtSize, h, icon, lib, media, plural, store, toast, who } from "./util.js";
+import { albumTree, api, askText, dirTree, fmtDate, fmtSize, h, holdFocus, icon, lib, media, plural, store, toast, who } from "./util.js";
 import { swipeReview } from "./swipe.js";
 import * as org from "./organize.js";
 
@@ -271,11 +271,10 @@ async function openBrowse() {
 
 function renderBrowse() {
   const setOpen = (key) => { if (opened.has(key)) opened.delete(key); else opened.add(key); store.set("phone-open", [...opened].slice(-300)); renderBrowse(); };
-  const row = (ico, label, n, view, { depth = 0, key = null, kids = false } = {}) => h("button.p-row", { type: "button", onclick: () => show(view),
-    style: depth ? { paddingLeft: `${14 + depth * 18}px` } : null },
-    key ? h("span.twist" + (opened.has(key) ? ".open" : ""), { role: "button", "aria-label": opened.has(key) ? "Close" : "Open", hidden: !kids,
-      onclick: (e) => { e.stopPropagation(); setOpen(key); } }, icon("twist")) : null,
-    icon(ico), h("span.label", {}, label), n != null ? h("span.n", {}, n.toLocaleString()) : null);
+  const row = (ico, label, n, view, { depth = 0, key = null, kids = false } = {}) => h("div.p-line", { style: depth ? { paddingLeft: `${depth * 18}px` } : null },
+    key ? h("button.twist" + (opened.has(key) ? ".open" : ""), { type: "button", "aria-label": `${opened.has(key) ? "Close" : "Open"} ${label}`, "aria-expanded": String(opened.has(key)),
+      style: kids ? null : { visibility: "hidden" }, tabIndex: kids ? 0 : -1, onclick: () => setOpen(key) }, icon("twist")) : null,
+    h("button.p-row", { type: "button", onclick: () => show(view) }, icon(ico), h("span.label", {}, label), n != null ? h("span.n", {}, n.toLocaleString()) : null));
   const section = (title, rows) => (rows.length ? h("section.p-sec", {}, h("h2", {}, title), rows) : null);
 
   const dirRows = (f, node, depth) => [...node.kids.values()].flatMap((d) => {
@@ -308,14 +307,16 @@ function renderBrowse() {
 function viewer(start) {
   let i = start, scale = 1, tx = 0, ty = 0, el = null, at = S.items[start]?.id;
   const stage = h("div.pv-stage"), head = h("header.pv-top"), foot = h("footer.pv-bar");
-  const box = h("div.p-viewer", { role: "dialog", "aria-label": "Picture" }, stage, head, foot);
+  const box = h("div.p-viewer", { role: "dialog", "aria-modal": "true", tabIndex: -1, "aria-label": "Picture" }, stage, head, foot);
   document.body.append(box);
+  const letGo = holdFocus(box);  // (a tablet's keyboard: Tab stays in the viewer)
   document.body.classList.add("p-viewing");
   history.pushState({ viewer: true }, "");  // (the phone's Back closes it)
   const popped = () => close(true);
   addEventListener("popstate", popped);
   function close(fromBack = false) {
     removeEventListener("popstate", popped);
+    letGo();
     box.remove();
     document.body.classList.remove("p-viewing");
     if (!fromBack) history.back();

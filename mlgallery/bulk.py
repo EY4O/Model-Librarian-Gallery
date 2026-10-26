@@ -142,6 +142,29 @@ def alive(c, items: list, key: str = "file_id") -> list:
     return [it for it in items if int(it[key]) in have]
 
 
+def review_restore(c, cid: int, items: list) -> None:
+    """Answers in To review taken back, last first: each file as it was, and a rule they muted suggesting again."""
+    if not c.execute("SELECT 1 FROM characters WHERE id=?", (cid,)).fetchone():
+        return
+    for it in reversed(items):
+        if not c.execute("SELECT 1 FROM files WHERE id=?", (it["file_id"],)).fetchone():
+            continue
+        was = it["was"]
+        if was is None:
+            c.execute("DELETE FROM file_characters WHERE file_id=? AND character_id=?", (it["file_id"], cid))
+            chars.match_file(c, it["file_id"])
+        else:
+            c.execute("INSERT INTO file_characters (file_id, character_id, state, source, at) VALUES (?,?,?,?,?)"
+                      " ON CONFLICT (file_id, character_id) DO UPDATE SET state=excluded.state, source=excluded.source, at=excluded.at",
+                      (it["file_id"], cid, was["state"], was["source"], was["at"]))
+        for rid in it.get("muted") or []:
+            rule = c.execute("SELECT * FROM character_rules WHERE id=? AND muted=1", (rid,)).fetchone()
+            if rule:
+                c.execute("UPDATE character_rules SET muted=0 WHERE id=?", (rid,))
+                for f in chars.rule_files(c, rule):  # (what it suggested comes back to be reviewed)
+                    chars.match_file(c, f)
+
+
 def undo(db, kind: str, data) -> dict:
     with db.write() as c:
         if kind == "marks":
@@ -167,6 +190,24 @@ def undo(db, kind: str, data) -> dict:
                 metadata.refresh_search(c, i)
                 chars.match_file(c, i)
             c.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM file_tags)")
+            return {"undone": len(data["items"])}
+        if kind == "album_move":  # the names they had (one taken since by another album: that one stays as it is)
+            back = 0
+            rows = {r[0]: r[1] for r in c.execute("SELECT id, name FROM albums")}
+            aside = lambda aid: f"~moving {aid}~"  # noqa: E731
+            for aid, before, after in data["names"]:
+                if aid in rows and rows[aid] == after:
+                    c.execute("UPDATE albums SET name=? WHERE id=?", (aside(aid), aid))  # (out of the way first: names change places)
+            for aid, before, after in data["names"]:
+                taken = c.execute("SELECT 1 FROM albums WHERE name=? COLLATE NOCASE AND id<>?", (before, aid)).fetchone()
+                if c.execute("SELECT 1 FROM albums WHERE id=? AND name=?", (aid, aside(aid))).fetchone():
+                    c.execute("UPDATE albums SET name=? WHERE id=?", (after if taken else before, aid))
+                    back += 0 if taken else 1
+            for aid, q, q2 in data.get("queries") or []:
+                c.execute("UPDATE albums SET query=? WHERE id=? AND query=?", (q, aid, q2))
+            return {"undone": back}
+        if kind == "review":
+            review_restore(c, data["character"], data["items"])
             return {"undone": len(data["items"])}
         if kind == "dupes_kept":  # offered again
             c.executemany("DELETE FROM dupes_kept WHERE files=?", [(k,) for k in data["keys"]])

@@ -171,3 +171,36 @@ def test_api(lib, media):
         finally:
             await c.close()
     asyncio.run(go())
+
+
+def test_answers_in_to_review_are_one_history_step_and_come_back(lib, media):
+    from mlgallery import fileops
+    library(lib, media, n=16)
+    for fid in lib.files(limit=100)["items"]:
+        lib.set_tags(fid["id"], add=["noisy"])
+    cid = lib.character_save(None, "Night", [], [{"kind": "tag", "value": "noisy"}])
+    queue = [r["file_id"] for r in lib.review_queue(cid)]
+    a = lib.character_review(cid, [queue[0]], "confirm")
+    b = lib.character_review(cid, [queue[1]], "reject")
+    assert a["op"] == b["op"]  # (a run of answers: one step)
+    with lib.db.read() as c:
+        assert c.execute("SELECT summary FROM ops WHERE id=?", (a["op"],)).fetchone()[0] == "Reviewed 2 files for Night: 1 yes, 1 no"
+    assert lib.review_take_back(cid) == {"file_id": queue[1]}  # Z: the last one only
+    assert queue[1] in [r["file_id"] for r in lib.review_queue(cid)] and lib.character(cid)["n"] == 1
+    # enough no's mute the rule; undoing the step brings its suggestions back, and the yes goes too
+    lib.character_review(cid, queue[2:8], "reject")
+    assert lib.character(cid)["rules"][0]["muted"] and lib.character(cid)["counts"]["review"] == 0
+    fileops.undo(lib.db, a["op"])
+    ch = lib.character(cid)
+    assert not ch["rules"][0]["muted"] and ch["counts"]["review"] == 16 and ch["n"] == 0
+    assert lib.review_take_back(cid) is None  # (nothing left to take back)
+
+
+def test_another_characters_answers_are_another_step(lib, media):
+    library(lib, media, n=16)
+    for fid in lib.files(limit=100)["items"]:
+        lib.set_tags(fid["id"], add=["noisy"])
+    one = lib.character_save(None, "One", [], [{"kind": "tag", "value": "noisy"}])
+    two = lib.character_save(None, "Two", [], [{"kind": "tag", "value": "noisy"}])
+    f = lib.review_queue(one)[0]["file_id"]
+    assert lib.character_review(one, [f], "confirm")["op"] != lib.character_review(two, [f], "reject")["op"]

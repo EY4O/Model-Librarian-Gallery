@@ -53,9 +53,11 @@ body.p-viewing { overflow: hidden; }
 .p-row { width: 100%; display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 8px 14px; border: 0; border-radius: 10px; background: none; color: var(--text); text-align: left; }
 .p-row .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .p-row .n { color: var(--dim); font-variant-numeric: tabular-nums; }
-.p-row .twist { width: 28px; height: 28px; margin: -4px -6px -4px -8px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: var(--dim); }
-.p-row .twist svg { width: 14px; height: 14px; transition: transform .12s; }
-.p-row .twist.open svg { transform: rotate(90deg); }
+.p-line { display: flex; align-items: center; }
+.p-line .p-row { flex: 1; min-width: 0; }
+.p-line .twist { width: 36px; height: 44px; flex: none; margin-right: -10px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: none; color: var(--dim); }
+.p-line .twist svg { width: 14px; height: 14px; transition: transform .12s; }
+.p-line .twist.open svg { transform: rotate(90deg); }
 .p-row.on { background: var(--raise); }
 
 /* the viewer: one picture at a time, swiped through; pinch or double-tap to zoom */

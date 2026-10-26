@@ -1,7 +1,7 @@
 // Model Librarian Gallery: organising - the dialogs for tags, albums and moves, the Duplicates and History
 // pages, and Undo. A selection is a list of file ids, or a whole view ({view: {...}}).
 
-import { api, ask, baseName, fmtDate, fmtDur, fmtSize, h, icon, media, plural, stars, toast } from "./util.js";
+import { api, ask, baseName, fmtDate, fmtDur, fmtSize, h, holdFocus, icon, media, plural, stars, toast } from "./util.js";
 import { preview } from "./characters.js";
 
 let refreshAll = () => {};
@@ -408,7 +408,8 @@ function compare(g, keep, choose, { both = "Keep all", keepAll = null } = {}) {
     box.classList.toggle("actual", actual);
     size.textContent = actual ? "Fit to the window" : "Actual size";
   } }, "Actual size");
-  const shut = () => { for (const v of videos()) v.pause(); box.remove(); document.removeEventListener("keydown", esc, true); };
+  const shut = () => { for (const v of videos()) v.pause(); box.remove(); document.removeEventListener("keydown", esc, true); letGo?.(); };
+  let letGo = null;
   const esc = (e) => {
     if (e.key === "Escape") shut();
     else if (e.key === "ArrowLeft" || e.key === "ArrowRight") turn(e.key === "ArrowLeft" ? -1 : 1);
@@ -416,7 +417,7 @@ function compare(g, keep, choose, { both = "Keep all", keepAll = null } = {}) {
     e.stopPropagation();
     e.preventDefault();
   };
-  const box = h("div.cmp", { role: "dialog", "aria-label": "Compare" },
+  const box = h("div.cmp", { role: "dialog", "aria-modal": "true", tabIndex: -1, "aria-label": "Compare" },
     h("header.cmp-bar", {}, h("span", {}, `${plural(g.files.length, "copy", "copies")}: keep one, the rest go to the Trash`), h("span.spacer"), prev, where, next,
       keepAll ? h("button.btn.small", { type: "button", title: "They're not duplicates to thin out: don't offer them again", onclick: () => { shut(); keepAll(); } }, both) : null, size,
       h("button.icon-btn", { type: "button", "aria-label": "Close", title: "Close (Esc)", onclick: shut }, icon("remove"))),
@@ -424,6 +425,7 @@ function compare(g, keep, choose, { both = "Keep all", keepAll = null } = {}) {
   turn(0);
   document.addEventListener("keydown", esc, true);
   document.body.append(box);
+  letGo = holdFocus(box);
 }
 
 // ---------------------------------------------------------------- History
