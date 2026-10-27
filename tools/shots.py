@@ -1,6 +1,6 @@
 """Screenshots of the Gallery on generated sample media, for the README and for checking the look.
 
-    python tools/shots.py OUT_DIR [--url URL] [--media DIR]
+    python tools/shots.py OUT_DIR [--url URL] [--media DIR] [--only swipe,review,phone]
 
 Without --url it starts its own server on a throwaway data folder and a fresh sample library (so nothing of
 yours is ever in a screenshot). Needs Microsoft Edge.
@@ -68,7 +68,7 @@ def wait_idle(api, timeout=180):
 
 async def capture(url, out, scenes):
     async with Edge(url, 1440, 900) as e:
-        await e.wait("document.querySelectorAll('.tile img.on').length >= 12", 60)
+        await e.wait("document.querySelectorAll('.tile img.on').length >= Math.min(12, document.querySelectorAll('.tile').length || 12)", 60)  # (a small --media library: all of it)
         await asyncio.sleep(0.6)
         for name, steps in scenes:
             for s in steps:
@@ -101,6 +101,7 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--url")
     ap.add_argument("--media")
+    ap.add_argument("--only", help="just these scenes, by name (phone: the phone layout's two)")
     a = ap.parse_args()
     proc = None
     tmp = None
@@ -130,8 +131,11 @@ def main():
         api(f"/file/{it['id']}/mark", {"rating": r, "favorite": fav})
 
     # two characters: one its LoRA gives away, one only a weak tag suggests (so To review has something)
-    api("/characters", {"name": "Aurelia", "aliases": ["Aury"], "rules": [{"kind": "lora", "value": "aurelia_character"}, {"kind": "word", "value": "aurelia"}]})
-    glow = api("/characters", {"name": "Glow", "rules": [{"kind": "tag", "value": "soft light", "strength": "weak"}]})
+    have = {c["name"] for c in api("/characters")["characters"]}  # (from a run before, on the same --url)
+    if "Aurelia" not in have:
+        api("/characters", {"name": "Aurelia", "aliases": ["Aury"], "rules": [{"kind": "lora", "value": "aurelia_character"}, {"kind": "word", "value": "aurelia"}]})
+    if "Glow" not in have:
+        api("/characters", {"name": "Glow", "rules": [{"kind": "tag", "value": "soft light", "strength": "weak"}]})
     # a folder and an album with an icon and colour of their own, as you'd set from the sidebar
     for f in api("/folders")["folders"][:1]:
         api(f"/folders/{f['id']}/look", {"icon": "svg:sparkle", "color": "#a78bfa"})
@@ -195,10 +199,14 @@ def main():
         ("swipe", [lambda e: js(e, "document.getElementById('view-swipe').click(); true"),
                    lambda e: e.wait("document.querySelector('.sw-card:not(.under) img')?.complete"), lambda e: asyncio.sleep(0.8)]),
     ]
+    only = set(a.only.split(",")) if a.only else None
+    if only:  # (each scene starts from its own sidebar button, so most stand alone; review-next follows review)
+        scenes = [sc for sc in scenes if sc[0] in only]
     os.makedirs(a.out, exist_ok=True)
     try:
         asyncio.run(capture(url, a.out, scenes))
-        asyncio.run(capture_phone(url, a.out))
+        if not only or "phone" in only:
+            asyncio.run(capture_phone(url, a.out))
     finally:
         if proc:
             proc.terminate()
