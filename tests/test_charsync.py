@@ -185,7 +185,7 @@ def test_linking_a_lora_on_the_prompt_card(lib, ml):
     cid = gallery(lib, "Aurelia")["id"]
     lib.models.models = lambda: {"root": None, "models": [{"kind": "lora", "name": "aurelia_v2", "file": "chars/aurelia_v2.safetensors"},
                                                           {"kind": "checkpoint", "name": "base", "file": "base.safetensors"}]}
-    lib.trigger_words = lambda lora: ["aurelia_lt", "silver hair"]
+    lib.trigger_words = lambda lora, guess=True: ["aurelia_lt", "silver hair"] if not guess else ["guessed"]
     assert lib.character_loras() == [{"name": "aurelia_v2", "file": "chars/aurelia_v2.safetensors"}]
     ch = lib.character_presets(cid, {"lora": {"name": r"Chars\aurelia_v2.safetensors"}})  # (\ and any case: as Model Librarian has it)
     assert ch["shared"]["lora"] == {"name": "chars/aurelia_v2.safetensors", "trigger": ["aurelia_lt", "silver hair"]}, "its trigger words from its metadata"
@@ -216,3 +216,81 @@ def test_learning_a_look_from_your_images(lib, media):
     assert r["n"] == len(files) and [(t["tag"], t["kind"]) for t in r["tags"]] == [("red scarf", "outfit"), ("silver hair", "appearance")]
     lib.character_presets(cid, {"appearance": ["silver hair"]})
     assert [t["tag"] for t in lib.character_learn(cid)["tags"]] == ["red scarf"], "one it has is no longer suggested"
+
+
+# ---------------------------------------------------------------- QA: nothing goes back and forth; what can't be synced is said
+def version_after(lib, ml, n=3):
+    out = []
+    for _ in range(n):
+        charsync.sync(lib, ml)
+        out.append(lib.db.version)
+    return out
+
+
+def test_what_the_gallery_cant_hold_doesnt_go_back_and_forth(lib, ml):
+    lib.character_save(None, "Alice", [], [], who="person")
+    many = [f"aka {i}" for i in range(20)]
+    put(ml, [dict(AURELIA, name="Alice"), dict(AURELIA, id="chr_b0000002", name="Nova", tag="nova", aliases=many)])
+    charsync.sync(lib, ml, now=200.0)
+    a, b, c = version_after(lib, ml)
+    assert a == b == c, "a settled sync writes nothing"
+    names = sorted(x["name"] for x in listed(ml)["characters"])
+    assert names == ["Alice 2", "Nova"], "a person's name is taken: the character gets another, and the list is told"
+    assert len(next(x for x in listed(ml)["characters"] if x["name"] == "Nova")["aliases"]) == 16
+
+
+def test_a_portrait_that_cant_be_made_is_tried_once(lib, media, ml):
+    ids = library(lib, media, n=2)
+    put(ml, [dict(AURELIA)])
+    charsync.sync(lib, ml, now=200.0)
+    cid = gallery(lib, "Aurelia")["id"]
+    lib.character_save(cid, "Aurelia", [], None, cover=ids["c01.png"])
+    lib.thumbs.get = lambda *a, **k: None  # (its thumbnail can't be made)
+    charsync.sync(lib, ml)
+    a, b, c = version_after(lib, ml)
+    assert a == b == c and listed(ml)["characters"][0]["image"] is None
+
+
+def test_a_character_made_a_person_leaves_the_list(lib, ml):
+    put(ml, [dict(AURELIA)])
+    charsync.sync(lib, ml, now=200.0)
+    cid = gallery(lib, "Aurelia")["id"]
+    lib.character_save(cid, "Aurelia", [], None, who="person")
+    charsync.sync(lib, ml)
+    assert listed(ml)["characters"] == [] and charstore.deleted_ids(listed(ml)) == {"chr_a0000001"}
+    lib.character_save(cid, "Aurelia Vance", [], None)
+    charsync.sync(lib, ml)
+    assert listed(ml)["characters"] == [] and gallery(lib, "Aurelia Vance"), "no copy comes back"
+
+
+def test_an_edit_while_syncing_isnt_undone(lib, ml):
+    put(ml, [dict(AURELIA)])
+    charsync.sync(lib, ml, now=200.0)
+    cid = gallery(lib, "Aurelia")["id"]
+    data = listed(ml)
+    data["characters"][0]["series"] = "Lighthouse Tales II"
+    charstore.stamp(data["characters"][0], ["series"], 9e12)
+    rows, gone, people = charsync._rows(lib)
+    _, acts = charsync.plan(data, rows, gone, 9e12 + 1, people)
+    lib.character_presets(cid, {"appearance": ["freckles"]})  # (meanwhile, on the card)
+    lib.apply_character_sync(acts)
+    assert lib.character(cid)["shared"]["appearance"] == ["freckles"], "the edit made meanwhile stays (the next sync merges both)"
+
+
+def test_a_broken_or_newer_list_stops_the_sync_and_says_why(lib, ml):
+    for content, why in (("", "isn't readable"), ('{"v": 2, "characters": []}', "newer")):
+        with open(os.path.join(ml, charstore.FILE), "w", encoding="utf-8") as f:
+            f.write(content)
+        with pytest.raises(ValueError, match=why):
+            charsync.sync(lib, ml)
+    with open(os.path.join(ml, charstore.FILE), "w", encoding="utf-8-sig") as f:  # (a byte-order mark is fine)
+        json.dump({"v": 1, "characters": [dict(AURELIA), None]}, f)
+    charsync.sync(lib, ml)
+    assert gallery(lib, "Aurelia")
+
+
+def test_a_library_only_for_photos_keeps_out(lib, ml):
+    put(ml, [dict(AURELIA)])
+    lib.set_kinds(["photos"])
+    lib.models.data_dir = lambda: ml
+    assert lib.sync_characters() == {"list": False, "gallery": 0} and gallery(lib, "Aurelia") is None

@@ -109,3 +109,29 @@ def test_same_charstore_as_model_librarian():
         pytest.skip("ComfyUI-Model-Librarian isn't beside this repo")
     with open(theirs, "rb") as a, open(os.path.join(here, "mlgallery", "charstore.py"), "rb") as b:
         assert a.read() == b.read()
+
+
+def test_a_file_that_cant_be_removed_isnt_filed_twice(dirs, monkeypatch):
+    ml, ext = dirs
+    leave(ext, "nova", {"tag": "nova_(starfall)", "name": "Nova", "mode": "new"})
+    real = os.remove
+    monkeypatch.setattr(charfiles.os, "remove", lambda p: (_ for _ in ()).throw(PermissionError(p)) if p.endswith(charfiles.SUFFIX) else real(p))
+    assert charfiles.pickup(ml, ext) == 1
+    assert charfiles.pickup(ml, ext) == 0, "held open: not filed again"
+    monkeypatch.setattr(charfiles.os, "remove", real)
+    assert charfiles.pickup(ml, ext) == 0 and not charfiles.waiting(ext), "removed once it can be"
+    assert [c["name"] for c in chars(ml)] == ["Nova"]
+
+
+def test_the_lock_is_kept_alive_and_only_ours_removed(dirs, monkeypatch):
+    ml, _ = dirs
+    monkeypatch.setattr(charfiles, "BEAT", 0.1)
+    path = os.path.join(ml, charstore.FILE)
+    with charfiles._Lock(path) as lk:
+        t0 = os.stat(lk.lock).st_mtime
+        time.sleep(0.5)
+        assert os.stat(lk.lock).st_mtime > t0, "touched while held"
+        with open(lk.lock, "wb") as f:
+            f.write(b"someone else")
+    assert os.path.exists(path + ".lock"), "another's lock isn't removed"
+    os.remove(path + ".lock")

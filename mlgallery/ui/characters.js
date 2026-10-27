@@ -154,7 +154,7 @@ export async function renderCharacter(root, id, ctx, again = null) {
 }
 
 // ---------------------------------------------------------------- what Character Select writes (shared with Model Librarian)
-const listPicture = (id) => media("characters", `${id}/picture`) + `&v=${Date.now() >> 16}`;  // (a new one now and then: a picked portrait shows)
+const listPicture = (id) => media("characters", `${id}/picture`) + `&v=${Math.floor(Date.now() / 60000)}`;  // (a new one each minute: a picked portrait shows)
 
 const loraLabel = (name) => String(name || "").split(/[\\/]/).pop().replace(/\.(safetensors|ckpt|pt|pth|bin)$/i, "");
 
@@ -162,89 +162,113 @@ function promptCard(c) {
   const card = h("section.st-card.c-prompt", { "aria-label": "Prompt" });
   let sh = c.shared;
   let learned = null, loras = null;  // (asked for once the card is up)
-  const save = async (patch, focus = null) => {
-    try {
-      sh = (await api(`/characters/${c.id}/presets`, { method: "POST", body: patch })).shared;
-      draw(focus);
-    } catch (e) { toast(e.message, true); draw(); }
+  // changes one after another, each worked out from the card as it is by then (two quick clicks can't undo each other)
+  let queue = Promise.resolve();
+  const save = (patchOf, focus = null) => {
+    queue = queue.then(async () => {
+      const patch = patchOf(sh);
+      if (!patch) return;
+      try {
+        sh = (await api(`/characters/${c.id}/presets`, { method: "POST", body: patch })).shared;
+        draw(focus);
+      } catch (e) { toast(e.message, true); draw(); }
+    });
   };
-  // a row of tags, each removed with its x, and a box that adds (several at once, separated by commas)
-  const tagRow = (label, tags, put, key) => {
-    const add = h("input.pt-add", { type: "text", placeholder: "Add a tag", "aria-label": `Add to ${label}`, autocomplete: "off", spellcheck: false, "data-key": key });
+  // a row of tags, each taken out with its x, and a box that adds (several at once, separated by commas).
+  // get(sh) is the row's tags now; make(sh, tags) the change that sets them
+  const tagRow = (label, tags, get, make, key) => {
+    const add = h("input.pt-add", { type: "text", placeholder: "Add a tag", "aria-label": `Add to ${label}`, autocomplete: "off", "data-key": key });
+    add.spellcheck = false;
     add.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key !== "Enter") return;
       e.preventDefault();
       const more = add.value.split(",").map((t) => t.trim()).filter(Boolean);
-      if (more.length) put([...tags, ...more], key);
+      if (more.length) save((s) => make(s, [...get(s), ...more]), key);
     });
-    return h("div.tags.pt-tags", {}, tags.map((t, i) => h("span.chip.tag", {}, h("span.pt-t", {}, t),
-      h("button.x", { type: "button", "aria-label": `Take ${t} out of ${label}`, title: "Take it out", onclick: () => put(tags.filter((_, j) => j !== i), key) }, icon("remove")))), add);
+    return h("div.tags.pt-tags", {}, tags.map((t) => h("span.chip.tag", {}, h("span.pt-t", {}, t),
+      h("button.x", { type: "button", "aria-label": `Take ${t} out of ${label}`, title: "Take it out", onclick: () => save((s) => make(s, get(s).filter((x) => x !== t)), key) }, icon("remove")))), add);
   };
   const field = (label, value, part, placeholder) => {
-    const input = h("input", { type: "text", value, placeholder, "aria-label": label, autocomplete: "off", spellcheck: false });
-    const commit = () => { if (input.value.trim() !== value) save({ [part]: input.value }); };
+    const input = h("input", { type: "text", value, placeholder, "aria-label": label, autocomplete: "off", "data-key": `field:${part}` });
+    input.spellcheck = false;
+    const commit = () => { const v = input.value; if (v.trim() !== value) save(() => ({ [part]: v })); };
     input.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); input.blur(); } });
     input.addEventListener("blur", commit);
     return h("label.pt-field", {}, h("span", {}, label), input);
   };
+  const outfitsOf = (s) => s.outfits || {};
   const draw = (focus = null) => {
-    const outfits = sh.outfits || {};
-    const putOutfit = (name) => (tags, key) => save({ outfits: { ...outfits, [name]: tags } }, key);
+    // what's being typed somewhere on the card stays, with the cursor, when it's drawn again (a Tab out of a field saves it)
+    const was = card.contains(document.activeElement) && document.activeElement.dataset?.key
+      ? { key: document.activeElement.dataset.key, value: document.activeElement.value, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
+    const outfits = outfitsOf(sh);
     const src = sh.source || {};
-    card.replaceChildren(
+    card.setAttribute("aria-busy", "false");
+    card.replaceChildren(...[
       h("div.st-card-head", {}, h("h2", {}, "Prompt"),
         h("span", {}, "What Character Select writes in ComfyUI, shared with Model Librarian",
-          src.url ? [" · ", h("a", { href: src.url, target: "_blank", rel: "noreferrer" }, `from ${src.site || "a"} post${src.post ? ` #${src.post}` : ""}`)] : null)),
+          /^https:\/\//i.test(src.url || "") ? [" · ", h("a", { href: src.url, target: "_blank", rel: "noreferrer" }, `from ${src.site || "a"} post${src.post ? ` #${src.post}` : ""}`)] : null)),
+      sh.sync_error ? h("p.form-err", { role: "status" }, `Not in step with Model Librarian right now: ${sh.sync_error}`) : null,
       h("div.pt-fields", {}, field("Booru tag", (sh.tag || "").replace(/_/g, " "), "tag", "aurelia (lighthouse tales)"), field("Series", sh.series || "", "series", "Lighthouse Tales")),
-      h("div.pt-group", {}, h("h3", {}, "Appearance"), tagRow("Appearance", sh.appearance, (tags, key) => save({ appearance: tags }, key), "appearance")),
+      h("div.pt-group", {}, h("h3", {}, "Appearance"), tagRow("Appearance", sh.appearance || [], (s) => s.appearance || [], (s, v) => ({ appearance: v }), "appearance")),
       ...Object.keys(outfits).map((name) => h("div.pt-group", {},
         h("h3", {}, h("span", {}, `Outfit · ${name}`),
-          h("button.link.dim", { type: "button", onclick: async () => {
+          h("button.link.dim", { type: "button", "aria-label": `Rename the outfit ${name}`, onclick: async () => {
             const to = ((await askText("Rename the outfit", "Name", name, { ok: "Rename" })) || "").trim();
             if (!to || to === name) return;
             if (outfits[to]) return toast(`There's already an outfit called ${to}.`, true);
-            save({ outfits: Object.fromEntries(Object.entries(outfits).map(([k, v]) => [k === name ? to : k, v])) });
+            save((s) => ({ outfits: Object.fromEntries(Object.entries(outfitsOf(s)).map(([k, v]) => [k === name ? to : k, v])) }));
           } }, "Rename"),
-          h("button.link.dim", { type: "button", onclick: async () => {
+          h("button.link.dim", { type: "button", "aria-label": `Delete the outfit ${name}`, onclick: async () => {
             if (await ask(`Delete the outfit ${name}?`, "Its tags go with it.", { ok: "Delete", danger: true })) {
-              const rest = { ...outfits };
-              delete rest[name];
-              save({ outfits: rest });
+              save((s) => { const rest = { ...outfitsOf(s) }; delete rest[name]; return { outfits: rest }; });
             }
           } }, "Delete")),
-        tagRow(`the outfit ${name}`, outfits[name], putOutfit(name), `outfit:${name}`))),
+        tagRow(`the outfit ${name}`, outfits[name], (s) => outfitsOf(s)[name] || [], (s, v) => ({ outfits: { ...outfitsOf(s), [name]: v } }), `outfit:${name}`))),
       h("div.row", {}, h("button.btn.small", { type: "button", onclick: async () => {
         const name = ((await askText("New outfit", "Name", "", { ok: "Add", placeholder: "winter" })) || "").trim();
         if (!name) return;
         if (outfits[name]) return toast(`There's already an outfit called ${name}.`, true);
-        save({ outfits: { ...outfits, [name]: [] } }, `outfit:${name}`);
+        save((s) => ({ outfits: { ...outfitsOf(s), [name]: [] } }), `outfit:${name}`);
       } }, icon("plus"), "Outfit")),
       sh.ml ? loraGroup() : null,
       learnGroup(outfits),
-      sh.ml ? null : h("p.st-none", {}, "Model Librarian's folder isn't found (Settings, Model Librarian): these stay here until it is."));
-    if (focus) card.querySelector(`[data-key="${CSS.escape(focus)}"]`)?.focus();
+      sh.ml ? null : h("p.st-none", {}, "Model Librarian's folder isn't found (Settings, Model Librarian): these stay here until it is."),
+    ].filter(Boolean));
+    const back = focus || was?.key;
+    const el = back ? card.querySelector(`[data-key="${CSS.escape(back)}"]`) : null;
+    if (el) {
+      if (was && was.key === back && back !== focus && el.value !== was.value) {  // (typed and not saved yet)
+        el.value = was.value;
+        try { el.setSelectionRange(was.start, was.end); } catch {}
+      }
+      el.focus();
+    }
   };
   // its LoRA (one Model Librarian has): Character Select loads it, with these trigger words first
   const loraGroup = () => {
     if (sh.lora) {
       return h("div.pt-group", {},
-        h("h3", {}, h("span", {}, `LoRA · ${loraLabel(sh.lora.name)}`), h("button.link.dim", { type: "button", title: sh.lora.name, onclick: () => save({ lora: null }) }, "Unlink")),
+        h("h3", {}, h("span", {}, `LoRA · ${loraLabel(sh.lora.name)}`),
+          h("button.link.dim", { type: "button", title: sh.lora.name, "aria-label": `Unlink the LoRA ${loraLabel(sh.lora.name)}`, onclick: () => save(() => ({ lora: null })) }, "Unlink")),
         h("p.st-none", {}, "Trigger words (as it was trained; Character Select puts them first when it loads the LoRA)"),
-        tagRow("its trigger words", sh.lora.trigger || [], (tags, key) => save({ lora: { name: sh.lora.name, trigger: tags } }, key), "trigger"));
+        tagRow("its trigger words", sh.lora.trigger || [], (s) => s.lora?.trigger || [], (s, v) => (s.lora ? { lora: { name: s.lora.name, trigger: v } } : null), "trigger"));
     }
-    const input = h("input.pt-add.pt-lora", { type: "text", placeholder: "A LoRA Model Librarian has", "aria-label": "Link a LoRA", autocomplete: "off", spellcheck: false });
+    const input = h("input.pt-add.pt-lora", { type: "text", placeholder: "A LoRA Model Librarian has", "aria-label": "Link a LoRA", autocomplete: "off" });
+    input.spellcheck = false;
     const list = h("datalist", { id: `pt-loras-${c.id}` });
     input.setAttribute("list", list.id);
     const fill = async () => {
       loras = loras || (await api("/characters/loras").catch(() => ({ loras: [] }))).loras;
       list.replaceChildren(...loras.map((l) => h("option", { value: l.file }, l.name)));
     };
-    const link = () => {
+    const link = async () => {
+      await fill();  // (Enter straight away: the list is asked for first)
       const v = input.value.trim().toLowerCase();
-      const hit = (loras || []).find((l) => l.file.toLowerCase() === v || l.name.toLowerCase() === v);
+      const hit = loras.find((l) => l.file.toLowerCase() === v || l.name.toLowerCase() === v);
       if (!hit) return toast("Pick one of the LoRAs Model Librarian has.", true);
-      save({ lora: { name: hit.file } }, "trigger");
+      save(() => ({ lora: { name: hit.file } }), "trigger");
     };
     input.addEventListener("focus", fill, { once: true });
     input.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); link(); } });
@@ -256,14 +280,16 @@ function promptCard(c) {
   const learnGroup = (outfits) => {
     const box = h("div.pt-group.pt-learn", {}, h("h3", {}, h("span", {}, "From your images")));
     if (!learned) { box.append(h("p.st-none", {}, "Looking through its images…")); return box; }
-    if (learned.n < 3) { box.append(h("p.st-none", {}, `Once a few images of ${c.name} count, the tags common in their prompts are suggested here.`)); return box; }
+    if (learned.failed) { box.append(h("p.st-none", {}, "Couldn't look through its images just now.")); return box; }
+    if (learned.n < (learned.min || 3)) { box.append(h("p.st-none", {}, `Once a few images of ${c.name} count, the tags common in their prompts are suggested here.`)); return box; }
     if (!learned.tags.length) { box.append(h("p.st-none", {}, `Nothing new to suggest: no hair, eyes or clothing tag is common in the prompts of its ${plural(learned.n, "image")} that isn't here already.`)); return box; }
     const names = Object.keys(outfits);
     const into = h("select.pt-into", { "aria-label": "Outfit tags go into" }, (names.length ? names : ["default"]).map((n) => h("option", { value: n }, n)));
     const add = (t) => {
       learned.tags = learned.tags.filter((x) => x !== t);
-      if (t.kind === "appearance") save({ appearance: [...sh.appearance, t.tag] });
-      else save({ outfits: { ...outfits, [into.value]: [...(outfits[into.value] || []), t.tag] } });
+      const to = into.value;
+      if (t.kind === "appearance") save((s) => ({ appearance: [...(s.appearance || []), t.tag] }));
+      else save((s) => ({ outfits: { ...outfitsOf(s), [to]: [...(outfitsOf(s)[to] || []), t.tag] } }));
     };
     const chip = (t) => h("button.chip.tag.pt-sugg." + t.kind, { type: "button", title: `On ${Math.round(t.share * 100)}% of its ${learned.n} images: add to ${t.kind === "appearance" ? "Appearance" : "the outfit picked"}`,
       onclick: () => add(t) }, icon("plus"), h("span.pt-t", {}, t.tag), h("span.pt-share", {}, `${Math.round(t.share * 100)}%`));
@@ -274,7 +300,7 @@ function promptCard(c) {
     return box;
   };
   draw();
-  api(`/characters/${c.id}/learn`).then((r) => { learned = r; draw(); }).catch(() => { learned = { n: 0, tags: [] }; draw(); });
+  api(`/characters/${c.id}/learn`).then((r) => { learned = r; draw(); }).catch(() => { learned = { failed: true }; draw(); });
   return card;
 }
 

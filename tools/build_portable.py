@@ -116,7 +116,12 @@ def main(argv=None) -> str:
         os.makedirs(pkg)  # (in Program Files only an administrator can: made once, then kept)
     for name in os.listdir(pkg):  # emptied, not removed: the folder keeps the permissions it was given
         p = os.path.join(pkg, name)
-        shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.remove(p)
+        if os.path.islink(p) or getattr(os.path, "isjunction", lambda _: False)(p):
+            os.rmdir(p) if os.path.isdir(p) else os.remove(p)  # (a link: only the link goes, not what it points to)
+        elif os.path.isdir(p):
+            shutil.rmtree(p)
+        else:
+            os.remove(p)
     src = a.python or find_python()
     print("python  from", src)
     copy_python(src, os.path.join(pkg, "python"))

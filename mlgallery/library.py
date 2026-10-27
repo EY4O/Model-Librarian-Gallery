@@ -128,6 +128,7 @@ class Library:
         self.watcher = Watcher(self)
         self.models = ModelLibrary(self.settings)
         self.char_wake = threading.Event()  # a character changed here: the sync with Model Librarian's list runs now
+        self.char_sync_error: str | None = None  # why the last sync with it didn't happen (its character page says)
         self._scan_lock = threading.Lock()
         self._queue: list[int] = []
         self._queue_cv = threading.Condition()
@@ -540,14 +541,21 @@ class Library:
             clash = c.execute("SELECT id FROM characters WHERE name=? COLLATE NOCASE", (name,)).fetchone()
             if clash and clash[0] != cid:
                 raise ValueError(f"There's already a character called {name}.")
-            was = c.execute("SELECT name, aliases, shared FROM characters WHERE id=?", (cid,)).fetchone() if cid is not None else None
-            if was and was["shared"]:  # shared with Model Librarian's list: when the name or aliases changed, for the sync
+            was = c.execute("SELECT name, aliases, shared, who FROM characters WHERE id=?", (cid,)).fetchone() if cid is not None else None
+            wake = False
+            if was and was["shared"]:  # shared with Model Librarian's list
                 sh = json.loads(was["shared"])
-                parts = (["name"] if was["name"] != name else []) + (["aliases"] if json.loads(was["aliases"] or "[]") != aliases else [])
-                if parts:
-                    charstore.stamp(sh, parts, time.time())
-                    c.execute("UPDATE characters SET shared=? WHERE id=?", (json.dumps(sh), cid))
-                    self.char_wake.set()
+                if who == "person" and was["who"] != "person":  # a person now: out of the list (people aren't in it)
+                    if sh.get("id"):
+                        c.execute("INSERT OR REPLACE INTO characters_deleted (shared_id, at) VALUES (?,?)", (sh["id"], time.time()))
+                    c.execute("UPDATE characters SET shared=NULL WHERE id=?", (cid,))
+                    wake = True
+                else:  # when the name or aliases changed, for the sync
+                    parts = (["name"] if was["name"] != name else []) + (["aliases"] if json.loads(was["aliases"] or "[]") != aliases else [])
+                    if parts:
+                        charstore.stamp(sh, parts, time.time())
+                        c.execute("UPDATE characters SET shared=? WHERE id=?", (json.dumps(sh), cid))
+                        wake = True
             if cid is None:
                 cid = c.execute("INSERT INTO characters (name, aliases, created, who) VALUES (?,?,?,?)", (name, json.dumps(aliases), time.time(), who)).lastrowid
             else:
@@ -574,6 +582,8 @@ class Library:
                     c.execute("INSERT INTO character_rules (character_id, kind, value, strength, muted) VALUES (?,?,?,?,?)",
                               (cid, kind, value, "weak" if strength == "weak" else "strong", muted))
             chars.rematch(c, cid)
+        if wake:  # (after the change is in: the sync reads it as it is now)
+            self.char_wake.set()
         return cid
 
     def character_delete(self, cid: int) -> bool:
@@ -590,6 +600,10 @@ class Library:
 
     # ---------------------------------------------------------------- characters shared with Model Librarian (charsync.py)
     def sync_characters(self) -> dict:
+        """Kept in step with Model Librarian's list: a library for AI generations or illustrations (not one only for photos)."""
+        kinds = self.kinds or ["ai"]
+        if "ai" not in kinds and "illustrations" not in kinds:
+            return {"list": False, "gallery": 0}
         return charsync.sync(self, self.models.data_dir())
 
     def apply_character_sync(self, acts) -> int:
@@ -604,9 +618,12 @@ class Library:
                     with self.db.write() as c:
                         c.execute("DELETE FROM characters WHERE id=?", (int(a[1]),))
                 else:
-                    name, aliases, shared, add = (a[2], a[3], a[4], a[5])
+                    name, aliases, shared, add, before = (a[2], a[3], a[4], a[5], a[6])
                     cid = self.character_save(None, name, aliases, [], who="character") if a[0] == "create" else int(a[1])
                     with self.db.write() as c:
+                        # only if it hasn't changed since the sync read it (an edit meanwhile wins: the next sync takes it)
+                        if a[0] == "save" and not c.execute("SELECT 1 FROM characters WHERE id=? AND shared IS ?", (cid, before)).fetchone():
+                            continue
                         clash = c.execute("SELECT id FROM characters WHERE name=? COLLATE NOCASE AND id<>?", (name, cid)).fetchone()
                         c.execute("UPDATE characters SET aliases=?, shared=? WHERE id=?", (json.dumps(aliases[:16]), json.dumps(shared), cid))
                         if not clash:
@@ -620,11 +637,32 @@ class Library:
                 n += 1
             except Exception:
                 continue  # (the next sync tries again)
+        if n:
+            self.db.user_change()  # (the Characters list counted afresh: what came from the list shows at once)
         return n
 
     def character_presets(self, cid: int, patch: dict) -> dict:
         """Its series, booru tag, appearance and outfits, as Character Select writes them (shared with Model Librarian)."""
         cid = int(cid)
+        lora = ...
+        if "lora" in patch:  # (a LoRA Model Librarian has, by its file in the loras folder; its trigger words as trained)
+            lo = patch["lora"]
+            if lo is None or (isinstance(lo, dict) and not lo.get("name")):
+                lora = None
+            elif isinstance(lo, dict):
+                want = str(lo["name"]).replace("\\", "/").lower()
+                have = next((m["file"] for m in self.character_loras() if m["file"].lower() == want), None)
+                if not have:
+                    raise ValueError("That LoRA isn't in Model Librarian's loras folder.")
+                trig = lo.get("trigger") if isinstance(lo.get("trigger"), list) else self.trigger_words(have, guess=False)
+                words = []
+                for w in trig:
+                    w = str(w).strip()[: charstore.CAPS["tag"]]
+                    if w and w.lower() not in {x.lower() for x in words}:
+                        words.append(w)
+                lora = {"name": have, "trigger": words[:12]}
+            else:
+                raise ValueError("lora is {name, trigger} or null")
         with self.db.write() as c:
             row = c.execute("SELECT shared FROM characters WHERE id=?", (cid,)).fetchone()
             if not row:
@@ -633,43 +671,25 @@ class Library:
             parts = []
 
             def put(part, value):
-                if value != sh.get(part, [] if part == "appearance" else {} if part == "outfits" else ""):
+                if value != sh.get(part, [] if part == "appearance" else {} if part == "outfits" else None if part == "lora" else ""):
                     sh[part] = value
                     parts.append(part)
             if "series" in patch:
-                put("series", str(patch["series"] or "").strip()[: charstore.CAPS["text"]])
+                put("series", charstore._text(patch["series"], charstore.CAPS["text"]))
             if "tag" in patch:
                 put("tag", re.sub(r"\s+", "_", str(patch["tag"] or "").strip())[: charstore.CAPS["tag"]])
             if "appearance" in patch:
                 if not isinstance(patch["appearance"], list):
                     raise ValueError("appearance is a list of tags")
                 put("appearance", charstore._tags(patch["appearance"]))
-            if "lora" in patch:  # (a LoRA Model Librarian has, by its file in the loras folder; its trigger words as trained)
-                lo = patch["lora"]
-                if lo is None or (isinstance(lo, dict) and not lo.get("name")):
-                    put("lora", None)
-                elif isinstance(lo, dict):
-                    want = str(lo["name"]).replace("\\", "/").lower()
-                    have = next((m["file"] for m in self.character_loras() if m["file"].lower() == want), None)
-                    if not have:
-                        raise ValueError("That LoRA isn't in Model Librarian's loras folder.")
-                    trig = lo.get("trigger")
-                    if not isinstance(trig, list):
-                        trig = self.trigger_words(have)
-                    words = []
-                    for w in trig:
-                        w = str(w).strip()[: charstore.CAPS["tag"]]
-                        if w and w.lower() not in {x.lower() for x in words}:
-                            words.append(w)
-                    put("lora", {"name": have, "trigger": words[:12]})
-                else:
-                    raise ValueError("lora is {name, trigger} or null")
+            if lora is not ...:
+                put("lora", lora)
             if "outfits" in patch:
                 if not isinstance(patch["outfits"], dict):
                     raise ValueError("outfits is {name: [tags]}")
                 outfits = {}
                 for k, v in list(patch["outfits"].items())[: charstore.CAPS["outfits"]]:
-                    k = str(k or "").strip()[: charstore.CAPS["text"]]
+                    k = charstore._text(k, charstore.CAPS["text"])
                     if k and isinstance(v, list):
                         outfits[k] = charstore._tags(v)
                 put("outfits", outfits)
@@ -698,7 +718,7 @@ class Library:
         sh = json.loads(row["shared"] or "{}") or {}
         known = [row["name"], sh.get("tag"), sh.get("series"), *(sh.get("appearance") or []), *[t for v in (sh.get("outfits") or {}).values() for t in v],
                  *((sh.get("lora") or {}).get("trigger") or [])]
-        return {"n": n, "tags": looks.suggest(counts, n, known)}
+        return {"n": n, "min": looks.MIN_FILES, "tags": looks.suggest(counts, n, known)}
 
     def character_picture(self, cid: int) -> str | None:
         """The character's picture in Model Librarian's list (its Danbooru picture, or a portrait picked here)."""
@@ -723,7 +743,7 @@ class Library:
             sh = json.loads(out.pop("shared") or "{}") or {}
             out["shared"] = {"linked": bool(sh.get("id")), "series": sh.get("series") or "", "tag": sh.get("tag") or "", "appearance": sh.get("appearance") or [],
                              "outfits": sh.get("outfits") or {}, "lora": sh.get("lora"), "source": sh.get("source") or {}, "picture": bool(sh.get("image")),
-                             "ml": bool(self.models.data_dir())}
+                             "ml": bool(self.models.data_dir()), "sync_error": self.char_sync_error}
             files = "FROM file_characters fc JOIN files f ON f.id=fc.file_id JOIN folders d ON d.id=f.folder_id WHERE fc.character_id=? AND f.missing=0 AND d.online=1"
             counts = dict(c.execute(f"SELECT fc.state, COUNT(*) {files} GROUP BY fc.state", (cid,)).fetchall())
             out["counts"] = {k: counts.get(k, 0) for k in ("auto", "confirmed", "review", "rejected")}
@@ -826,7 +846,7 @@ class Library:
                 "SELECT fc.character_id, COUNT(*) FROM file_characters fc JOIN files f ON f.id=fc.file_id JOIN folders d ON d.id=f.folder_id"
                 " WHERE fc.state='review' AND f.missing=0 AND d.online=1 GROUP BY fc.character_id")}
 
-    def trigger_words(self, lora: str) -> list[str]:
+    def trigger_words(self, lora: str, guess: bool = True) -> list[str]:
         """Words to recognise a LoRA's character by: its trained words (from the sidecar files next to the LoRA,
         when Model Librarian's library is there), else the prompt parts that come with it most."""
         words = []
@@ -849,7 +869,7 @@ class Library:
                                     words.append(part.strip())
                     except (OSError, ValueError, AttributeError):
                         continue
-        if not words:
+        if not words and guess:
             with self.db.read() as c:
                 withl = "SELECT DISTINCT file_id FROM uses WHERE kind='lora' AND name=? COLLATE NOCASE"
                 with_n = c.execute(f"SELECT COUNT(*) FROM ({withl})", (stem_of(lora),)).fetchone()[0]
