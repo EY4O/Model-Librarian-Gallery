@@ -96,11 +96,21 @@ def jpeg_copy(path: str) -> bytes:
     from PIL import Image, ImageOps
     with Image.open(path) as im:
         im.seek(0)
-        im = ImageOps.exif_transpose(im)
-        exif, icc = im.getexif(), im.info.get("icc_profile")
-        im = _flatten(im)
+        src, icc = im.getexif(), im.info.get("icc_profile")  # (read first: turned upright, a TIFF has none left)
+        im = _flatten(ImageOps.exif_transpose(im))
+    # what describes the picture, not how a TIFF lays it out; upright now, so no orientation (it'd be turned twice)
+    exif = Image.Exif()
+    for tag in (0x010E, 0x010F, 0x0110, 0x0131, 0x0132, 0x013B, 0x8298):  # description, make, model, software, date, artist, copyright
+        if tag in src:
+            exif[tag] = src[tag]
+    for ifd in (0x8769, 0x8825):  # when it was taken and how, where
+        exif.get_ifd(ifd).update({k: v for k, v in src.get_ifd(ifd).items() if k not in (0x927C, 0xA005)})  # (no maker note, no pointer)
     out = io.BytesIO()
-    im.save(out, "JPEG", quality=92, exif=exif.tobytes() if exif else b"", icc_profile=icc)
+    try:
+        im.save(out, "JPEG", quality=92, exif=exif.tobytes(), icc_profile=icc)
+    except ValueError:  # (more than a JPEG's EXIF holds: the picture without it)
+        out = io.BytesIO()
+        im.save(out, "JPEG", quality=92, icc_profile=icc)
     return out.getvalue()
 
 

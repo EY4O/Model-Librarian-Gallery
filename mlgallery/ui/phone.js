@@ -3,7 +3,7 @@
 // characters. It does what a paired device may: look, rate, favourite, tag, albums, characters, the artist and a note,
 // the Trash (and putting back), and Swipe. Settings, folders, moving and renaming stay on the PC.
 
-import { TOKEN, albumTree, api, askText, dayLabel, dirTree, fmtDate, fmtSize, h, holdFocus, icon, lib, media, plural, store, toast, who } from "./util.js";
+import { TOKEN, albumTree, api, askText, dayLabel, dirTree, dropToast, fmtDate, fmtSize, h, holdFocus, icon, lib, media, midName, plural, showToast, store, toast, who } from "./util.js";
 import { swipeReview } from "./swipe.js";
 import * as org from "./organize.js";
 
@@ -554,7 +554,7 @@ const TO_JPEG = /\.(heic|heif|tiff?)$/i;  // (thumbs.NOT_IN_BROWSER: phones may 
 async function saveToPhone(items, n = items.length) {
   if (n > SAVE_MAX) return toast(`Up to ${SAVE_MAX} at a time: select fewer.`, true);
   if (items.reduce((t, it) => t + (it.size || 0), 0) > SAVE_BYTES) return toast("That's over 1 GB, more than the phone takes in one go: select fewer.", true);
-  toast(n > 1 ? `Getting ${n} files ready…` : "Getting it ready…");
+  const wait = showToast(h("div.toast", { role: "status" }, n > 1 ? `Getting ${n} files ready…` : "Getting it ready…"), 120000);  // (until they are)
   let files;
   try {
     files = await Promise.all(items.map(async (it) => {
@@ -565,6 +565,7 @@ async function saveToPhone(items, n = items.length) {
       return new File([blob], jpeg ? it.name.replace(/\.[^.]+$/, ".jpg") : it.name, { type: blob.type });
     }));
   } catch (e) { return toast(e instanceof TypeError ? "Can't reach the PC." : e.message, true); }
+  dropToast(wait);
   const ok = files.filter((f) => navigator.canShare({ files: [f] }));  // (an MKV, say, on a phone that won't take one)
   if (!ok.length) return toast(`This phone won't take ${n > 1 ? "these files" : "that kind of file"}.`, true);
   const share = () => navigator.share({ files: ok }).then(() => {
@@ -573,7 +574,7 @@ async function saveToPhone(items, n = items.length) {
   try { await share(); } catch (e) {
     if (e.name !== "NotAllowedError") return toast(e.message, true);
     // the tap was too long ago by the time it was here (a big video, say): one more, now it's ready
-    org.dialog("Ready to save", h("p", {}, ok.length > 1 ? `${ok.length} files are ready for this phone.` : `${ok[0].name} is ready for this phone.`),
+    org.dialog("Ready to save", h("p", {}, ...(ok.length > 1 ? [`${ok.length} files are ready for this phone.`] : [midName(ok[0].name), " is ready for this phone."])),
       { submitLabel: "Save", submit: () => { share().catch((ex) => toast(ex.message, true)); } });
   }
 }

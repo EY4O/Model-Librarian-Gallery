@@ -175,6 +175,21 @@ def test_saved_to_a_phone_heic_and_tiff_are_a_full_size_jpeg(lib, media):
     asyncio.run(go())
 
 
+def test_a_tiff_saved_to_a_phone_keeps_when_and_where_and_is_turned_once(tmp_path):
+    import io
+    from mlgallery.thumbs import jpeg_copy
+    ex = Image.Exif()
+    ex[0x0112] = 6  # (to be turned a quarter)
+    ex.get_ifd(0x8769)[0x9003] = "2021:05:01 10:00:00"
+    ex.get_ifd(0x8825).update({1: "N", 2: (51.0, 30.0, 0.0), 3: "W", 4: (0.0, 7.0, 0.0)})
+    p = tmp_path / "scan.tif"
+    Image.new("RGB", (400, 200), (200, 50, 50)).save(p, "TIFF", exif=ex.tobytes())
+    with Image.open(io.BytesIO(jpeg_copy(str(p)))) as im:
+        got = im.getexif()
+        assert im.size == (200, 400) and got.get(0x0112) is None  # upright, and not turned again by the phone
+        assert got.get_ifd(0x8769).get(0x9003) == "2021:05:01 10:00:00" and got.get_ifd(0x8825).get(1) == "N"
+
+
 def test_a_16_bit_scan_isnt_white(tmp_path):
     from mlgallery import thumbs
     p = tmp_path / "scan16.tif"

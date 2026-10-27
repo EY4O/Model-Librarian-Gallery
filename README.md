@@ -246,3 +246,44 @@ If the Gallery helps you find your way around your generations, you can support 
 ## 📄 License
 
 [MIT](LICENSE)
+
+## 📜 Changelog
+
+<details>
+<summary><b>Every version, newest first</b></summary>
+
+Each version's full notes are on its [release page](https://github.com/EY4O/Model-Librarian-Gallery/releases). 1.15.0 to 1.17.1 went out together in 1.18.0, 1.2.0 with 1.3.0, and versions before 1.1.3 came before the Gallery had releases.
+
+- **1.18.0** — Save a picture or video to your phone's photos, over Tailscale with HTTPS.
+- **1.17.1** — Fixes and polish for the character sync with Model Librarian.
+- **1.17.0** — Link a LoRA to a character, and get hair, eye and clothing tags suggested from your images.
+- **1.16.0** — One character list shared with ComfyUI's Character Select, kept in step both ways.
+- **1.15.0** — Characters added from the Chrome extension arrive even while ComfyUI is off.
+- **1.14.1** — The Gallery's own icon on an iPhone's home screen.
+- **1.14.0** — The phone page as an app on your home screen, with shortcuts to Swipe, Favourites and Recently viewed.
+- **1.13.0** — Phones and tablets over Tailscale: your account only, with HTTPS.
+- **1.12.0** — A warmer darkroom look, a menu on every picture, and To review one at a time.
+- **1.11.0** — Drag pictures out to Explorer, the desktop or ComfyUI.
+- **1.10.0** — Undo for album moves and To review, the sidebar by keyboard.
+- **1.9.1** — Statistics for AI generations, photos or illustrations, and fixes from a QA pass.
+- **1.9.0** — Keep running in the tray, and start there when you sign in.
+- **1.8.1** — Tidying up albums, keeping both of a duplicate, and comparing videos.
+- **1.8.0** — Your library on a phone or tablet, nested folders and albums, and a new Swipe.
+- **1.7.0** — Pictures saved from the browser, with their page, artist, title and tags.
+- **1.6.0** — Swipe, smart albums, renaming by a pattern, a slideshow, and duplicates side by side.
+- **1.5.1** — A progress bar and time left for long jobs, and Stop for an Eagle import.
+- **1.5.0** — Who made each picture and where it's from, an Artists list, and new downloads offered for filing.
+- **1.4.0** — Photos and illustrations as well as AI generations, and libraries that hold all three.
+- **1.3.2** — Each library listed once, and the window opens where you left it.
+- **1.3.1** — Pinning the Gallery to the taskbar pins the Gallery, not Python.
+- **1.3.0** — Leaving Eagle: an Eagle library brought in as plain files, and colour sets for every picture.
+- **1.2.0** — Libraries you can take anywhere: a folder that carries its own index, even on an external drive.
+- **1.1.4** — Installing an update from GitHub works.
+- **1.1.3** — The portable Gallery starts from its own .exe and can update itself from GitHub Releases.
+- **1.1.2** — Emptying the Trash also clears the originals kept for undoing edits.
+- **1.1.1** — Windows' own typeface, Waterfall by default, and Save as copy as the main way to save an edit.
+- **1.1.0** — Eagle-style viewing: a charcoal theme, a zoom bar, Waterfall, folder icons and colours, and a viewer with flip, rotate and crop.
+- **1.0.1** — Fixes from a bug hunt, a QA pass and a design review.
+- **1.0.0** — The first release: the viewer and search, Statistics, Characters, albums with undo, the portable package, and the Eagle bridge.
+
+</details>
