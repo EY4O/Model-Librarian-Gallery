@@ -12,7 +12,7 @@ import time
 
 import json
 
-from . import bulk, colors, credits, dates, downloads, families, fileops
+from . import bulk, charfiles, colors, credits, dates, downloads, families, fileops
 from . import characters as chars
 from . import metadata
 from . import scan as scanner
@@ -155,6 +155,7 @@ class Library:
         self.watcher.start()
         threading.Thread(target=self._scan_loop, name="scanner", daemon=True).start()
         threading.Thread(target=self.inbox.notify_loop, args=(self._stop,), name="inbox-notify", daemon=True).start()
+        threading.Thread(target=charfiles.loop, args=(self, self._stop), name="characters-in", daemon=True).start()  # (from the Chrome extension)
         if rescan:
             self.scan_all()
 
