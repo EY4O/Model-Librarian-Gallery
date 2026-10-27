@@ -156,9 +156,12 @@ export async function renderCharacter(root, id, ctx, again = null) {
 // ---------------------------------------------------------------- what Character Select writes (shared with Model Librarian)
 const listPicture = (id) => media("characters", `${id}/picture`) + `&v=${Date.now() >> 16}`;  // (a new one now and then: a picked portrait shows)
 
+const loraLabel = (name) => String(name || "").split(/[\\/]/).pop().replace(/\.(safetensors|ckpt|pt|pth|bin)$/i, "");
+
 function promptCard(c) {
   const card = h("section.st-card.c-prompt", { "aria-label": "Prompt" });
   let sh = c.shared;
+  let learned = null, loras = null;  // (asked for once the card is up)
   const save = async (patch, focus = null) => {
     try {
       sh = (await api(`/characters/${c.id}/presets`, { method: "POST", body: patch })).shared;
@@ -193,7 +196,7 @@ function promptCard(c) {
       h("div.st-card-head", {}, h("h2", {}, "Prompt"),
         h("span", {}, "What Character Select writes in ComfyUI, shared with Model Librarian",
           src.url ? [" · ", h("a", { href: src.url, target: "_blank", rel: "noreferrer" }, `from ${src.site || "a"} post${src.post ? ` #${src.post}` : ""}`)] : null)),
-      h("div.pt-fields", {}, field("Booru tag", sh.tag.replace(/_/g, " "), "tag", "aurelia (lighthouse tales)"), field("Series", sh.series, "series", "Lighthouse Tales")),
+      h("div.pt-fields", {}, field("Booru tag", (sh.tag || "").replace(/_/g, " "), "tag", "aurelia (lighthouse tales)"), field("Series", sh.series || "", "series", "Lighthouse Tales")),
       h("div.pt-group", {}, h("h3", {}, "Appearance"), tagRow("Appearance", sh.appearance, (tags, key) => save({ appearance: tags }, key), "appearance")),
       ...Object.keys(outfits).map((name) => h("div.pt-group", {},
         h("h3", {}, h("span", {}, `Outfit · ${name}`),
@@ -217,10 +220,61 @@ function promptCard(c) {
         if (outfits[name]) return toast(`There's already an outfit called ${name}.`, true);
         save({ outfits: { ...outfits, [name]: [] } }, `outfit:${name}`);
       } }, icon("plus"), "Outfit")),
+      sh.ml ? loraGroup() : null,
+      learnGroup(outfits),
       sh.ml ? null : h("p.st-none", {}, "Model Librarian's folder isn't found (Settings, Model Librarian): these stay here until it is."));
     if (focus) card.querySelector(`[data-key="${CSS.escape(focus)}"]`)?.focus();
   };
+  // its LoRA (one Model Librarian has): Character Select loads it, with these trigger words first
+  const loraGroup = () => {
+    if (sh.lora) {
+      return h("div.pt-group", {},
+        h("h3", {}, h("span", {}, `LoRA · ${loraLabel(sh.lora.name)}`), h("button.link.dim", { type: "button", title: sh.lora.name, onclick: () => save({ lora: null }) }, "Unlink")),
+        h("p.st-none", {}, "Trigger words (as it was trained; Character Select puts them first when it loads the LoRA)"),
+        tagRow("its trigger words", sh.lora.trigger || [], (tags, key) => save({ lora: { name: sh.lora.name, trigger: tags } }, key), "trigger"));
+    }
+    const input = h("input.pt-add.pt-lora", { type: "text", placeholder: "A LoRA Model Librarian has", "aria-label": "Link a LoRA", autocomplete: "off", spellcheck: false });
+    const list = h("datalist", { id: `pt-loras-${c.id}` });
+    input.setAttribute("list", list.id);
+    const fill = async () => {
+      loras = loras || (await api("/characters/loras").catch(() => ({ loras: [] }))).loras;
+      list.replaceChildren(...loras.map((l) => h("option", { value: l.file }, l.name)));
+    };
+    const link = () => {
+      const v = input.value.trim().toLowerCase();
+      const hit = (loras || []).find((l) => l.file.toLowerCase() === v || l.name.toLowerCase() === v);
+      if (!hit) return toast("Pick one of the LoRAs Model Librarian has.", true);
+      save({ lora: { name: hit.file } }, "trigger");
+    };
+    input.addEventListener("focus", fill, { once: true });
+    input.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); link(); } });
+    return h("div.pt-group", {}, h("h3", {}, h("span", {}, "LoRA")),
+      h("div.row", {}, input, list, h("button.btn.small", { type: "button", onclick: link }, "Link")),
+      h("p.st-none", {}, "Character Select loads it when model and clip are wired through it; its trigger words come from its metadata."));
+  };
+  // tags common in the prompts of its images: click one to add it (appearance, or the outfit picked)
+  const learnGroup = (outfits) => {
+    const box = h("div.pt-group.pt-learn", {}, h("h3", {}, h("span", {}, "From your images")));
+    if (!learned) { box.append(h("p.st-none", {}, "Looking through its images…")); return box; }
+    if (learned.n < 3) { box.append(h("p.st-none", {}, `Once a few images of ${c.name} count, the tags common in their prompts are suggested here.`)); return box; }
+    if (!learned.tags.length) { box.append(h("p.st-none", {}, `Nothing new to suggest: no hair, eyes or clothing tag is common in the prompts of its ${plural(learned.n, "image")} that isn't here already.`)); return box; }
+    const names = Object.keys(outfits);
+    const into = h("select.pt-into", { "aria-label": "Outfit tags go into" }, (names.length ? names : ["default"]).map((n) => h("option", { value: n }, n)));
+    const add = (t) => {
+      learned.tags = learned.tags.filter((x) => x !== t);
+      if (t.kind === "appearance") save({ appearance: [...sh.appearance, t.tag] });
+      else save({ outfits: { ...outfits, [into.value]: [...(outfits[into.value] || []), t.tag] } });
+    };
+    const chip = (t) => h("button.chip.tag.pt-sugg." + t.kind, { type: "button", title: `On ${Math.round(t.share * 100)}% of its ${learned.n} images: add to ${t.kind === "appearance" ? "Appearance" : "the outfit picked"}`,
+      onclick: () => add(t) }, icon("plus"), h("span.pt-t", {}, t.tag), h("span.pt-share", {}, `${Math.round(t.share * 100)}%`));
+    const ap = learned.tags.filter((t) => t.kind === "appearance"), of = learned.tags.filter((t) => t.kind === "outfit");
+    box.append(h("p.st-none", {}, `Common in the prompts of its ${plural(learned.n, "image")}: click one to add it.`),
+      ap.length ? h("div.tags", {}, h("span.pt-k", {}, "Appearance"), ap.map(chip)) : null,
+      of.length ? h("div.tags", {}, h("span.pt-k", {}, "Outfit"), into, of.map(chip)) : null);
+    return box;
+  };
   draw();
+  api(`/characters/${c.id}/learn`).then((r) => { learned = r; draw(); }).catch(() => { learned = { n: 0, tags: [] }; draw(); });
   return card;
 }
 

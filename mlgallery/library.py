@@ -12,7 +12,7 @@ import time
 
 import json
 
-from . import bulk, charfiles, charstore, charsync, colors, credits, dates, downloads, families, fileops
+from . import bulk, charfiles, charstore, charsync, colors, credits, dates, downloads, families, fileops, looks
 from . import characters as chars
 from . import metadata
 from . import scan as scanner
@@ -644,6 +644,26 @@ class Library:
                 if not isinstance(patch["appearance"], list):
                     raise ValueError("appearance is a list of tags")
                 put("appearance", charstore._tags(patch["appearance"]))
+            if "lora" in patch:  # (a LoRA Model Librarian has, by its file in the loras folder; its trigger words as trained)
+                lo = patch["lora"]
+                if lo is None or (isinstance(lo, dict) and not lo.get("name")):
+                    put("lora", None)
+                elif isinstance(lo, dict):
+                    want = str(lo["name"]).replace("\\", "/").lower()
+                    have = next((m["file"] for m in self.character_loras() if m["file"].lower() == want), None)
+                    if not have:
+                        raise ValueError("That LoRA isn't in Model Librarian's loras folder.")
+                    trig = lo.get("trigger")
+                    if not isinstance(trig, list):
+                        trig = self.trigger_words(have)
+                    words = []
+                    for w in trig:
+                        w = str(w).strip()[: charstore.CAPS["tag"]]
+                        if w and w.lower() not in {x.lower() for x in words}:
+                            words.append(w)
+                    put("lora", {"name": have, "trigger": words[:12]})
+                else:
+                    raise ValueError("lora is {name, trigger} or null")
             if "outfits" in patch:
                 if not isinstance(patch["outfits"], dict):
                     raise ValueError("outfits is {name: [tags]}")
@@ -659,6 +679,26 @@ class Library:
         if parts:
             self.char_wake.set()
         return self.character(cid)
+
+    def character_loras(self) -> list[dict]:
+        """The LoRAs Model Librarian has: {name, file} (file: in the loras folder, with /)."""
+        return [{"name": m["name"], "file": m["file"]} for m in self.models.models()["models"] if m["kind"] == "lora"]
+
+    def character_learn(self, cid: int) -> dict:
+        """Tags common in the prompts of the images it's in (counted: recognised or confirmed), as appearance and outfit
+        suggestions for its Prompt card; the ones it has already left out. -> {n, tags: [{tag, kind, share}]}"""
+        cid = int(cid)
+        with self.db.read() as c:
+            row = c.execute("SELECT name, shared FROM characters WHERE id=?", (cid,)).fetchone()
+            if not row:
+                raise KeyError(cid)
+            files = "SELECT fc.file_id FROM file_characters fc JOIN files f ON f.id=fc.file_id WHERE fc.character_id=? AND fc.state IN ('auto','confirmed') AND f.missing=0"
+            n = c.execute(f"SELECT COUNT(*) FROM ({files})", (cid,)).fetchone()[0]
+            counts = dict(c.execute(f"SELECT tag, COUNT(DISTINCT file_id) FROM prompt_tags WHERE file_id IN ({files}) GROUP BY tag", (cid,)).fetchall()) if n >= looks.MIN_FILES else {}
+        sh = json.loads(row["shared"] or "{}") or {}
+        known = [row["name"], sh.get("tag"), sh.get("series"), *(sh.get("appearance") or []), *[t for v in (sh.get("outfits") or {}).values() for t in v],
+                 *((sh.get("lora") or {}).get("trigger") or [])]
+        return {"n": n, "tags": looks.suggest(counts, n, known)}
 
     def character_picture(self, cid: int) -> str | None:
         """The character's picture in Model Librarian's list (its Danbooru picture, or a portrait picked here)."""

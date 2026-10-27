@@ -5,8 +5,9 @@ list's id, series, booru tag, appearance, outfits, LoRA, picture, and when each 
 sync, under the list's lock:
 
 - a character in both: each part from whichever side changed it last (charstore.merge_parts)
-- one only in the list: linked to the Gallery's character of the same name, or made in the Gallery, with rules to
-  recognise it: its tag as a strong word rule, its LoRA as a strong LoRA rule (each added once: one you remove stays out)
+- one only in the list: linked to the Gallery's character of the same name, or made in the Gallery, with a rule to
+  recognise it: its tag as a strong word rule (added once: one you remove stays out). Its LoRA adds no rule: a LoRA
+  linked for Character Select and the Gallery's rules are kept apart
 - one only in the Gallery: added to the list
 - deleted in the Gallery: deleted from the list; deleted from the list: deleted in the Gallery
 - a portrait picked in the Gallery: a small copy becomes its picture in the list
@@ -34,13 +35,6 @@ _lock = threading.Lock()  # one sync at a time in this Gallery
 def display(tag) -> str:
     """A booru tag as it's written in a prompt (and so in a word rule): spaces, no brackets escaped."""
     return re.sub(r"\s+", " ", str(tag or "").replace("_", " ")).strip()
-
-
-def lora_rule(lora) -> str:
-    """A LoRA rule's value from the list's LoRA: its name, without folders, extension or version."""
-    name = str((lora or {}).get("name") or "").replace("\\", "/").split("/")[-1]
-    name = re.sub(r"\.(safetensors|ckpt|pt|pth|bin)$", "", name, flags=re.I)
-    return re.sub(r"[_\-. ]?v\d+(\.\d+)?$", "", name, flags=re.I)
 
 
 def record(row: dict, sid: str, now: float) -> dict:
@@ -89,11 +83,9 @@ def plan(data: dict, rows: list[dict], gone: list[tuple[str, float]], now: float
 
     def rules_for(m: dict, old: dict | None) -> tuple[list, dict]:
         had = dict((old or {}).get("rules_for") or {})
-        add, now_for = [], {"tag": display(m.get("tag")), "lora": lora_rule(m.get("lora"))}
+        add, now_for = [], {"tag": display(m.get("tag"))}
         if now_for["tag"] and now_for["tag"] != had.get("tag"):
             add.append(("word", now_for["tag"]))
-        if now_for["lora"] and now_for["lora"] != had.get("lora"):
-            add.append(("lora", now_for["lora"]))
         return add, now_for
 
     def to_gallery(m: dict, row: dict | None) -> tuple:

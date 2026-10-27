@@ -54,13 +54,13 @@ def test_from_the_list_into_the_gallery_with_its_rules(lib, ml):
     assert g and r["gallery"] == 1
     ch = lib.character(g["id"])
     assert ch["shared"]["linked"] and ch["shared"]["tag"] == "aurelia_(lighthouse_tales)" and ch["shared"]["outfits"] == {"default": ["white dress"]}
-    assert rules(lib, g["id"]) == [("lora", "aurelia_character", "strong"), ("word", "aurelia (lighthouse tales)", "strong")]
+    assert rules(lib, g["id"]) == [("word", "aurelia (lighthouse tales)", "strong")], "its tag as a word; its LoRA adds no rule"
     # nothing changed: a second sync does nothing
     assert charsync.sync(lib, ml, now=210.0) == {"list": False, "gallery": 0}
     # a rule you remove stays out
-    lib.character_save(g["id"], "Aurelia", [], [{"kind": "word", "value": "aurelia (lighthouse tales)"}])
+    lib.character_save(g["id"], "Aurelia", [], [])
     charsync.sync(lib, ml, now=220.0)
-    assert rules(lib, g["id"]) == [("word", "aurelia (lighthouse tales)", "strong")]
+    assert rules(lib, g["id"]) == []
 
 
 def test_from_the_gallery_into_the_list_and_linked_by_name(lib, ml):
@@ -177,3 +177,42 @@ def test_presets_api(lib, ml):
     sc = listed(ml)["characters"][0]
     assert sc["tag"] == "aurelia_vance" and sc["outfits"] == {"winter": ["red coat", "scarf"]}
     assert ("word", "aurelia vance", "strong") in rules(lib, cid), "a new tag: its word rule added"
+
+
+def test_linking_a_lora_on_the_prompt_card(lib, ml):
+    put(ml, [dict(AURELIA, lora=None)])
+    charsync.sync(lib, ml, now=200.0)
+    cid = gallery(lib, "Aurelia")["id"]
+    lib.models.models = lambda: {"root": None, "models": [{"kind": "lora", "name": "aurelia_v2", "file": "chars/aurelia_v2.safetensors"},
+                                                          {"kind": "checkpoint", "name": "base", "file": "base.safetensors"}]}
+    lib.trigger_words = lambda lora: ["aurelia_lt", "silver hair"]
+    assert lib.character_loras() == [{"name": "aurelia_v2", "file": "chars/aurelia_v2.safetensors"}]
+    ch = lib.character_presets(cid, {"lora": {"name": r"Chars\aurelia_v2.safetensors"}})  # (\ and any case: as Model Librarian has it)
+    assert ch["shared"]["lora"] == {"name": "chars/aurelia_v2.safetensors", "trigger": ["aurelia_lt", "silver hair"]}, "its trigger words from its metadata"
+    ch = lib.character_presets(cid, {"lora": {"name": "chars/aurelia_v2.safetensors", "trigger": ["aurelia_lt", "AURELIA_LT", " "]}})
+    assert ch["shared"]["lora"]["trigger"] == ["aurelia_lt"], "trigger words you kept, as trained"
+    with pytest.raises(ValueError):
+        lib.character_presets(cid, {"lora": {"name": "not_there.safetensors"}})
+    charsync.sync(lib, ml)
+    assert listed(ml)["characters"][0]["lora"] == {"name": "chars/aurelia_v2.safetensors", "trigger": ["aurelia_lt"]}, "in the list: Character Select loads it"
+    assert not any(r[0] == "lora" for r in rules(lib, cid)), "linking a LoRA adds no rule (you chose to keep them apart)"
+    assert lib.character_presets(cid, {"lora": None})["shared"]["lora"] is None
+
+
+def test_learning_a_look_from_your_images(lib, media):
+    from mlgallery import looks
+    assert looks.classify("silver_hair") == "appearance" and looks.classify("hair ribbon") == "outfit" and looks.classify("smile") == "skip"
+    got = looks.suggest({"silver hair": 9, "white dress": 6, "smile": 8, "lighthouse": 9, "blue eyes": 2, "1girl": 10, "long hair": 9}, 10, known=["Long_Hair"])
+    assert got == [{"tag": "1girl", "kind": "appearance", "share": 1.0}, {"tag": "silver hair", "kind": "appearance", "share": 0.9},
+                   {"tag": "white dress", "kind": "outfit", "share": 0.6}], "appearance and outfit tags common enough, ones it has left out"
+    assert looks.suggest({"silver hair": 2}, 2) == [], "too few images to say"
+    library(lib, media)
+    cid = lib.character_save(None, "Aurelia", [], [{"kind": "lora", "value": "aurelia_character"}])
+    with lib.db.write() as c:
+        files = [r[0] for r in c.execute("SELECT file_id FROM file_characters WHERE character_id=?", (cid,))]
+        c.execute("DELETE FROM prompt_tags WHERE file_id IN (%s)" % ",".join("?" * len(files)), files)
+        c.executemany("INSERT INTO prompt_tags (file_id, tag) VALUES (?, ?)", [(f, t) for f in files for t in ("silver hair", "red scarf", "smile")])
+    r = lib.character_learn(cid)
+    assert r["n"] == len(files) and [(t["tag"], t["kind"]) for t in r["tags"]] == [("red scarf", "outfit"), ("silver hair", "appearance")]
+    lib.character_presets(cid, {"appearance": ["silver hair"]})
+    assert [t["tag"] for t in lib.character_learn(cid)["tags"]] == ["red scarf"], "one it has is no longer suggested"

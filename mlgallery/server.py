@@ -105,6 +105,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_post("/api/characters", character_create)
     r.add_get("/api/characters/review", review_queue)
     r.add_get("/api/characters/words", trigger_words)
+    r.add_get("/api/characters/loras", character_loras)
     r.add_get("/api/characters/{cid}", character_get)
     r.add_post("/api/characters/{cid}", character_update)
     r.add_delete("/api/characters/{cid}", character_delete)
@@ -112,6 +113,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_post("/api/characters/{cid}/review/back", review_take_back)
     r.add_post("/api/characters/{cid}/presets", character_presets)
     r.add_get("/api/characters/{cid}/picture", character_picture)
+    r.add_get("/api/characters/{cid}/learn", character_learn)
     r.add_post("/api/file/{id}/characters", file_character)
     r.add_get("/api/artists", artists_list)
     r.add_post("/api/artists", artist_create)
@@ -928,6 +930,19 @@ async def character_presets(request):
         return _err("not found", 404)
     except ValueError as ex:
         return _err(str(ex), 422)
+
+
+async def character_loras(request):
+    """The LoRAs Model Librarian has, to link one to a character."""
+    return web.json_response({"loras": await asyncio.to_thread(_lib(request).character_loras)})
+
+
+async def character_learn(request):
+    """Appearance and outfit tags common in its images' prompts, for its Prompt card."""
+    try:
+        return web.json_response(await asyncio.to_thread(_lib(request).character_learn, _cid(request)))
+    except (KeyError, TypeError):
+        return _err("not found", 404)
 
 
 async def character_picture(request):

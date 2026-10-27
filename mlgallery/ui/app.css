@@ -1217,3 +1217,11 @@ h1[tabindex="-1"]:focus, h2[tabindex="-1"]:focus { outline: none; }
 .c-prompt h3 span { color: var(--text); }
 .c-prompt .pt-add { width: 140px; height: 26px; font-size: 12px; }
 .c-prompt .pt-t { font-size: 12px; }
+.c-prompt .pt-lora { width: min(420px, 100%); height: 32px; }
+.c-prompt .pt-sugg { cursor: pointer; border: 0; gap: 4px; padding-right: 9px; font: inherit; }
+.c-prompt .pt-sugg svg { width: 11px; height: 11px; opacity: .7; }
+.c-prompt .pt-sugg.outfit { background: #3a3426; }
+.c-prompt .pt-sugg:hover { filter: brightness(1.2); }
+.c-prompt .pt-share { color: var(--dim); font-size: 11px; }
+.c-prompt .pt-k { color: var(--dim); font-size: 12px; min-width: 76px; }
+.c-prompt .pt-into { height: 26px; padding: 0 6px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--control); color: var(--text); font: inherit; font-size: 12px; }
