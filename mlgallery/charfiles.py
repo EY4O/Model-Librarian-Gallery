@@ -4,7 +4,7 @@ When ComfyUI isn't running, the extension can't hand a character from a booru po
 as <tag>.mlchar.json in Downloads\\Model Librarian Gallery: {"v": 1, "character": {...}, "picture": "data:image/webp;..."}.
 While the Gallery is open it looks there every little while and files each one into characters.json in Model
 Librarian's shared data folder (charstore.py, the same file as Model Librarian's), then removes it. Without Model
-Librarian's folder they wait. The Gallery's own Characters list doesn't change here.
+Librarian's folder they wait. The sync that follows (charsync.py) brings them into the Gallery's Characters.
 """
 from __future__ import annotations
 
@@ -154,12 +154,17 @@ def folders(lib) -> list[str]:
 
 
 def loop(lib, stop: threading.Event, every: float = EVERY) -> None:
-    """While the Gallery is open: the extension's characters, filed as they arrive."""
-    while True:
+    """While the Gallery is open: the extension's characters, filed as they arrive, and your characters kept in step with
+    Model Librarian's list (charsync.py): every little while, and at once after a character changes here."""
+    while not stop.is_set():
         for folder in folders(lib):
             try:
                 pickup(lib.models.data_dir(), folder)
             except Exception:
                 pass  # (Model Librarian busy, a file half written: next time)
-        if stop.wait(every):
-            return
+        try:
+            lib.sync_characters()
+        except Exception:
+            pass
+        lib.char_wake.wait(every)
+        lib.char_wake.clear()

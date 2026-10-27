@@ -1,0 +1,179 @@
+"""Characters kept in step with Model Librarian's list (charsync.py), both ways: a made-up list in a temp folder, never
+Model Librarian's own. New on either side, linked by name, each part's latest change winning, rules added once, deletions
+reaching the other side, a list that lost one, people left out, a picked portrait as the list's picture, and the API."""
+import asyncio
+import json
+import os
+
+import pytest
+from aiohttp.test_utils import TestClient, TestServer
+
+from mlgallery import charstore, charsync
+from mlgallery.server import make_app
+from test_characters import library
+
+AURELIA = {"id": "chr_a0000001", "name": "Aurelia", "series": "Lighthouse Tales", "tag": "aurelia_(lighthouse_tales)", "aliases": [],
+           "appearance": ["silver hair", "blue eyes"], "outfits": {"default": ["white dress"]},
+           "lora": {"name": "chars/aurelia_character_v3.safetensors", "trigger": ["aurelia_lt"]}, "image": None,
+           "source": {"site": "danbooru", "post": "4242", "url": "https://danbooru.donmai.us/posts/4242"},
+           "created": 100.0, "updated": 100.0, "changed": {p: 100.0 for p in charstore.PARTS}}
+
+
+@pytest.fixture
+def ml(tmp_path):
+    d = tmp_path / "models" / ".sm_model_fetcher"
+    d.mkdir(parents=True)
+    (d / "registry.json").write_text("{}")
+    return str(d)
+
+
+def put(ml, characters, deleted=()):
+    with open(os.path.join(ml, charstore.FILE), "w", encoding="utf-8") as f:
+        json.dump({"v": 1, "characters": characters, "deleted": list(deleted)}, f)
+
+
+def listed(ml):
+    with open(os.path.join(ml, charstore.FILE), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def gallery(lib, name):
+    with lib.db.read() as c:  # (not lib.characters(): it answers from a cache first)
+        r = c.execute("SELECT id, name FROM characters WHERE name=?", (name,)).fetchone()
+    return dict(r) if r else None
+
+
+def rules(lib, cid):
+    return sorted((r["kind"], r["value"], r["strength"]) for r in lib.character(cid)["rules"])
+
+
+def test_from_the_list_into_the_gallery_with_its_rules(lib, ml):
+    put(ml, [dict(AURELIA)])
+    r = charsync.sync(lib, ml, now=200.0)
+    g = gallery(lib, "Aurelia")
+    assert g and r["gallery"] == 1
+    ch = lib.character(g["id"])
+    assert ch["shared"]["linked"] and ch["shared"]["tag"] == "aurelia_(lighthouse_tales)" and ch["shared"]["outfits"] == {"default": ["white dress"]}
+    assert rules(lib, g["id"]) == [("lora", "aurelia_character", "strong"), ("word", "aurelia (lighthouse tales)", "strong")]
+    # nothing changed: a second sync does nothing
+    assert charsync.sync(lib, ml, now=210.0) == {"list": False, "gallery": 0}
+    # a rule you remove stays out
+    lib.character_save(g["id"], "Aurelia", [], [{"kind": "word", "value": "aurelia (lighthouse tales)"}])
+    charsync.sync(lib, ml, now=220.0)
+    assert rules(lib, g["id"]) == [("word", "aurelia (lighthouse tales)", "strong")]
+
+
+def test_from_the_gallery_into_the_list_and_linked_by_name(lib, ml):
+    put(ml, [dict(AURELIA)])
+    mine = lib.character_save(None, "Aurelia", ["Aury"], [{"kind": "lora", "value": "aurelia_character"}])  # yours already, by name
+    nova = lib.character_save(None, "Nova", [], [])
+    person = lib.character_save(None, "Grandma", [], [], who="person")
+    charsync.sync(lib, ml, now=200.0)
+    data = listed(ml)
+    names = sorted(c["name"] for c in data["characters"])
+    assert names == ["Aurelia", "Nova"], "people stay in the Gallery"
+    a = next(c for c in data["characters"] if c["name"] == "Aurelia")
+    assert a["id"] == "chr_a0000001" and a["appearance"] == ["silver hair", "blue eyes"] and a["aliases"] == ["Aury"], "linked: the list's presets kept, your aliases joined"
+    assert lib.character(mine)["shared"]["linked"] and lib.character(nova)["shared"]["linked"] and not lib.character(person)["shared"]["linked"]
+    with lib.db.read() as c:
+        assert c.execute("SELECT COUNT(*) FROM characters").fetchone()[0] == 3, "no second Aurelia"
+
+
+def test_each_part_keeps_its_latest_change(lib, ml):
+    put(ml, [dict(AURELIA)])
+    charsync.sync(lib, ml, now=200.0)
+    cid = gallery(lib, "Aurelia")["id"]
+    lib.character_presets(cid, {"appearance": ["silver hair", "blue eyes", "freckles"], "series": "Lighthouse Tales"})  # (the series unchanged: not stamped)
+    lib.character_save(cid, "Aurelia Vance", [], None)  # renamed here
+    data = listed(ml)  # and meanwhile, in Model Librarian, a new outfit
+    sc = data["characters"][0]
+    sc["outfits"]["winter"] = ["red coat"]
+    charstore.stamp(sc, ["outfits"], 9e12)
+    put(ml, data["characters"])
+    charsync.sync(lib, ml)
+    sc = listed(ml)["characters"][0]
+    assert sc["name"] == "Aurelia Vance" and "freckles" in sc["appearance"] and sc["outfits"]["winter"] == ["red coat"]
+    ch = lib.character(cid)
+    assert ch["name"] == "Aurelia Vance" and ch["shared"]["outfits"]["winter"] == ["red coat"] and "freckles" in ch["shared"]["appearance"]
+
+
+def test_deleting_reaches_the_other_side(lib, ml):
+    put(ml, [dict(AURELIA), {**AURELIA, "id": "chr_b0000002", "name": "Nova", "tag": "nova"}])
+    charsync.sync(lib, ml, now=200.0)
+    assert lib.character_delete(gallery(lib, "Aurelia")["id"])
+    charsync.sync(lib, ml, now=300.0)
+    data = listed(ml)
+    assert [c["name"] for c in data["characters"]] == ["Nova"] and charstore.deleted_ids(data) == {"chr_a0000001"}
+    with lib.db.read() as c:
+        assert not c.execute("SELECT * FROM characters_deleted").fetchall(), "the list knows: forgotten here"
+    # deleted from the list: deleted here
+    charstore.delete(data, "chr_b0000002", 400.0)
+    put(ml, data["characters"], data["deleted"])
+    charsync.sync(lib, ml, now=500.0)
+    assert gallery(lib, "Nova") is None and gallery(lib, "Aurelia") is None
+
+
+def test_a_list_that_lost_one_gets_it_back(lib, ml):
+    put(ml, [dict(AURELIA)])
+    charsync.sync(lib, ml, now=200.0)
+    put(ml, [])  # (a new, empty list: no deletion recorded)
+    charsync.sync(lib, ml, now=300.0)
+    assert [c["id"] for c in listed(ml)["characters"]] == ["chr_a0000001"] and gallery(lib, "Aurelia")
+
+
+def test_a_name_another_of_yours_has_stays_yours(lib, ml):
+    put(ml, [dict(AURELIA)])
+    charsync.sync(lib, ml, now=200.0)
+    lib.character_save(None, "Nova", [], [])
+    charsync.sync(lib, ml, now=210.0)
+    data = listed(ml)
+    a = next(c for c in data["characters"] if c["id"] == "chr_a0000001")
+    a["name"] = "Nova"
+    charstore.stamp(a, ["name"], 9e12)
+    put(ml, data["characters"])
+    charsync.sync(lib, ml)
+    assert gallery(lib, "Aurelia") and gallery(lib, "Nova")
+    assert next(c for c in listed(ml)["characters"] if c["id"] == "chr_a0000001")["name"] == "Aurelia"
+
+
+def test_a_picked_portrait_becomes_the_lists_picture(lib, media, ml):
+    ids = library(lib, media, n=4)
+    put(ml, [dict(AURELIA)])
+    charsync.sync(lib, ml, now=200.0)
+    cid = gallery(lib, "Aurelia")["id"]
+    lib.character_save(cid, "Aurelia", [], None, cover=ids["c01.png"])
+    charsync.sync(lib, ml)
+    sc = listed(ml)["characters"][0]
+    assert sc["image"] == "characters/chr_a0000001.webp"
+    with open(os.path.join(ml, "characters", "chr_a0000001.webp"), "rb") as f:
+        assert f.read(4) == b"RIFF"
+    lib.models.data_dir = lambda: ml
+    assert lib.character_picture(cid).endswith("chr_a0000001.webp")
+    assert charsync.sync(lib, ml)["list"] is False, "sent once"
+
+
+def test_presets_api(lib, ml):
+    lib.models.data_dir = lambda: ml
+    put(ml, [dict(AURELIA)])
+    charsync.sync(lib, ml, now=200.0)
+    cid = gallery(lib, "Aurelia")["id"]
+
+    async def go():
+        c = TestClient(TestServer(make_app(lib, "t0k")))
+        await c.start_server()
+        try:
+            hdr = {"X-MLG-Token": "t0k"}
+            r = await c.post(f"/api/characters/{cid}/presets", json={"tag": "aurelia vance", "outfits": {"winter": ["red coat", "scarf"]}}, headers=hdr)
+            d = await r.json()
+            assert r.status == 200 and d["shared"]["tag"] == "aurelia_vance" and d["shared"]["outfits"] == {"winter": ["red coat", "scarf"]}
+            r = await c.post(f"/api/characters/{cid}/presets", json={"outfits": ["no"]}, headers=hdr)
+            assert r.status == 422
+            r = await c.get(f"/api/characters/{cid}/picture", headers=hdr)
+            assert r.status == 404, "no picture yet"
+        finally:
+            await c.close()
+    asyncio.run(go())
+    charsync.sync(lib, ml)
+    sc = listed(ml)["characters"][0]
+    assert sc["tag"] == "aurelia_vance" and sc["outfits"] == {"winter": ["red coat", "scarf"]}
+    assert ("word", "aurelia vance", "strong") in rules(lib, cid), "a new tag: its word rule added"

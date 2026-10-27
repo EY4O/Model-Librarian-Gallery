@@ -1,6 +1,6 @@
 // Model Librarian Gallery: characters - the list, one character's page, the editor, and To review.
 
-import { api, ask, emptyArt, fmtNum, h, has, icon, initial, media, mixedWho, plural, stacks, store, toast, who, holdFocus } from "./util.js";
+import { api, ask, askText, emptyArt, fmtNum, h, has, icon, initial, media, mixedWho, plural, stacks, store, toast, who, holdFocus } from "./util.js";
 
 const KIND = { lora: "LORA", word: "WORD", tag: "TAG" };
 const KIND_HELP = {
@@ -10,11 +10,11 @@ const KIND_HELP = {
 };
 
 // ---------------------------------------------------------------- shared bits
-// a picture, or (no confirmed file yet) the name's first letter on a quiet tint
-function thumb(id, alt = "") {
+// a picture, or (no confirmed file yet) its picture in Model Librarian's list, or the name's first letter on a quiet tint
+function thumb(id, alt = "", picture = null) {
   const none = () => h("div.c-thumb.none", { "aria-hidden": "true" }, h("span.c-initial", {}, initial(alt)));
-  if (!id) return none();
-  const img = h("img", { src: media("thumb", id), alt, loading: "lazy", decoding: "async" });
+  if (!id && !picture) return none();
+  const img = h("img", { src: id ? media("thumb", id) : picture, alt, loading: "lazy", decoding: "async" });
   img.onerror = () => img.replaceWith(none());
   return h("div.c-thumb", {}, img);
 }
@@ -50,7 +50,7 @@ export async function renderCharacters(root, ctx) {
   let data;
   try { data = await api("/characters"); } catch (e) { toast(e.message, true); return; } finally { root.removeAttribute("aria-busy"); }
   const cards = data.characters.map((c) => h("button.c-card", { type: "button", onclick: () => ctx.show("character", c.id) },
-    thumb(c.cover, c.name),
+    thumb(c.cover, c.name, c.picture ? listPicture(c.id) : null),
     h("span.c-name", {}, c.name, mixedWho() ? h("span.c-who", {}, c.who === "person" ? "Person" : "Character") : null),
     h("span.c-n", {}, plural(c.n, "file")),
     c.review ? h("span.c-review", { title: "Waiting for a yes or no" }, `${c.review} to review`) : null));
@@ -99,7 +99,7 @@ export async function renderCharacter(root, id, ctx, again = null) {
   root.replaceChildren(...[
     h("div.c-crumb", {}, h("button.link", { type: "button", onclick: () => ctx.show("characters") }, who()), " / ", c.name),
     h("header.c-head", { "data-review-cid": id },
-      h("div.c-portrait", {}, thumb(c.cover, c.name)),
+      h("div.c-portrait", {}, thumb(c.cover, c.name, c.shared?.picture ? listPicture(c.id) : null)),
       h("div.c-title", {},
         h("h1", {}, c.name, mixedWho() ? h("span.c-who", {}, c.who === "person" ? "Person" : "Character") : null),
         c.aliases.length ? h("p.c-aliases", {}, `Also: ${c.aliases.join(", ")}`) : null,
@@ -108,11 +108,12 @@ export async function renderCharacter(root, id, ctx, again = null) {
           h("button.btn.primary", { type: "button", onclick: filter, disabled: !c.n }, icon("grid"), "Show all files"),
           h("button.btn", { type: "button", onclick: () => editCharacter(c, ctx) }, "Edit"),
           h("button.btn.danger.c-del", { type: "button", onclick: async () => {
-            if (!await ask(`Delete the ${who(false, false)} ${c.name}?`, "Its rules and your yes and no answers go; the files themselves are untouched.", { ok: `Delete the ${who(false, false)}`, danger: true })) return;
+            if (!await ask(`Delete the ${who(false, false)} ${c.name}?`, `Its rules and your yes and no answers go; the files themselves are untouched.${c.shared?.linked ? " It's taken out of Model Librarian's characters (and Character Select) too." : ""}`, { ok: `Delete the ${who(false, false)}`, danger: true })) return;
             await api(`/characters/${id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
             ctx.refresh();
             ctx.show("characters");
           } }, "Delete")))),
+    c.who !== "person" ? promptCard(c) : null,
     stacks([
       h("section.st-card", { "aria-label": "How they're recognised" },
         h("div.st-card-head", {}, h("h2", {}, "How they're recognised"), h("span", {}, "Strong rules count at once; weak ones ask you first")),
@@ -150,6 +151,77 @@ export async function renderCharacter(root, id, ctx, again = null) {
       h("p.st-none", {}, "Right-click a picture to use it as the portrait.")) : null,
   ].filter(Boolean));
   settle(root, again);
+}
+
+// ---------------------------------------------------------------- what Character Select writes (shared with Model Librarian)
+const listPicture = (id) => media("characters", `${id}/picture`) + `&v=${Date.now() >> 16}`;  // (a new one now and then: a picked portrait shows)
+
+function promptCard(c) {
+  const card = h("section.st-card.c-prompt", { "aria-label": "Prompt" });
+  let sh = c.shared;
+  const save = async (patch, focus = null) => {
+    try {
+      sh = (await api(`/characters/${c.id}/presets`, { method: "POST", body: patch })).shared;
+      draw(focus);
+    } catch (e) { toast(e.message, true); draw(); }
+  };
+  // a row of tags, each removed with its x, and a box that adds (several at once, separated by commas)
+  const tagRow = (label, tags, put, key) => {
+    const add = h("input.pt-add", { type: "text", placeholder: "Add a tag", "aria-label": `Add to ${label}`, autocomplete: "off", spellcheck: false, "data-key": key });
+    add.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const more = add.value.split(",").map((t) => t.trim()).filter(Boolean);
+      if (more.length) put([...tags, ...more], key);
+    });
+    return h("div.tags.pt-tags", {}, tags.map((t, i) => h("span.chip.tag", {}, h("span.pt-t", {}, t),
+      h("button.x", { type: "button", "aria-label": `Take ${t} out of ${label}`, title: "Take it out", onclick: () => put(tags.filter((_, j) => j !== i), key) }, icon("remove")))), add);
+  };
+  const field = (label, value, part, placeholder) => {
+    const input = h("input", { type: "text", value, placeholder, "aria-label": label, autocomplete: "off", spellcheck: false });
+    const commit = () => { if (input.value.trim() !== value) save({ [part]: input.value }); };
+    input.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); input.blur(); } });
+    input.addEventListener("blur", commit);
+    return h("label.pt-field", {}, h("span", {}, label), input);
+  };
+  const draw = (focus = null) => {
+    const outfits = sh.outfits || {};
+    const putOutfit = (name) => (tags, key) => save({ outfits: { ...outfits, [name]: tags } }, key);
+    const src = sh.source || {};
+    card.replaceChildren(
+      h("div.st-card-head", {}, h("h2", {}, "Prompt"),
+        h("span", {}, "What Character Select writes in ComfyUI, shared with Model Librarian",
+          src.url ? [" · ", h("a", { href: src.url, target: "_blank", rel: "noreferrer" }, `from ${src.site || "a"} post${src.post ? ` #${src.post}` : ""}`)] : null)),
+      h("div.pt-fields", {}, field("Booru tag", sh.tag.replace(/_/g, " "), "tag", "aurelia (lighthouse tales)"), field("Series", sh.series, "series", "Lighthouse Tales")),
+      h("div.pt-group", {}, h("h3", {}, "Appearance"), tagRow("Appearance", sh.appearance, (tags, key) => save({ appearance: tags }, key), "appearance")),
+      ...Object.keys(outfits).map((name) => h("div.pt-group", {},
+        h("h3", {}, h("span", {}, `Outfit · ${name}`),
+          h("button.link.dim", { type: "button", onclick: async () => {
+            const to = ((await askText("Rename the outfit", "Name", name, { ok: "Rename" })) || "").trim();
+            if (!to || to === name) return;
+            if (outfits[to]) return toast(`There's already an outfit called ${to}.`, true);
+            save({ outfits: Object.fromEntries(Object.entries(outfits).map(([k, v]) => [k === name ? to : k, v])) });
+          } }, "Rename"),
+          h("button.link.dim", { type: "button", onclick: async () => {
+            if (await ask(`Delete the outfit ${name}?`, "Its tags go with it.", { ok: "Delete", danger: true })) {
+              const rest = { ...outfits };
+              delete rest[name];
+              save({ outfits: rest });
+            }
+          } }, "Delete")),
+        tagRow(`the outfit ${name}`, outfits[name], putOutfit(name), `outfit:${name}`))),
+      h("div.row", {}, h("button.btn.small", { type: "button", onclick: async () => {
+        const name = ((await askText("New outfit", "Name", "", { ok: "Add", placeholder: "winter" })) || "").trim();
+        if (!name) return;
+        if (outfits[name]) return toast(`There's already an outfit called ${name}.`, true);
+        save({ outfits: { ...outfits, [name]: [] } }, `outfit:${name}`);
+      } }, icon("plus"), "Outfit")),
+      sh.ml ? null : h("p.st-none", {}, "Model Librarian's folder isn't found (Settings, Model Librarian): these stay here until it is."));
+    if (focus) card.querySelector(`[data-key="${CSS.escape(focus)}"]`)?.focus();
+  };
+  draw();
+  return card;
 }
 
 // after a redraw that took the focus with it: on the card waiting again, else the first card, else the page's heading

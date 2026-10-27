@@ -12,7 +12,7 @@ import time
 
 import json
 
-from . import bulk, charfiles, colors, credits, dates, downloads, families, fileops
+from . import bulk, charfiles, charstore, charsync, colors, credits, dates, downloads, families, fileops
 from . import characters as chars
 from . import metadata
 from . import scan as scanner
@@ -127,6 +127,7 @@ class Library:
         self.inbox = downloads.Inbox(self)
         self.watcher = Watcher(self)
         self.models = ModelLibrary(self.settings)
+        self.char_wake = threading.Event()  # a character changed here: the sync with Model Librarian's list runs now
         self._scan_lock = threading.Lock()
         self._queue: list[int] = []
         self._queue_cv = threading.Condition()
@@ -155,12 +156,13 @@ class Library:
         self.watcher.start()
         threading.Thread(target=self._scan_loop, name="scanner", daemon=True).start()
         threading.Thread(target=self.inbox.notify_loop, args=(self._stop,), name="inbox-notify", daemon=True).start()
-        threading.Thread(target=charfiles.loop, args=(self, self._stop), name="characters-in", daemon=True).start()  # (from the Chrome extension)
+        threading.Thread(target=charfiles.loop, args=(self, self._stop), name="characters-in", daemon=True).start()  # (from the Chrome extension; the sync with Model Librarian)
         if rescan:
             self.scan_all()
 
     def stop(self) -> None:
         self._stop.set()
+        self.char_wake.set()  # (the characters loop ends)
         self.thumbs.stop()
         self.meta.stop()
         self.dater.stop()
@@ -502,7 +504,7 @@ class Library:
                 "SELECT fc.character_id, SUM(fc.state IN ('auto','confirmed')), SUM(fc.state='review') FROM file_characters fc"
                 " JOIN files f ON f.id=fc.file_id WHERE f.missing=0 GROUP BY fc.character_id")}
             rows = []
-            for ch in c.execute("SELECT id, name, aliases, cover, who FROM characters ORDER BY name COLLATE NOCASE").fetchall():
+            for ch in c.execute("SELECT id, name, aliases, cover, who, shared FROM characters ORDER BY name COLLATE NOCASE").fetchall():
                 latest = None
                 if not ch["cover"]:
                     r = c.execute("SELECT fc.file_id FROM file_characters fc JOIN files f ON f.id=fc.file_id WHERE fc.character_id=? AND fc.state IN ('auto','confirmed')"
@@ -510,7 +512,7 @@ class Library:
                     latest = r[0] if r else None
                 n, review = counts.get(ch["id"], (0, 0))
                 rows.append({"id": ch["id"], "name": ch["name"], "aliases": ch["aliases"], "cover": ch["cover"], "who": ch["who"], "n": n or 0,
-                             "review": review or 0, "latest": latest})
+                             "review": review or 0, "latest": latest, "picture": bool((json.loads(ch["shared"] or "{}") or {}).get("image"))})
             sugg = chars.suggestions(c)
         out = []
         for r in rows:
@@ -538,6 +540,14 @@ class Library:
             clash = c.execute("SELECT id FROM characters WHERE name=? COLLATE NOCASE", (name,)).fetchone()
             if clash and clash[0] != cid:
                 raise ValueError(f"There's already a character called {name}.")
+            was = c.execute("SELECT name, aliases, shared FROM characters WHERE id=?", (cid,)).fetchone() if cid is not None else None
+            if was and was["shared"]:  # shared with Model Librarian's list: when the name or aliases changed, for the sync
+                sh = json.loads(was["shared"])
+                parts = (["name"] if was["name"] != name else []) + (["aliases"] if json.loads(was["aliases"] or "[]") != aliases else [])
+                if parts:
+                    charstore.stamp(sh, parts, time.time())
+                    c.execute("UPDATE characters SET shared=? WHERE id=?", (json.dumps(sh), cid))
+                    self.char_wake.set()
             if cid is None:
                 cid = c.execute("INSERT INTO characters (name, aliases, created, who) VALUES (?,?,?,?)", (name, json.dumps(aliases), time.time(), who)).lastrowid
             else:
@@ -567,18 +577,113 @@ class Library:
         return cid
 
     def character_delete(self, cid: int) -> bool:
+        """Deleted, and (shared with Model Librarian's list) out of the list at the next sync too."""
         with self.db.write() as c:
-            return c.execute("DELETE FROM characters WHERE id=?", (int(cid),)).rowcount > 0
+            row = c.execute("SELECT shared FROM characters WHERE id=?", (int(cid),)).fetchone()
+            sid = (json.loads(row["shared"] or "{}") or {}).get("id") if row else None
+            if sid:
+                c.execute("INSERT OR REPLACE INTO characters_deleted (shared_id, at) VALUES (?,?)", (sid, time.time()))
+            gone = c.execute("DELETE FROM characters WHERE id=?", (int(cid),)).rowcount > 0
+        if sid:
+            self.char_wake.set()
+        return gone
+
+    # ---------------------------------------------------------------- characters shared with Model Librarian (charsync.py)
+    def sync_characters(self) -> dict:
+        return charsync.sync(self, self.models.data_dir())
+
+    def apply_character_sync(self, acts) -> int:
+        """The Gallery's part of a sync: characters saved, made, deleted; deletions the list knows of now forgotten."""
+        n = 0
+        for a in acts:
+            try:
+                if a[0] == "forget":
+                    with self.db.write() as c:
+                        c.execute("DELETE FROM characters_deleted WHERE shared_id=?", (a[1],))
+                elif a[0] == "delete":
+                    with self.db.write() as c:
+                        c.execute("DELETE FROM characters WHERE id=?", (int(a[1]),))
+                else:
+                    name, aliases, shared, add = (a[2], a[3], a[4], a[5])
+                    cid = self.character_save(None, name, aliases, [], who="character") if a[0] == "create" else int(a[1])
+                    with self.db.write() as c:
+                        clash = c.execute("SELECT id FROM characters WHERE name=? COLLATE NOCASE AND id<>?", (name, cid)).fetchone()
+                        c.execute("UPDATE characters SET aliases=?, shared=? WHERE id=?", (json.dumps(aliases[:16]), json.dumps(shared), cid))
+                        if not clash:
+                            c.execute("UPDATE characters SET name=? WHERE id=?", (name[:100], cid))
+                        rules = [dict(r) for r in c.execute("SELECT kind, value, strength, muted FROM character_rules WHERE character_id=?", (cid,))]
+                    new = [{"kind": k, "value": v, "strength": "strong"} for k, v in add
+                           if not any(r["kind"] == k and r["value"].lower() == v.lower() for r in rules)]
+                    if new:  # (matched again with them)
+                        cur = self.character(cid)
+                        self.character_save(cid, cur["name"], cur["aliases"], rules + new)
+                n += 1
+            except Exception:
+                continue  # (the next sync tries again)
+        return n
+
+    def character_presets(self, cid: int, patch: dict) -> dict:
+        """Its series, booru tag, appearance and outfits, as Character Select writes them (shared with Model Librarian)."""
+        cid = int(cid)
+        with self.db.write() as c:
+            row = c.execute("SELECT shared FROM characters WHERE id=?", (cid,)).fetchone()
+            if not row:
+                raise KeyError(cid)
+            sh = json.loads(row["shared"] or "{}") or {}
+            parts = []
+
+            def put(part, value):
+                if value != sh.get(part, [] if part == "appearance" else {} if part == "outfits" else ""):
+                    sh[part] = value
+                    parts.append(part)
+            if "series" in patch:
+                put("series", str(patch["series"] or "").strip()[: charstore.CAPS["text"]])
+            if "tag" in patch:
+                put("tag", re.sub(r"\s+", "_", str(patch["tag"] or "").strip())[: charstore.CAPS["tag"]])
+            if "appearance" in patch:
+                if not isinstance(patch["appearance"], list):
+                    raise ValueError("appearance is a list of tags")
+                put("appearance", charstore._tags(patch["appearance"]))
+            if "outfits" in patch:
+                if not isinstance(patch["outfits"], dict):
+                    raise ValueError("outfits is {name: [tags]}")
+                outfits = {}
+                for k, v in list(patch["outfits"].items())[: charstore.CAPS["outfits"]]:
+                    k = str(k or "").strip()[: charstore.CAPS["text"]]
+                    if k and isinstance(v, list):
+                        outfits[k] = charstore._tags(v)
+                put("outfits", outfits)
+            if parts:
+                charstore.stamp(sh, parts, time.time())
+                c.execute("UPDATE characters SET shared=? WHERE id=?", (json.dumps(sh), cid))
+        if parts:
+            self.char_wake.set()
+        return self.character(cid)
+
+    def character_picture(self, cid: int) -> str | None:
+        """The character's picture in Model Librarian's list (its Danbooru picture, or a portrait picked here)."""
+        with self.db.read() as c:
+            row = c.execute("SELECT shared FROM characters WHERE id=?", (int(cid),)).fetchone()
+        rel = (json.loads(row["shared"] or "{}") or {}).get("image") if row else None
+        d = self.models.data_dir()
+        if not d or not rel or not re.fullmatch(charstore.PICTURES + r"/[a-z0-9_]+\.(webp|jpg|png)", str(rel)):
+            return None
+        p = os.path.join(d, *str(rel).split("/"))
+        return p if os.path.isfile(p) else None
 
     def character(self, cid: int, days: int | None = None) -> dict | None:
         """A character's page: its rules (with how they do), the LoRAs and strengths, what it's made with, over time."""
         cid = int(cid)
         with self.db.read() as c:
-            ch = c.execute("SELECT id, name, aliases, cover, who FROM characters WHERE id=?", (cid,)).fetchone()
+            ch = c.execute("SELECT id, name, aliases, cover, who, shared FROM characters WHERE id=?", (cid,)).fetchone()
             if not ch:
                 return None
             out = dict(ch)
             out["aliases"] = json.loads(out["aliases"] or "[]")
+            sh = json.loads(out.pop("shared") or "{}") or {}
+            out["shared"] = {"linked": bool(sh.get("id")), "series": sh.get("series") or "", "tag": sh.get("tag") or "", "appearance": sh.get("appearance") or [],
+                             "outfits": sh.get("outfits") or {}, "lora": sh.get("lora"), "source": sh.get("source") or {}, "picture": bool(sh.get("image")),
+                             "ml": bool(self.models.data_dir())}
             files = "FROM file_characters fc JOIN files f ON f.id=fc.file_id JOIN folders d ON d.id=f.folder_id WHERE fc.character_id=? AND f.missing=0 AND d.online=1"
             counts = dict(c.execute(f"SELECT fc.state, COUNT(*) {files} GROUP BY fc.state", (cid,)).fetchall())
             out["counts"] = {k: counts.get(k, 0) for k in ("auto", "confirmed", "review", "rejected")}

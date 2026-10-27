@@ -266,6 +266,12 @@ MIGRATIONS = [
     """
     CREATE TABLE dupes_kept (files TEXT PRIMARY KEY, at REAL NOT NULL);  -- the group's file ids, sorted, with commas
     """,
+    # 14: characters shared with Model Librarian (charsync.py): each one's preset tags, outfits and the rest as the shared
+    # list has them, with when each part changed; and the ones deleted here that the list hasn't been told about yet
+    """
+    ALTER TABLE characters ADD COLUMN shared TEXT;  -- JSON: {id (the list's), series, tag, appearance, outfits, lora, image, source, changed, ...}
+    CREATE TABLE characters_deleted (shared_id TEXT PRIMARY KEY, at REAL NOT NULL);
+    """,
 ]
 CACHE = 256  # cached query results kept (each tied to the index as it was)
 

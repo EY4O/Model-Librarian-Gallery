@@ -110,6 +110,8 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_delete("/api/characters/{cid}", character_delete)
     r.add_post("/api/characters/{cid}/review", character_review)
     r.add_post("/api/characters/{cid}/review/back", review_take_back)
+    r.add_post("/api/characters/{cid}/presets", character_presets)
+    r.add_get("/api/characters/{cid}/picture", character_picture)
     r.add_post("/api/file/{id}/characters", file_character)
     r.add_get("/api/artists", artists_list)
     r.add_post("/api/artists", artist_create)
@@ -915,6 +917,24 @@ async def character_delete(request):
     cid = _cid(request)
     ok = await asyncio.to_thread(_lib(request).character_delete, cid) if cid else False
     return web.json_response({"ok": True}) if ok else _err("not found", 404)
+
+
+async def character_presets(request):
+    """{series?, tag?, appearance?, outfits?}: what Character Select writes for it (shared with Model Librarian)."""
+    cid, b = _cid(request), await _body(request)
+    try:
+        return web.json_response(await asyncio.to_thread(_lib(request).character_presets, cid, b))
+    except (KeyError, TypeError):
+        return _err("not found", 404)
+    except ValueError as ex:
+        return _err(str(ex), 422)
+
+
+async def character_picture(request):
+    """Its picture in Model Librarian's list (shown while the Gallery has no file of it)."""
+    cid = _cid(request)
+    p = await asyncio.to_thread(_lib(request).character_picture, cid) if cid else None
+    return web.FileResponse(p, headers={"Cache-Control": "no-cache"}) if p else _err("No picture", 404)
 
 
 async def character_review(request):
