@@ -12,11 +12,12 @@ import mimetypes
 import os
 import secrets
 import sqlite3
+import time
 
 from aiohttp import web
 
 from . import APP_NAME, VERSION
-from . import remote
+from . import remote, tailnet
 from .library import Library
 from .update import Updater
 
@@ -40,7 +41,8 @@ QUIT = web.AppKey("quit", object)
 RELAUNCH = web.AppKey("relaunch", object)
 DAILY = web.AppKey("daily", object)
 DEVICES = web.AppKey("devices", remote.Devices)
-REMOTE = web.AppKey("remote", dict)        # Phone and tablet: {runner: the server's, for its site to join; site: that site, while it runs}
+REMOTE = web.AppKey("remote", dict)        # Phone and tablet: {runner: the server's, for its sites to join; sites: those listening; mode, ts, https...}
+WHO = web.RequestKey("tailnet", dict) if hasattr(web, "RequestKey") else "tailnet"  # a device over Tailscale: its account and name
 DRAG = web.AppKey("drag_files", object)   # the window's own file drag (out to Explorer, the desktop, ComfyUI); None in a browser
 TRAY = web.AppKey("tray", object)          # the window's tray icon: shown again as Settings change (None: no window, or not Windows)
 
@@ -57,7 +59,9 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     app[LIB], app[TOKEN], app[PICK], app[QUIT], app[RELAUNCH] = lib, token, pick_folder, quit, relaunch
     app[UPDATER] = Updater(lib.home, lib.settings)
     app[DEVICES] = remote.Devices(lib.settings)
-    app[REMOTE] = {"runner": None, "site": None}  # (filled in as it runs: aiohttp wants an app's own values set before it starts)
+    app[REMOTE] = {"runner": None, "sites": [], "mode": None, "ts": None, "https": False, "https_error": None, "renew": None,
+                   "watch": None, "hosts": set(), "lock": asyncio.Lock(), "boot": None, "why": None}  # (filled in as it runs)
+    app.on_cleanup.append(_remote_cleanup)
     app[TRAY] = tray
     app[DRAG] = drag_files
     app.on_startup.append(_start_daily)
@@ -203,16 +207,35 @@ async def _guard_device(request: web.Request, handler):
     """A phone or tablet: only while Phone and tablet is on, only on a private network, only a paired device (but for
     pairing itself), and only what a device may do (remote.ALLOWED). Its API requests carry a header a web page
     elsewhere can't send without asking first, and the cookie is never sent from another site: no other page can act for it."""
-    lib = _lib(request)
+    lib, R = _lib(request), request.app[REMOTE]
     lib.settings.fresh()  # (turned off in another Gallery on this PC: off here too)
-    if not lib.settings.get("remote") or not remote.private(_peer(request)):
+    peer = _peer(request)
+    if not remote.private(peer):
+        return web.Response(status=403, text="Not here.")
+    if not lib.settings.get("remote"):
+        return _page(403, "Phone and tablet is off", "To use it, turn it on on the PC: <b>Settings</b>, <b>Phone and tablet</b>.", form=False)
+    host = (request.host or "").rsplit(":", 1)[0].strip("[]").lower() if not (request.host or "").endswith("]") else (request.host or "").strip("[]").lower()
+    if R["hosts"] and host not in R["hosts"]:  # (only its own address or name: a page that points another name at it gets nothing)
+        return web.Response(status=421, text="Not here.")
+    if _mode(lib, R) == "tailscale":  # only devices signed in to this PC's own account
+        who = await asyncio.to_thread(tailnet.whois, peer) if tailnet.in_tailnet(peer) else None
+        if not tailnet.same_owner(R["ts"], who):
+            return _page(403, "Not this Tailscale account", "This Gallery only lets in devices signed in to Tailscale with the same account as its PC. "
+                         "Sign in to Tailscale with that account on this device, then open this page again.", form=False)
+        request[WHO] = who
+    elif tailnet.in_tailnet(peer):  # (Home Wi-Fi chosen: Tailscale isn't the way in)
         return web.Response(status=403, text="Not here.")
     if request.path == "/pair":
         return await _run(request, handler)
-    device = request.app[DEVICES].check(request.cookies.get(remote.COOKIE))
+    seen = request.app[DEVICES].visit(request.cookies.get(remote.cookie_name(https=bool(R["https"]))),
+                                      rotate=request.method == "GET" and request.path in ("/", "/m"))  # (a new key as the library's opened)
+    if seen.get("stolen"):
+        await asyncio.to_thread(_stolen, request.app, seen["stolen"])
+        return _page(403, "This device was unpaired", f"An old copy of its key was used, so it may have been copied. If this is your device, pair it again: {_STEPS}", form=False)
+    device = seen["device"]
     if not device:
-        return web.Response(status=403, content_type="text/html", text=_PAIR_PAGE.format(app=APP_NAME, title="This device isn't paired",
-                            text="On the PC: Settings, Phone and tablet, Pair a device. Scan its QR code with this device, or type its code here."))
+        return _page(403, "This device isn't paired", "On the PC, open <b>Settings</b>, <b>Phone and tablet</b>, then <b>Pair a device</b>. "
+                     "Scan the QR code with this device, or type the code below.")
     path = getattr(request.rel_url, "path_safe", None) or request.path  # (as the router reads it: an encoded / stays encoded)
     if path.startswith("/api/"):
         picture = request.method == "GET" and remote.MEDIA.fullmatch(path)
@@ -220,16 +243,68 @@ async def _guard_device(request: web.Request, handler):
             return _err("Not from a phone or tablet: do that on the PC.", 403)
     elif not (path in ("/", "/m") or path.startswith("/ui/")):
         return web.Response(status=404)
-    return await _run(request, handler)
+    resp = await _run(request, handler)
+    if seen.get("key"):  # its new key (the one it came with is worth nothing in a moment)
+        _device_cookie(request, resp, seen["key"])
+    return resp
 
 
-# what an unpaired device sees: how to pair, and a box for the code (sent to /pair, as the QR code's link does)
-_PAIR_PAGE = ("<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{app}</title>"
-              "<body style='font:16px/1.5 system-ui;background:#1c1c1c;color:#eee;padding:24px;max-width:520px;margin:auto'>"
-              "<h2 style='font-weight:600'>{title}</h2><p>{text}</p><form action='/pair' method='get' style='display:flex;gap:8px'>"
-              "<input name='c' placeholder='ABCD-2345' autocapitalize='characters' autocomplete='off' aria-label='Code' "
-              "style='flex:1;font:inherit;padding:10px 12px;border-radius:10px;border:1px solid #444;background:#2a2a2a;color:#eee;letter-spacing:.1em'>"
-              "<button style='font:inherit;padding:10px 16px;border-radius:10px;border:0;background:#8b7cf6;color:#fff'>Pair</button></form>")
+def _remote_port(lib) -> int:
+    return int(lib.settings.get("remote_port") or remote.PORT)
+
+
+def _mode(lib, R) -> str:
+    """The way devices come: the one running, else the one chosen, else Tailscale when it's installed here (not saved:
+    asked again until it runs, so a Tailscale slow to start at sign-in never sends you to the Wi-Fi)."""
+    return R["mode"] or lib.settings.get("remote_mode") or ("tailscale" if tailnet.cli() else "wifi")
+
+
+def _device_cookie(request, resp, key: str) -> None:
+    """A device's key in its cookie: only for this port's name, never readable by a page's script, never sent from
+    another site, and over HTTPS a __Host- cookie only HTTPS can set."""
+    https = bool(request.app[REMOTE]["https"])
+    resp.set_cookie(remote.cookie_name(https=https), key, max_age=10 * 365 * 86400, httponly=True, samesite="Strict", path="/", secure=https)
+
+
+def _stolen(app, device: dict) -> None:
+    """A device's old key came back after it had moved on (a copy someone kept): it's unpaired (visit), and you're
+    told, in Settings and by a Windows notification."""
+    name = device.get("name") or "A device"
+    text = (f"{name} was unpaired: an old copy of its key was used, so someone may have copied it. (Opening the Gallery on one device from two "
+            f"places, a browser and its home-screen icon say, can look the same.) If {name} is yours, pair it again.")
+    app[LIB].settings.change("remote_alerts", lambda alerts: ([a for a in alerts or [] if isinstance(a, dict)] + [{"at": time.time(), "text": text}])[-10:])
+    if os.name == "nt":
+        try:
+            from .winshell import notify
+            notify("Phone and tablet: a device was unpaired", text)
+        except Exception:
+            pass
+
+
+# what a device that isn't let in sees: what's wrong, what to do, and (when pairing helps) a box for the code (sent to
+# /pair, as the QR code's link does). The Gallery's own look, sized for a phone; our own text only (no request's)
+_PAIR_PAGE = (
+    "<!doctype html><html lang='en'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>"
+    "<meta name='theme-color' content='#1d1b18'><meta name='color-scheme' content='dark'><title>{title} - {app}</title><style>"
+    "body{{margin:0;min-height:100dvh;background:#1d1b18;color:#edecea;-webkit-text-size-adjust:100%;"
+    "font:16px/1.55 'Segoe UI Variable Text','Segoe UI',system-ui,-apple-system,sans-serif}}"
+    "main{{max-width:480px;margin:0 auto;padding:max(40px,env(safe-area-inset-top)) max(20px,env(safe-area-inset-right)) 32px max(20px,env(safe-area-inset-left))}}"
+    "h1{{margin:0 0 8px;font-size:22px;line-height:1.25;font-weight:600;text-wrap:balance}}"
+    "p{{margin:0 0 20px;color:#c9c8c6}}b{{color:#edecea;font-weight:600}}form{{display:flex;gap:8px}}"
+    "input{{flex:1;min-width:0;height:48px;padding:0 14px;font:inherit;font-family:'Cascadia Mono',ui-monospace,Menlo,monospace;letter-spacing:.1em;"
+    "text-transform:uppercase;border:1px solid #403e3a;border-radius:10px;background:#302e2b;color:#edecea}}"
+    "input::placeholder{{color:#9f9e9c}}input:focus{{outline:2px solid #8b93ff;outline-offset:1px}}"
+    "button{{height:48px;padding:0 20px;font:inherit;font-weight:600;border:0;border-radius:10px;background:#8b93ff;color:#171512;cursor:pointer}}"
+    "button:focus-visible{{outline:2px solid #c9ceff;outline-offset:2px}}.app{{margin:32px 0 0;color:#9f9e9c;font-size:13px}}"
+    "</style><main><h1>{title}</h1><p>{text}</p>{form}<p class='app'>{app}</p></main>")
+_PAIR_FORM = ("<form action='/pair' method='get'><input name='c' placeholder='ABCD-2345' aria-label='Pairing code' autocapitalize='characters' "
+              "autocomplete='off' autocorrect='off' spellcheck='false' enterkeyhint='go' required><button>Pair</button></form>")
+_STEPS = "on the PC, open <b>Settings</b>, <b>Phone and tablet</b>, then <b>Pair a device</b>."
+
+
+def _page(status: int, title: str, text: str, form: bool = True) -> web.Response:
+    return web.Response(status=status, content_type="text/html", headers={"Cache-Control": "no-store"},
+                        text=_PAIR_PAGE.format(app=APP_NAME, title=title, text=text, form=_PAIR_FORM if form else ""))
 
 
 async def _run(request: web.Request, handler):
@@ -275,42 +350,181 @@ async def pair(request: web.Request):
     """A device opening the pairing address (the QR code): remembered, with a key in a cookie only it sends."""
     if _is_local(request):
         return web.Response(status=404)
-    key = request.app[DEVICES].pair(request.query.get("c", ""), request.headers.get("User-Agent", ""))
+    who = request.get(WHO) or {}
+    via = "tailscale" if who else "wifi"
+    key = request.app[DEVICES].pair(request.query.get("c", ""), request.headers.get("User-Agent", ""), via=via, node=who.get("node"), peer=_peer(request))
     if not key:
-        return web.Response(status=403, content_type="text/html", text=_PAIR_PAGE.format(app=APP_NAME, title="That code didn't work",
-                            text="A code lasts 10 minutes and pairs one device. On the PC: Settings, Phone and tablet, Pair a device, for a new one."))
+        return _page(403, "That code didn't work", f"Check it and try again. A code works for 10 minutes and pairs one device; after {remote.CODE_TRIES} "
+                     f"wrong tries this device can't use it. For a new one: {_STEPS}")
     resp = web.Response(status=302, headers={"Location": "/"})
-    resp.set_cookie(remote.COOKIE, key, max_age=10 * 365 * 86400, httponly=True, samesite="Strict", path="/")
+    _device_cookie(request, resp, key)
     return resp
 
 
 # ---------------------------------------------------------------- Phone and tablet, from the PC's Settings
 async def remote_start(app) -> str | None:
-    """Listen for paired devices (on every network: only private addresses are answered). -> why it couldn't, or None."""
-    if app[REMOTE]["site"] or not app[REMOTE]["runner"]:
+    """Listen for paired devices on the one network chosen: Tailscale's addresses (HTTPS when agreed to and the tailnet
+    allows it), or the home network's address. Until one's chosen, Tailscale when it's installed here. -> why it
+    couldn't, or None (remote.NEED_WIFI_OK: Home Wi-Fi hasn't been agreed to yet). One start or stop at a time."""
+    async with app[REMOTE]["lock"]:
+        why = await _remote_start(app)
+        app[REMOTE]["why"] = why if why and why != remote.NEED_WIFI_OK else None  # (for Settings to say)
+        return why
+
+
+async def _remote_start(app) -> str | None:
+    R = app[REMOTE]
+    if R["sites"] or not R["runner"]:
         return None
     lib = app[LIB]
-    port = int(lib.settings.get("remote_port") or remote.PORT)
-    site = web.TCPSite(app[REMOTE]["runner"], os.environ.get("MLG_REMOTE_HOST") or "0.0.0.0", port)  # (MLG_REMOTE_HOST: the tests keep it on 127.0.0.1)
-    try:
-        await site.start()
-    except OSError as ex:
-        return f"Port {port} is taken ({ex.strerror or ex}): pick another in Settings."
-    app[REMOTE]["site"] = site
+    port = _remote_port(lib)
+    st = await asyncio.to_thread(tailnet.status, True)
+    mode = lib.settings.get("remote_mode")
+    if mode not in ("tailscale", "wifi"):
+        mode = "tailscale" if st or tailnet.cli() else "wifi"
+        if mode == "tailscale":
+            await asyncio.to_thread(_tell_upgraders, lib)
+    tls, R["https_error"] = None, None
+    if mode == "tailscale":
+        if not st:
+            return "Tailscale isn't running on this PC: start it, or choose Home Wi-Fi in Settings."
+        if not st.get("login") or st.get("tagged"):
+            return ("This PC is a tagged device on the tailnet, so there's no person's account to check devices against: sign it in to "
+                    "Tailscale as yourself, or choose Home Wi-Fi." if st.get("tagged") else
+                    "Tailscale didn't say which account this PC is signed in to, so no device could be checked.")
+        hosts = st["ips"]
+        if st.get("https") and lib.settings.get("remote_https") == "yes":
+            tls = await asyncio.to_thread(_tls, lib, st["https"])
+            if not tls:  # (still encrypted by Tailscale itself: plain HTTP inside it, and said so)
+                R["https_error"] = "Tailscale couldn't get the certificate just now, so it's HTTP inside Tailscale's own encryption for the moment."
+    else:
+        if not lib.settings.get("remote_wifi_ok"):
+            return remote.NEED_WIFI_OK
+        hosts = [a["ip"] for a in await asyncio.to_thread(remote.addresses) if a["kind"] == "home"]
+        if not hosts:
+            return "This PC isn't on a home network right now."
+    if os.environ.get("MLG_REMOTE_HOST"):  # (the tests keep it on 127.0.0.1)
+        hosts = [os.environ["MLG_REMOTE_HOST"]]
+    sites, why = [], None
+    for host in hosts:
+        site = web.TCPSite(R["runner"], host, port, ssl_context=tls)
+        try:
+            await site.start()
+            sites.append(site)
+        except OSError as ex:
+            why = f"Port {port} is taken ({ex.strerror or ex}): pick another in Settings."
+    if not sites:
+        return why
+    names = {h.strip("[]").lower() for h in hosts} | ({st.get("name"), st.get("https")} - {None} if mode == "tailscale" else set())
+    R.update(sites=sites, mode=mode, ts=st if mode == "tailscale" else None, https=bool(tls), hosts={n.lower() for n in names})
+    if mode == "wifi" and not os.environ.get("MLG_REMOTE_HOST"):
+        R["watch"] = asyncio.get_running_loop().create_task(_follow_lan(app, set(hosts)))
+    if tls:
+        R["renew"] = asyncio.get_running_loop().create_task(_renew(app, st["https"], tls))
     return None
 
 
+def _tls(lib, domain: str):
+    """HTTPS for this PC's tailnet name, with the certificate Tailscale gets for it, or None."""
+    import ssl
+    files = tailnet.cert(domain, os.path.join(lib.home, "tailscale-cert"))
+    if not files:
+        return None
+    try:
+        ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ctx.load_cert_chain(*files)
+        return ctx
+    except (ssl.SSLError, OSError):
+        return None
+
+
+async def _renew(app, domain: str, ctx) -> None:
+    """The certificate asked for again as it ages (good for 90 days; asked for after 30), for the connections to come."""
+    while True:
+        await asyncio.sleep(12 * 3600)
+        files = await asyncio.to_thread(tailnet.cert, domain, os.path.join(app[LIB].home, "tailscale-cert"))
+        if files:
+            try:
+                ctx.load_cert_chain(*files)
+            except Exception:
+                pass
+
+
 async def remote_stop(app) -> None:
-    site, app[REMOTE]["site"] = app[REMOTE]["site"], None
-    if site:
+    async with app[REMOTE]["lock"]:
+        await _remote_stop(app)
+
+
+async def _remote_stop(app) -> None:
+    R = app[REMOTE]
+    sites, R["sites"] = R["sites"], []
+    for k in ("renew", "watch"):
+        if R[k] and R[k] is not asyncio.current_task():
+            R[k].cancel()
+        R[k] = None
+    for site in sites:
         await site.stop()
+    R.update(mode=None, ts=None, https=False, https_error=None, hosts=set())
+
+
+def _tell_upgraders(lib) -> None:
+    """Tailscale chosen by itself, and devices paired on the Wi-Fi before there was a choice: told, once."""
+    if any(isinstance(d, dict) and d.get("via") in (None, "wifi") for d in lib.settings.get("remote_devices") or []):
+        text = ("Phone and tablet now goes over Tailscale (encrypted, only your own devices), so devices paired on the home Wi-Fi can't "
+                "connect that way any more: pair them over Tailscale, or choose Home Wi-Fi under How they reach it.")
+        if not any(isinstance(a, dict) and a.get("text") == text for a in lib.settings.get("remote_alerts") or []):
+            lib.settings.change("remote_alerts", lambda alerts: ([a for a in alerts or [] if isinstance(a, dict)] + [{"at": time.time(), "text": text}])[-10:])
+        lib.settings.update({"remote_mode": "tailscale"})  # (said once: from now on it's the way chosen)
+
+
+async def _follow_lan(app, hosts: set) -> None:
+    """On the home Wi-Fi: the PC's address on it changes (a new lease, another network, waking up): listened on anew."""
+    while True:
+        await asyncio.sleep(60)
+        now = {a["ip"] for a in await asyncio.to_thread(remote.addresses) if a["kind"] == "home"}
+        if now and now != hosts and app[LIB].settings.get("remote"):
+            await remote_stop(app)
+            await remote_start(app)
+            return
+
+
+async def _remote_boot(app) -> None:
+    """Phone and tablet was on when the Gallery started: listening again, asked again for a while if Tailscale or the
+    network is still coming up (at sign-in, say)."""
+    for _ in range(40):
+        why = await remote_start(app)
+        if not why or not ("Tailscale isn't running" in why or "isn't on a home network" in why) or not app[LIB].settings.get("remote"):
+            return
+        await asyncio.sleep(15)
+
+
+async def _remote_cleanup(app) -> None:
+    if app[REMOTE]["boot"]:
+        app[REMOTE]["boot"].cancel()
+    await remote_stop(app)
 
 
 def _remote_view(request) -> dict:
-    app, lib = request.app, _lib(request)
-    port = int(lib.settings.get("remote_port") or remote.PORT)
-    return {"on": bool(lib.settings.get("remote")), "running": bool(app[REMOTE]["site"]), "port": port, "devices": app[DEVICES].list(),
-            "addresses": [dict(a, url=f"http://{a['ip']}:{port}/") for a in remote.addresses()]}
+    """Phone and tablet as Settings shows it: on, the way (and whether Tailscale is here), HTTPS, the addresses to open."""
+    app, lib, R = request.app, _lib(request), request.app[REMOTE]
+    port = _remote_port(lib)
+    st = R["ts"] or tailnet.status()
+    mode = _mode(lib, R)
+    if mode == "tailscale":
+        https = bool(R["https"])
+        host = st["https"] if https and st else (st["ips"][0] if st else None)
+        addrs = [{"ip": host, "kind": "tailscale", "url": f"{'https' if https else 'http'}://{host}:{port}/"}] if host else []
+    else:
+        addrs = [dict(a, url=f"http://{a['ip']}:{port}/") for a in remote.addresses() if a["kind"] == "home"]
+    return {"on": bool(lib.settings.get("remote")), "running": bool(R["sites"]), "port": port, "devices": app[DEVICES].list(),
+            "mode": mode, "chosen": lib.settings.get("remote_mode") in ("tailscale", "wifi"), "wifi_ok": bool(lib.settings.get("remote_wifi_ok")),
+            "tailscale": {"found": bool(st), "installed": bool(tailnet.cli()), "name": st and st.get("name"), "login": st and st.get("login"),
+                          "tagged": bool(st and st.get("tagged")), "https_possible": bool(st and st.get("https"))},
+            "https": lib.settings.get("remote_https"), "https_on": bool(R["https"]), "https_error": R["https_error"],
+            "waiting": bool(lib.settings.get("remote")) and not R["sites"] and mode == "wifi" and not lib.settings.get("remote_wifi_ok"),
+            "why": R["why"],
+            "alerts": [a for a in lib.settings.get("remote_alerts") or [] if isinstance(a, dict)],
+            "code_stopped": app[DEVICES].stopped, "addresses": addrs}
 
 
 async def remote_get(request):
@@ -318,23 +532,33 @@ async def remote_get(request):
 
 
 async def remote_switch(app, on: bool) -> str | None:
-    """Phone and tablet on or off (Settings, the tray's menu) -> why it couldn't go on, or None."""
+    """Phone and tablet on or off (Settings, the tray's menu) -> why it couldn't go on, or None. Home Wi-Fi not yet
+    agreed to leaves it on and waiting (remote.NEED_WIFI_OK): Settings asks."""
     lib = app[LIB]
     await asyncio.to_thread(lib.settings.update, {"remote": bool(on)})
     if not on:
         await remote_stop(app)
         return None
     why = await remote_start(app)
-    if why:
+    if why and why != remote.NEED_WIFI_OK:
         await asyncio.to_thread(lib.settings.update, {"remote": False})
     return why
 
 
 async def remote_set(request):
-    """{on: true|false, port}: listen for paired devices, or stop."""
+    """{on: true|false, port, mode: tailscale|wifi, wifi_ok: true, https: true|false, dismiss: true}: listen for paired
+    devices (the way chosen), or stop."""
     b = await _body(request)
     lib, app = _lib(request), request.app
     patch = {}
+    if b.get("mode") in ("tailscale", "wifi"):
+        patch["remote_mode"] = b["mode"]
+    if b.get("wifi_ok") is True:
+        patch["remote_wifi_ok"] = True
+    if isinstance(b.get("https"), bool):
+        patch["remote_https"] = "yes" if b["https"] else "no"
+    if b.get("dismiss") is True:
+        patch["remote_alerts"] = []
     if "port" in b:
         try:
             port = int(b["port"])
@@ -345,12 +569,15 @@ async def remote_set(request):
         patch["remote_port"] = port
     if isinstance(b.get("on"), bool):
         patch["remote"] = b["on"]
+    if patch.get("remote_mode") == "wifi" and not (patch.get("remote_wifi_ok") or lib.settings.get("remote_wifi_ok")):
+        return _err("Home Wi-Fi is unencrypted: agree to it first.", 409)
     await asyncio.to_thread(lib.settings.update, patch)
-    if app[REMOTE]["site"] and ("remote_port" in patch or patch.get("remote") is False):
+    again = {"remote_port", "remote_mode", "remote_https", "remote_wifi_ok"} & set(patch)
+    if app[REMOTE]["sites"] and (again or patch.get("remote") is False):
         await remote_stop(app)
-    if lib.settings.get("remote"):
+    if lib.settings.get("remote") and (again or patch.get("remote") is True):  # (Dismiss, say, starts and stops nothing)
         why = await remote_start(app)
-        if why:
+        if why and why != remote.NEED_WIFI_OK:
             await asyncio.to_thread(lib.settings.update, {"remote": False})
             return _err(why, 409)
     return web.json_response(await asyncio.to_thread(_remote_view, request))
@@ -358,7 +585,7 @@ async def remote_set(request):
 
 async def remote_code(request):
     """A pairing code (10 minutes, one device), and the addresses to open with it (for the QR code)."""
-    if not _lib(request).settings.get("remote") or not request.app[REMOTE]["site"]:
+    if not _lib(request).settings.get("remote") or not request.app[REMOTE]["sites"]:
         return _err("Turn Phone and tablet on first.", 409)
     code = request.app[DEVICES].new_code()
     view = await asyncio.to_thread(_remote_view, request)
@@ -1428,7 +1655,7 @@ async def settings_set(request):
     b = await _body(request)
     lib = _lib(request)
     try:
-        b = _check_settings({k: v for k, v in b.items() if k in lib.settings.all()})
+        b = _check_settings({k: v for k, v in b.items() if k in lib.settings.all() and not k.startswith("remote")})  # (those: /api/remote)
     except ValueError as ex:
         return _err(str(ex), 422)
     if b.get("tray") is False:
@@ -1626,6 +1853,6 @@ async def serve(lib: Library, port: int = 0, token: str | None = None, pick_fold
     await site.start()
     real = site._server.sockets[0].getsockname()[1]
     app[REMOTE]["runner"] = runner
-    if lib.settings.get("remote"):  # Phone and tablet was on: paired devices can come back
-        await remote_start(app)
+    if lib.settings.get("remote"):  # Phone and tablet was on: paired devices can come back (Tailscale asked meanwhile)
+        app[REMOTE]["boot"] = asyncio.get_running_loop().create_task(_remote_boot(app))
     return runner, real, app[TOKEN]

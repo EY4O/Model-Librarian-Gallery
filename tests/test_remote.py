@@ -83,6 +83,8 @@ def test_a_device_is_let_in_only_once_paired_and_only_so_far(lib, media, monkeyp
     file_id = lib.files()["items"][0]["id"]
     peer = {"ip": "192.168.1.50"}
     monkeypatch.setattr(server, "_peer", lambda request: peer["ip"])
+    COOKIE = remote.cookie_name()
+    lib.settings.update({"remote_mode": "wifi", "remote_wifi_ok": True})
     app = server.make_app(lib, TOKEN)
 
     async def go():
@@ -100,7 +102,7 @@ def test_a_device_is_let_in_only_once_paired_and_only_so_far(lib, media, monkeyp
             assert r.status == 302 and r.headers["Location"] == "/"
             cookie = r.headers["Set-Cookie"]
             assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
-            dev = {"Cookie": f"{remote.COOKIE}={r.cookies[remote.COOKIE].value}"}
+            dev = {"Cookie": f"{COOKIE}={r.cookies[COOKIE].value}"}
             c.session.cookie_jar.clear()  # (sent by hand from here, so a request without it is one)
             page = await (await c.get("/", headers=dev)).text()
             assert 'id="p-app"' in page and TOKEN not in page  # the phone layout; the PC's token never leaves the PC
@@ -132,7 +134,7 @@ def test_a_device_is_let_in_only_once_paired_and_only_so_far(lib, media, monkeyp
             code = app[server.DEVICES].new_code()
             r = await c.get(f"/pair?c={code}", allow_redirects=False)
             c.session.cookie_jar.clear()
-            dev = {"Cookie": f"{remote.COOKIE}={r.cookies[remote.COOKIE].value}"}
+            dev = {"Cookie": f"{COOKIE}={r.cookies[COOKIE].value}"}
             api = {**dev, "X-MLG-Token": "device"}
             assert (await c.get("/api/status", headers={"X-MLG-Token": "device"})).status == 403  # no cookie, no way in
             peer["ip"] = "8.8.8.8"  # the cookie, from the open internet (a forwarded port): no
@@ -178,3 +180,217 @@ def test_pairing_details_from_the_qa_pass(lib):
     Settings(lib.home).change("remote_devices", lambda devices: [x for x in devices if x["id"] != gone])
     d.check(keys[0])
     assert gone not in [x["id"] for x in Settings(lib.home).get("remote_devices")]
+
+
+# ---------------------------------------------------------------- keys that change, a stolen one caught, devices forgotten, code tries
+def test_keys_change_and_a_copied_one_unpairs_the_device(lib, monkeypatch):
+    d = remote.Devices(lib.settings)
+    code = d.new_code()
+    key = d.pair(code, "Mozilla/5.0 (iPhone)")
+    now = [time.time()]
+    monkeypatch.setattr(remote.time, "time", lambda: now[0])
+    assert d.visit(key, rotate=True).get("key") is None  # (just paired: no new key yet)
+    now[0] += remote.ROTATE_EVERY + 1
+    got = d.visit(key, rotate=True)
+    new = got["key"]
+    assert new and new != key and new.split(".")[0] == key.split(".")[0]
+    assert d.visit(key)["device"]  # the key before, a moment later (its pictures were asked for with it): still in
+    assert d.visit(new, rotate=True).get("key") is None and d.visit(new)["device"]
+    now[0] += remote.GRACE + 1
+    copied = d.visit(key)  # the old key again, after the device moved on: a copy
+    assert copied["device"] is None and copied["stolen"]["name"] == "iPhone"
+    assert d.list() == [] and d.visit(new)["device"] is None  # unpaired: the real one pairs again
+
+
+def test_devices_not_seen_for_30_days_are_forgotten(lib, monkeypatch):
+    d = remote.Devices(lib.settings)
+    key = d.pair(d.new_code(), "")
+    later = time.time() + remote.FORGET_AFTER + 60
+    monkeypatch.setattr(remote.time, "time", lambda: later)
+    assert d.list() == [] and d.check(key) is None and lib.settings.get("remote_devices") == []
+
+
+def test_wrong_codes_lock_out_the_device_guessing_and_many_cancel_the_code(lib):
+    d = remote.Devices(lib.settings)
+    code = d.new_code()
+    for _ in range(remote.CODE_TRIES):
+        assert d.pair("WRONGONE", "", peer="192.168.1.66") is None
+    assert d.pair(code, "", peer="192.168.1.66") is None  # (that device can't try any more, even the right code)
+    assert d.code and d.stopped is None  # ... but the code still pairs yours
+    assert d.pair("", "", peer="192.168.1.70") is None and not d.tries.get("192.168.1.70")  # (an empty code isn't a try)
+    assert d.pair(code, "", peer="192.168.1.50")
+    code = d.new_code()
+    for i in range(remote.CODE_TRIES_ALL):  # guessed at from all sides: the code is cancelled
+        d.pair("WRONGONE", "", peer=f"192.168.2.{i}")
+    assert d.code is None and "wrong codes" in d.stopped and d.pair(code, "", peer="192.168.1.50") is None
+
+
+def test_a_lost_answer_never_locks_the_device_out(lib, monkeypatch):
+    d = remote.Devices(lib.settings)
+    key = d.pair(d.new_code(), "")
+    now = [time.time() + remote.ROTATE_EVERY + 1]
+    monkeypatch.setattr(remote.time, "time", lambda: now[0])
+    lost = d.visit(key, rotate=True)["key"]  # offered; the answer never reaches the phone
+    assert lost
+    now[0] += 3600  # an hour later, still the key it had: in, and a new key offered again
+    again = d.visit(key, rotate=True)
+    assert again["device"] and again["key"] and again["key"] != lost
+    assert d.visit(again["key"])["device"]  # back with it: its key now
+    now[0] += remote.GRACE + 1
+    assert d.visit(key).get("stolen")  # the one before, after that: a copy
+
+
+def test_tailscale_is_found_only_where_it_installs(tmp_path, monkeypatch):
+    from mlgallery import tailnet
+    monkeypatch.delenv("MLG_NO_TAILSCALE")
+    planted = tmp_path / "here"
+    planted.mkdir()
+    (planted / "tailscale.bat").write_text("@echo off\r\necho planted")
+    (planted / "tailscale.exe").write_text("not really")
+    monkeypatch.chdir(planted)
+    monkeypatch.setenv("PATH", f".{__import__('os').pathsep}{planted.name}")  # (relative entries: never)
+    for k in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+        monkeypatch.setenv(k, str(tmp_path / "none"))
+    assert tailnet.cli() is None
+    real = tmp_path / "pf" / "Tailscale"
+    real.mkdir(parents=True)
+    (real / "tailscale.exe").write_text("x")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "pf"))
+    assert tailnet.cli() == str(real / "tailscale.exe")
+
+
+def test_tailscale_answers_in_any_script_and_tags_are_no_ones_account(monkeypatch):
+    from mlgallery import tailnet
+    out = json.dumps({"BackendState": "Running", "Self": {"UserID": 7, "DNSName": "pc.tail.ts.net.", "TailscaleIPs": ["100.64.0.7"]},
+                      "User": {"7": {"LoginName": "me@example.com", "DisplayName": "Ханна Łucja"}}, "Peer": {"x": {"HostName": "Áにほん"}}})
+
+    class Done:
+        returncode, stdout = 0, out.encode("utf-8")
+    monkeypatch.setattr(tailnet, "cli", lambda: "tailscale.exe")
+    monkeypatch.setattr(tailnet.subprocess, "run", lambda *a, **k: Done())
+    st = tailnet.status(fresh=True)
+    assert st and st["login"] == "me@example.com" and st["uid"] == 7 and not st["tagged"]  # (Cyrillic, Polish, Japanese: read)
+    me = {"login": "me@example.com", "uid": 7, "tagged": False}
+    assert tailnet.same_owner(me, {"login": "me@example.com", "uid": 7, "tagged": False})
+    assert not tailnet.same_owner(me, {"login": "me@example.com", "uid": 8, "tagged": False})  # (another account by the same name)
+    assert not tailnet.same_owner(me, {"login": "me@example.com", "uid": 7, "tagged": True})
+    tagged = {"login": "tagged-devices", "uid": 1, "tagged": True}
+    assert not tailnet.same_owner(tagged, tagged)  # (two tagged devices look alike: never)
+
+
+# ---------------------------------------------------------------- Over Tailscale: only this PC's own account, on Tailscale's addresses
+def test_over_tailscale_only_this_accounts_devices(lib, media, monkeypatch):
+    from aiohttp.test_utils import TestClient, TestServer
+    from mlgallery import server, tailnet
+    from test_server import H, TOKEN, indexed
+    indexed(lib, media)
+    peer = {"ip": "100.101.1.2"}
+    monkeypatch.setattr(server, "_peer", lambda request: peer["ip"])
+    owners = {"100.101.1.2": {"login": "me@example.com", "node": "pixel-9"}, "100.101.1.3": {"login": "someone@example.com", "node": "their-phone"}}
+    monkeypatch.setattr(tailnet, "whois", lambda ip: owners.get(ip))
+    monkeypatch.setattr(tailnet, "status", lambda fresh=False: {"ips": ["100.64.0.7"], "name": "pc.example.ts.net", "login": "me@example.com", "https": "pc.example.ts.net"})
+    lib.settings.update({"remote": True, "remote_mode": "tailscale"})
+    app = server.make_app(lib, TOKEN)
+    app[server.REMOTE].update(mode="tailscale", ts=tailnet.status())
+    COOKIE = remote.cookie_name()
+
+    async def go():
+        c = TestClient(TestServer(app, host="127.0.0.1"))
+        await c.start_server()
+        try:
+            code = app[server.DEVICES].new_code()
+            peer["ip"] = "100.101.1.3"  # another account on the tailnet, with the code: no
+            r = await c.get(f"/pair?c={code}", allow_redirects=False)
+            assert r.status == 403 and "Not this Tailscale account" in await r.text()
+            peer["ip"] = "100.101.1.9"  # Tailscale doesn't know it: no
+            assert (await c.get("/", allow_redirects=False)).status == 403
+            peer["ip"] = "192.168.1.50"  # the home Wi-Fi, while it's Tailscale: no
+            assert (await c.get("/", allow_redirects=False)).status == 403
+            peer["ip"] = "100.101.1.2"  # mine: pairs, named as Tailscale names it
+            r = await c.get(f"/pair?c={code}", allow_redirects=False)
+            assert r.status == 302
+            assert app[server.DEVICES].list()[0]["name"] == "pixel-9" and app[server.DEVICES].list()[0]["via"] == "tailscale"
+            dev = {"Cookie": f"{COOKIE}={r.cookies[COOKIE].value}", "X-MLG-Token": "device"}
+            c.session.cookie_jar.clear()
+            assert (await c.get("/api/status", headers=dev)).status == 200
+            owners["100.101.1.2"] = {"login": "someone@example.com", "node": "pixel-9"}  # signed in as someone else since: no
+            tailnet_whois_changed = await c.get("/api/status", headers=dev)
+            assert tailnet_whois_changed.status == 403
+            app[server.REMOTE]["hosts"] = {"pc.example.ts.net"}  # (as listening sets it)
+            owners["100.101.1.2"] = {"login": "me@example.com", "node": "pixel-9"}
+            assert (await c.get("/api/status", headers=dev)).status == 421  # this test server's own address isn't one of them
+            assert (await c.get("/api/status", headers={**dev, "Host": "pc.example.ts.net:8766"})).status == 200
+            assert (await c.get("/api/status", headers={**dev, "Host": "evil.example:8766"})).status == 421
+            app[server.REMOTE]["hosts"] = set()
+            peer["ip"] = "127.0.0.1"
+            v = await (await c.get("/api/remote", headers=H)).json()
+            assert v["mode"] == "tailscale" and v["tailscale"]["found"] and v["tailscale"]["https_possible"]
+            # Phone and tablet's settings never through the general settings
+            await c.post("/api/settings", json={"remote_mode": "wifi", "remote_wifi_ok": True, "remote_devices": []}, headers=H)
+            assert lib.settings.get("remote_mode") == "tailscale" and not lib.settings.get("remote_wifi_ok") and lib.settings.get("remote_devices")
+            # Home Wi-Fi only once agreed to
+            assert (await c.post("/api/remote", json={"mode": "wifi"}, headers=H)).status == 409
+        finally:
+            await c.close()
+    asyncio.run(go())
+
+
+def test_the_way_is_tailscale_when_it_runs_here_and_wifi_waits_for_a_yes(lib, monkeypatch):
+    from aiohttp import web
+    from mlgallery import server, tailnet
+    from test_server import TOKEN
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    monkeypatch.setenv("MLG_REMOTE_HOST", "127.0.0.1")
+    lib.settings.update({"remote": True, "remote_port": port})
+    app = server.make_app(lib, TOKEN)
+
+    async def go():
+        runner = web.AppRunner(app)
+        await runner.setup()
+        app[server.REMOTE]["runner"] = runner
+        try:
+            monkeypatch.setattr(tailnet, "status", lambda fresh=False: {"ips": ["100.64.0.7"], "name": "pc.example.ts.net", "login": "me@example.com", "https": None})
+            assert await server.remote_start(app) is None
+            assert app[server.REMOTE]["mode"] == "tailscale" and lib.settings.get("remote_mode") == ""  # (not saved: asked again next time)
+            assert app[server.REMOTE]["hosts"] == {"127.0.0.1", "pc.example.ts.net"}
+            await server.remote_stop(app)
+            lib.settings.update({"remote_mode": ""})
+            monkeypatch.setattr(tailnet, "status", lambda fresh=False: None)  # no Tailscale here: Home Wi-Fi, which waits for a yes
+            assert await server.remote_switch(app, True) == remote.NEED_WIFI_OK
+            assert lib.settings.get("remote") is True and not app[server.REMOTE]["sites"]  # (on, waiting: Settings asks)
+            lib.settings.update({"remote_wifi_ok": True})
+            assert await server.remote_start(app) is None and app[server.REMOTE]["mode"] == "wifi"
+            await server.remote_stop(app)
+            lib.settings.update({"remote_mode": "tailscale"})  # chosen, but Tailscale isn't running: said so
+            assert "Tailscale isn't running" in await server.remote_start(app)
+        finally:
+            await server.remote_stop(app)
+            await runner.cleanup()
+    asyncio.run(go())
+
+
+def test_dismiss_only_dismisses_and_upgraders_are_told_once(lib, monkeypatch):
+    from aiohttp.test_utils import TestClient, TestServer
+    from mlgallery import server, tailnet
+    from test_server import H, TOKEN
+    monkeypatch.setattr(tailnet, "status", lambda fresh=False: None)
+    lib.settings.update({"remote": True, "remote_mode": "tailscale", "remote_alerts": [{"at": 1, "text": "x"}]})
+    app = server.make_app(lib, TOKEN)
+
+    async def go():
+        c = TestClient(TestServer(app, host="127.0.0.1"))
+        await c.start_server()
+        try:
+            r = await c.post("/api/remote", json={"dismiss": True}, headers=H)  # on but not listening (no Tailscale): still on
+            assert r.status == 200 and (await r.json())["alerts"] == [] and lib.settings.get("remote") is True
+        finally:
+            await c.close()
+    asyncio.run(go())
+    # paired on the Wi-Fi before there was a choice, Tailscale chosen by itself now: told, once, and the way kept
+    lib.settings.update({"remote_mode": "", "remote_alerts": [], "remote_devices": [{"id": "a", "name": "iPhone", "hash": "h", "seen": time.time()}]})
+    server._tell_upgraders(lib)
+    server._tell_upgraders(lib)
+    assert len(lib.settings.get("remote_alerts")) == 1 and lib.settings.get("remote_mode") == "tailscale"

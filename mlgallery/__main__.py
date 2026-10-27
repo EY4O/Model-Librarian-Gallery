@@ -276,18 +276,29 @@ def main(argv=None) -> int:
                 n = 0
             items.append({"label": f"New downloads ({n:,})" if n else "New downloads", "do": lambda: open_window("downloads")})
         items += [None,
-                  {"label": "Phone and tablet", "checked": bool(lib.settings.get("remote")), "do": lambda: switch_remote(not lib.settings.get("remote"))},
+                  {"label": "Phone and tablet" + (" (not listening)" if lib.settings.get("remote") and not remote_running() else ""),
+                   "checked": bool(lib.settings.get("remote")), "do": lambda: switch_remote(not lib.settings.get("remote"))},
                   {"label": "Pause watching folders", "checked": lib.watcher.paused, "do": lambda: lib.pause_watching(not lib.watcher.paused)},
                   None, {"label": "Quit", "do": quit_app}]
         return items
 
+    def remote_running() -> bool:
+        from .server import REMOTE
+        try:
+            return bool(info["runner"].app[REMOTE]["sites"])
+        except Exception:
+            return False
+
     def switch_remote(on: bool):
         from .server import remote_switch
         try:
-            why = asyncio.run_coroutine_threadsafe(remote_switch(info["runner"].app, on), loop).result(15)
+            why = asyncio.run_coroutine_threadsafe(remote_switch(info["runner"].app, on), loop).result(120)
         except Exception as ex:
-            why = str(ex)
-        if why and os.name == "nt":
+            why = str(ex) or "It took too long to start. Look in Settings, Phone and tablet."
+        from .remote import NEED_WIFI_OK
+        if why == NEED_WIFI_OK:  # (no Tailscale here: Settings asks before the unencrypted Wi-Fi is used)
+            open_window("settings")
+        elif why and os.name == "nt":
             from .winshell import notify
             notify("Phone and tablet didn't start", why)
 

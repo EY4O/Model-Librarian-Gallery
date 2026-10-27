@@ -13,6 +13,7 @@ sys.path.insert(0, HERE)
 from sample_media import make_image, make_library  # noqa: E402
 
 HAVE_FFMPEG = bool(shutil.which("ffmpeg"))
+os.environ["MLG_NO_TAILSCALE"] = "1"  # never this PC's own Tailscale (nor its tailnet): the tests stand in for it
 
 
 @pytest.fixture(scope="session")

@@ -1177,3 +1177,32 @@ h1[tabindex="-1"]:focus, h2[tabindex="-1"]:focus { outline: none; }
 .chips { flex: 0 1 auto; max-width: calc(100% - 24px); }  /* (as wide as its chips, the icon kept beside it) */
 .chips:empty { display: none; }  /* (no chips: the box is the words alone, on the icon's line) */
 .main.paged .grid-area { display: none; }  /* (a screen of its own: the grid's area takes no room) */
+/* Phone and tablet: the way (Tailscale or Home Wi-Fi), a question asked once, what you're told */
+.set-ways { display: flex; flex-direction: column; gap: 8px; }
+.set-way { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; }
+.set-way.on { border-color: var(--accent); background: var(--accent-soft); }
+.set-way input { width: 16px; height: 16px; margin: 1px 0 0; accent-color: var(--accent); }  /* (the size of .check's boxes) */
+.set-way:has(input:disabled) { opacity: .55; cursor: default; }
+.set-way-t { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.set-way-t > span:first-child { display: flex; align-items: center; gap: 8px; color: var(--text); font-weight: 600; }
+.set-badge { padding: 0 7px; border: 1px solid #2c5a56; border-radius: 999px; font-size: var(--fs-label); font-weight: 600; line-height: 18px; color: #9fe8df; }
+.set-badge.warn { border-color: #5a4a2c; color: var(--warn); }
+.set-ask { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 9px; background: var(--panel-2); }
+.set-ask p { margin: 0; line-height: 1.5; max-width: 70ch; }
+.set-alerts { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; margin: 4px 0 10px; padding: 10px 12px; border: 1px solid #6a3b3b; border-radius: 9px; background: #2a1d1c; }
+.set-alerts p { display: flex; gap: 8px; margin: 0; color: var(--text); line-height: 1.5; }
+.set-alerts svg { flex: none; margin-top: 2px; color: #f5a3a3; }
+/* the way cards answer the pointer and show the keyboard's focus; a paired device's line wraps under its name when narrow */
+.set-way { transition: border-color var(--t-fast) var(--ease-out), background-color var(--t-fast) var(--ease-out); }
+.set-way:not(.on):not(:has(input:disabled)):hover { border-color: var(--line-3); }
+.set-way:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.set-way input:focus-visible { outline: none; }
+.set-control > .set-ask + .set-ways { margin-top: 4px; }
+.set-warn { margin: 0; color: var(--warn); font-size: 12px; line-height: 1.5; }
+.st-none.inline { display: inline; }
+.pair-code { font-family: var(--mono); letter-spacing: .08em; color: var(--text); }
+@media (max-width: 1000px) {
+  .set-folders.set-devices li { grid-template-columns: minmax(0, 1fr) auto; row-gap: 2px; }
+  .set-devices li > .st-none { grid-column: 1 / -1; grid-row: 2; }
+  .set-devices li > .row { grid-column: 2; grid-row: 1; }
+}

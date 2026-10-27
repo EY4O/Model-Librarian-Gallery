@@ -25,9 +25,13 @@ DEFAULTS = {
     "inbox_downloads": True,    # New downloads: offer the pictures in Windows' Downloads folder for filing (a library for illustrations)
     "inbox_folders": [],        # ... and these folders' too (a Discord or Telegram save folder, say)
     "inbox_notify": False,      # a Windows notification when new pictures arrive there
-    "remote": False,            # Phone and tablet: paired devices on the home network or Tailscale can open the library
+    "remote": False,            # Phone and tablet: paired devices over Tailscale or on the home Wi-Fi can open the library
+    "remote_mode": "",          # ... "tailscale" or "wifi" ("" until it's first turned on: Tailscale when it runs here)
+    "remote_https": "",         # ... over Tailscale, HTTPS with a certificate for this PC's tailnet name: "yes", "no" ("" not asked yet)
+    "remote_wifi_ok": False,    # ... Home Wi-Fi agreed to (it's unencrypted: asked the first time)
+    "remote_alerts": [],        # ... what you're told in Settings: {at, text} (a device unpaired because its key turned up elsewhere)
     "remote_port": 8766,        # ... on this port (it stays the same, so a paired device's address does)
-    "remote_devices": [],       # ... these: {id, name, hash of its key, added, seen} (remote.py)
+    "remote_devices": [],       # ... these: {id, name, hash of its key, the last few hashes, rotated, via, added, seen} (remote.py)
     "tray": False,              # closing the window leaves the Gallery running in the tray (tray.py)
     "tray_login": False,        # ... and it starts there when you sign in to Windows (needs tray)
 }

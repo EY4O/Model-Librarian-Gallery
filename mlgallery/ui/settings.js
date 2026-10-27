@@ -179,8 +179,61 @@ function phones(r, again) {
     } catch (e) { toast(e.message, true); }
     again();
   };
-  const on = h("input", { type: "checkbox", id: "set-remote", checked: r.on,
-    onchange: (e) => set("/remote", { on: e.target.checked }, e.target.checked ? "Phones and tablets you pair can open the library now." : "Phones and tablets can't open the library any more.") });
+  // Home Wi-Fi: unencrypted, so agreed to once, knowing that
+  const wifi = async () => {
+    if (!await ask("Use Home Wi-Fi?", "Home Wi-Fi is unencrypted: anyone on this network who can watch its traffic could see your pictures. Use it only on a network you trust. Over Tailscale it's encrypted, and only your own devices get in.",
+      { ok: "Use Home Wi-Fi" })) return again();
+    set("/remote", { mode: "wifi", wifi_ok: true }, "Phones and tablets on your home network can pair now.");
+  };
+  const on = h("input", { type: "checkbox", id: "set-remote", checked: r.on, onchange: async (e) => {
+    try {
+      const v = await api("/remote", { method: "POST", body: { on: e.target.checked } });
+      if (v.waiting) return wifi();  // (no Tailscale here: Home Wi-Fi, once it's agreed to)
+      toast(e.target.checked ? (v.mode === "tailscale" ? "Your devices on Tailscale can pair now." : "Phones and tablets you pair can open the library now.") : "Phones and tablets can't open the library any more.");
+    } catch (ex) { toast(ex.message, true); }
+    again();
+  } });
+  // the way: over Tailscale (only your account's devices, on Tailscale's addresses) or on the home Wi-Fi; one at a time
+  const ts = r.tailscale || {};
+  const way = (mode, label, note, disabled = false) => {
+    const chosen = r.mode === mode && (mode !== "wifi" || r.wifi_ok);  // (Home Wi-Fi isn't chosen until it's agreed to)
+    return h("label.set-way" + (chosen ? ".on" : ""), {},
+      h("input", { type: "radio", name: "set-way", value: mode, checked: chosen, disabled, onchange: () => (mode === "wifi" && !r.wifi_ok ? wifi() : set("/remote", { mode })) }),
+      h("span.set-way-t", {}, h("span", {}, label, mode === "wifi" ? h("span.set-badge.warn", {}, "Unencrypted") : h("span.set-badge", {}, "Encrypted")), h("span.note", {}, note)));
+  };
+  const tsNote = ts.tagged ? "This PC is a tagged device on the tailnet: sign it in to Tailscale as yourself to use this."
+    : ts.found ? `From anywhere, on devices signed in as ${ts.login || "this PC's account"}. This PC is ${ts.name || "on your tailnet"}.`
+    : ts.installed ? "Tailscale isn't running on this PC. Start it to use this." : "Tailscale isn't installed on this PC.";
+  const ways = h("div.set-ways", { role: "radiogroup", "aria-label": "How phones and tablets reach it" },
+    way("tailscale", "Over Tailscale", tsNote, !ts.found && r.mode !== "tailscale"),
+    way("wifi", "Home Wi-Fi", "Phones and tablets on the same network as this PC. Only on a network you trust."));
+  const waiting = r.waiting ? h("div.set-ask", {}, h("p", {}, ts.found ? "On, but not listening yet: Tailscale is running now, or Home Wi-Fi needs your OK first."
+      : "On, but not listening yet: Tailscale isn't running on this PC, and Home Wi-Fi needs your OK first."),
+    h("div.row", {}, h("button.btn.small.primary", { type: "button", onclick: wifi }, "Use Home Wi-Fi…"),
+      ts.found ? h("button.btn.small", { type: "button", onclick: () => set("/remote", { mode: "tailscale" }) }, "Use Tailscale") : null)) : null;
+  // HTTPS over Tailscale: a real certificate for this PC's tailnet name; its name is then in public logs, so asked once
+  // HTTPS on or off: said as it turned out (a certificate that couldn't be had leaves it HTTP, at the same address)
+  const https = async (yes) => {
+    try {
+      const v = await api("/remote", { method: "POST", body: { https: yes } });
+      toast(!yes ? "HTTPS is off. Paired devices need pairing again at the new address." : v.https_on ? "HTTPS is on. Paired devices need pairing again at the new address."
+        : v.https_error || "HTTPS will be used once Phone and tablet is listening.", yes && !v.https_on && !!v.https_error);
+    } catch (e) { toast(e.message, true); }
+    again();
+  };
+  const httpsRow = r.mode !== "tailscale" || !ts.found ? null : !ts.https_possible
+    ? field("HTTPS", h("span.st-none", {}, "Off: the tailnet's HTTPS certificates aren't turned on."), "To use it: in Tailscale's admin console, DNS, turn on HTTPS Certificates (with MagicDNS). Tailscale's own encryption covers the connection either way.")
+    : r.https === "" ? field("HTTPS", h("div.set-ask", {},
+        h("p", {}, `Use HTTPS for ${ts.name}? Tailscale already encrypts the connection; HTTPS also stops the browser calling the page "Not secure". Its certificate is listed in public logs, so this PC's name (${(ts.name || "").split(".")[0]}) and your tailnet's name could be seen by anyone who looks.`),
+        h("div.row", {}, h("button.btn.small.primary", { type: "button", onclick: (e) => { e.currentTarget.disabled = true; https(true); } }, "Use HTTPS"),
+          h("button.btn.small", { type: "button", onclick: () => set("/remote", { https: false }) }, "Not now"))))
+    : field("HTTPS", [h("label.check", { for: "set-https" }, h("input", { type: "checkbox", id: "set-https", checked: r.https === "yes",
+        onchange: (e) => { e.target.disabled = true; https(e.target.checked); } }), ` Use a certificate for ${ts.name}`),
+      r.https_error ? h("p.set-warn", {}, r.https_error) : null],
+      "It renews by itself. Turning it on or off changes the address, so paired devices pair again.");
+  // what you're told: a device unpaired because an old copy of its key was used
+  const alerts = (r.alerts || []).length ? h("div.set-alerts", {}, r.alerts.map((a) => h("p", {}, icon("shield"), h("span", {}, a.text, " ", h("span.st-none.inline", {}, fmtDate(a.at))))),
+    h("button.btn.small", { type: "button", onclick: () => set("/remote", { dismiss: true }) }, "Dismiss")) : null;
   // saved as you leave it, like the other fields: a tick, or what's wrong under it (the value left to put right)
   const port = h("input", { type: "number", id: "set-port", min: 1024, max: 65535, value: r.port, "aria-label": "Port", onchange: async () => {
     const was = r.port, v = Number(port.value);
@@ -193,14 +246,16 @@ function phones(r, again) {
     } catch (e) { saved(port, e.message); }
   } });
   port.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") port.dispatchEvent(new Event("change")); });
-  const where = r.addresses.length ? h("ul.set-addrs", {}, r.addresses.map((a) => h("li", {}, h("code", {}, a.url), h("span.st-none", {}, KIND_NET[a.kind]))))
-    : h("span.st-none", {}, "This PC has no home network or Tailscale address right now.");
+  const where = !r.running ? h("span.st-none", {}, r.waiting ? "Once you choose how they reach it." : "Not listening right now.")
+    : r.addresses.length ? h("ul.set-addrs", {}, r.addresses.map((a) => h("li", {}, h("code", {}, a.url), h("span.st-none", {}, KIND_NET[a.kind]))))
+    : h("span.st-none", {}, r.mode === "tailscale" ? "Tailscale isn't running on this PC right now." : "This PC isn't on a home network right now.");
   const devices = r.devices.length ? h("ol.set-folders.set-devices", {}, r.devices.map((d) => h("li", {},
     h("span.sf-name", {}, d.name),
-    h("span.st-none", {}, `Paired ${fmtDate(d.added)}${d.seen ? ` · last here ${fmtDate(d.seen)}` : ""}`),
+    h("span.st-none", {}, `Paired ${d.via === "tailscale" ? "over Tailscale " : d.via === "wifi" ? "on Home Wi-Fi " : ""}${fmtDate(d.added)}${d.seen ? ` · last here ${fmtDate(d.seen)}` : ""}`
+      + ((d.via || "wifi") !== r.mode ? ` · can't connect ${r.mode === "tailscale" ? "over Tailscale until it's paired that way" : "on Home Wi-Fi until it's paired that way"}` : "")),
     h("div.row", {},
       h("button.btn.small", { type: "button", onclick: async () => {
-        const name = await askText(`Rename ${d.name}`, "Name", d.name, { ok: "Rename" });
+        const name = await askText(`Rename “${d.name}”`, "Name", d.name, { ok: "Rename" });
         if (name && name !== d.name) set("/remote/rename", { id: d.id, name });
       } }, "Rename"),
       h("button.btn.small", { type: "button", onclick: async () => {
@@ -209,14 +264,17 @@ function phones(r, again) {
   return h("section.st-card.set", { "aria-label": "Phone and tablet" },
     h("div.st-card-head", {}, h("h2", {}, "Phone and tablet"),
       r.on && r.running ? h("button.btn.small", { type: "button", onclick: () => pairDialog(new Set(r.devices.map((d) => d.id)), again) }, "Pair a device…") : null),
-    h("p.note.set-lede", {}, "Look through the library on a phone or tablet: on your home Wi-Fi, or anywhere over Tailscale. It can rate, favourite, tag, put in albums, Swipe and delete to the Trash. Only devices you pair here are let in, and only from private addresses (home networks and Tailscale). Settings, folders, moving and renaming files, Eagle and filing downloads stay on this PC."),
+    h("p.note.set-lede", {}, "Look through the library on a phone or tablet: anywhere over Tailscale, or on your home Wi-Fi. It can rate, favourite, tag, put in albums, Swipe and delete to the Trash. Only devices you pair here are let in; a device not seen for 30 days is forgotten. Settings, folders, moving and renaming files, Eagle and filing downloads stay on this PC."),
+    alerts,
     field("Phone and tablet", h("label.check", { for: "set-remote" }, on, " Let paired phones and tablets open the library"),
-      r.on && !r.running ? "On, but not listening: another program has the port. Pick another one below."
+      r.on && !r.running && !r.waiting ? (r.why || "On, but not listening yet. Check how they reach it and the port below.")
         : "The first time, Windows asks whether the Gallery may use the network: allow it on private networks."),
+    field("How they reach it", [waiting, ways]),
+    httpsRow,
     field("Port", h("div.inline.set-port", {}, port),
       "It stays the same, so paired devices keep their address. Change it only if another program uses it."),
-    r.on ? field("Addresses", where, "Home Wi-Fi carries it unencrypted, like anything else on your network; over Tailscale it's encrypted.") : null,
-    field("Paired devices", devices));
+    r.on ? field("Address", where, !r.running ? null : r.mode === "tailscale" ? "Only on Tailscale's address: the home Wi-Fi can't reach it." : "Only on the home network's address.") : null,
+    field("Paired devices", devices, "A device's key changes as it's used. If an old copy of one turns up, the device is unpaired and you're told here."));
 }
 
 const KIND_NET = { home: "home network", tailscale: "Tailscale", other: "another network (a virtual one, often)" };
@@ -225,23 +283,34 @@ const KIND_NET = { home: "home network", tailscale: "Tailscale", other: "another
 async function pairDialog(had, again) {
   let r;
   try { r = await api("/remote/code", { method: "POST" }); } catch (e) { toast(e.message, true); return; }
-  if (!r.pair.length) { toast("This PC has no home network or Tailscale address to pair over right now.", true); return; }
+  if (!r.pair.length) { toast(r.mode === "tailscale" ? "Tailscale isn't running on this PC right now." : "This PC isn't on a home network right now.", true); return; }
   const code = `${r.code.slice(0, 4)}-${r.code.slice(4)}`;
   const qr = h("div.pair-qr"), url = h("code.pair-url"), typed = h("p.note");
   const show = (i) => {
     qr.innerHTML = qrSvg(r.pair[i], 5);  // (our own SVG of the address: no text from anywhere else)
     url.textContent = r.pair[i];
-    typed.textContent = `Or open ${r.addresses[i].url} on it and type the code ${code}.`;
+    typed.replaceChildren("Or open ", h("code", {}, r.addresses[i].url), " on it and type ", h("b.pair-code", {}, code), ".");
   };
   const pick = r.addresses.length > 1 ? h("select", { "aria-label": "Network", onchange: (e) => show(Number(e.target.value)) },
     r.addresses.map((a, i) => h("option", { value: i }, `${KIND_NET[a.kind]}: ${a.ip}`))) : null;
   show(0);
+  const intro = h("p", {}, `Scan this with the phone or tablet's camera and open the link. The device is remembered from then on. The code works for ${r.minutes} minutes, for one device.`
+    + (r.mode === "tailscale" ? ` It needs Tailscale on, signed in as ${r.tailscale?.login || "you"}.` : ""));
   const { dlg } = dialog("Pair a phone or tablet", h("div.pair", {},
-    h("p", {}, `Scan this with the phone or tablet's camera and open the link: it's remembered from then on. The code works for ${r.minutes} minutes, for one device.`),
-    pick ? h("label.field-row", {}, h("span", {}, "Over"), pick) : null, qr, url, typed), { submitLabel: "Done", submit: () => true });
+    intro, pick ? h("label.field-row", {}, h("span", {}, "Over"), pick) : null, qr, url, typed), { submitLabel: "Done", submit: () => true });
   const watch = setInterval(async () => {  // paired: say so, and show it in the list
     if (!dlg.isConnected) return clearInterval(watch);
     const now = await api("/remote").catch(() => null);
+    if (now?.code_stopped) {  // (guessed at from all sides: cancelled, and said so)
+      clearInterval(watch);
+      qr.hidden = url.hidden = true;
+      pick?.closest("label")?.setAttribute("hidden", "");
+      intro.textContent = now.code_stopped;
+      intro.className = "form-err";
+      intro.setAttribute("role", "alert");
+      typed.textContent = "Choose Done, then Pair a device… for a new code.";
+      return;
+    }
     const added = now?.devices.find((d) => !had.has(d.id));
     if (added) {
       clearInterval(watch);
