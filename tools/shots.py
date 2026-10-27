@@ -78,6 +78,24 @@ async def capture(url, out, scenes):
             print("wrote", name)
 
 
+# a phone's share sheet, stood in for: its Save shows, as it does over HTTPS
+PHONE_SHARE = "Object.defineProperty(navigator, 'canShare', {value: () => true}); Object.defineProperty(navigator, 'share', {value: async () => {}});"
+
+
+async def capture_phone(url, out):
+    """The phone layout (/m on this PC shows it) at an iPhone's size: the grid, and a picture in the viewer."""
+    async with Edge(url.replace("/?t=", "/m?t="), 390, 844, init=PHONE_SHARE) as e:
+        await e.wait("[...document.querySelectorAll('.p-tile img')].filter(i => i.complete && i.naturalWidth).length >= 9", 60)
+        await asyncio.sleep(0.6)
+        await e.shot(os.path.join(out, "phone-grid.png"))
+        print("wrote phone-grid")
+        await e.js("document.querySelectorAll('.p-tile')[2].click(); true")
+        await e.wait("document.querySelector('.pv-stage img')?.complete")
+        await asyncio.sleep(0.6)
+        await e.shot(os.path.join(out, "phone-viewer.png"))
+        print("wrote phone-viewer")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
@@ -154,8 +172,10 @@ def main():
                        lambda e: e.wait("document.querySelector('.rules') && document.querySelector('.histo')"),
                        lambda e: asyncio.sleep(0.8)]),
         ("review", [lambda e: js(e, "document.getElementById('view-review').click(); true"),
-                    lambda e: e.wait("document.querySelector('.r-card img')"),
+                    lambda e: e.wait("document.querySelector('.r-card img, .rf-stage img')?.complete"),  # (one at a time, since 1.12)
                     lambda e: asyncio.sleep(0.8)]),
+        ("review-next", [lambda e: e.key("ArrowRight"), lambda e: e.wait("document.querySelector('.rf-n')?.textContent.startsWith('2 of') && document.querySelector('.rf-stage img')?.complete"),
+                         lambda e: asyncio.sleep(0.6)]),  # (the next one: the sample library's first is its test-pattern video)
         ("waterfall", [lambda e: js(e, "document.getElementById('view-all').click(); true"),
                        lambda e: e.wait("document.querySelectorAll('.tile img.on').length > 8"),
                        lambda e: js(e, "document.getElementById('view-btn').click(); true"),
@@ -172,10 +192,13 @@ def main():
         ("grid-captions", [lambda e: js(e, "document.querySelector('.menu')?._close(); document.getElementById('view-btn').click(); true"),
                            lambda e: js(e, "document.querySelector('.view-panel .seg button[data-v=grid]').click(); document.querySelector('.menu')._close(); true"),
                            lambda e: e.wait("document.querySelectorAll('.tile img.on').length > 8"), lambda e: asyncio.sleep(0.4)]),
+        ("swipe", [lambda e: js(e, "document.getElementById('view-swipe').click(); true"),
+                   lambda e: e.wait("document.querySelector('.sw-card:not(.under) img')?.complete"), lambda e: asyncio.sleep(0.8)]),
     ]
     os.makedirs(a.out, exist_ok=True)
     try:
         asyncio.run(capture(url, a.out, scenes))
+        asyncio.run(capture_phone(url, a.out))
     finally:
         if proc:
             proc.terminate()
