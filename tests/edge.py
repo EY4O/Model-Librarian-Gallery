@@ -32,8 +32,8 @@ def free_port() -> int:
 
 
 class Edge:
-    def __init__(self, url: str, width: int = 1440, height: int = 900):
-        self.url, self.width, self.height = url, width, height
+    def __init__(self, url: str, width: int = 1440, height: int = 900, init: str = ""):
+        self.url, self.width, self.height, self.init = url, width, height, init
         self.n = 0
 
     async def __aenter__(self):
@@ -66,6 +66,8 @@ class Edge:
         await self.call("Page.addScriptToEvaluateOnNewDocument", source=(
             "window.__errors = []; addEventListener('error', (e) => __errors.push(String(e.message)));"
             " addEventListener('unhandledrejection', (e) => __errors.push(String(e.reason)));"))
+        if self.init:  # (a test's own, before the page's scripts: a stand-in for what headless Edge doesn't have, say)
+            await self.call("Page.addScriptToEvaluateOnNewDocument", source=self.init)
         await self.call("Page.navigate", url=self.url)
         return self
 

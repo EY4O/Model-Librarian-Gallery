@@ -90,6 +90,20 @@ def image_thumb(path: str, size: int) -> bytes:
     return out.getvalue()
 
 
+def jpeg_copy(path: str) -> bytes:
+    """A HEIC or TIFF as a full-size JPEG, for a phone's photos (which may not take the file itself): turned upright,
+    its colour profile and its EXIF (when it was taken, where) kept."""
+    from PIL import Image, ImageOps
+    with Image.open(path) as im:
+        im.seek(0)
+        im = ImageOps.exif_transpose(im)
+        exif, icc = im.getexif(), im.info.get("icc_profile")
+        im = _flatten(im)
+    out = io.BytesIO()
+    im.save(out, "JPEG", quality=92, exif=exif.tobytes() if exif else b"", icc_profile=icc)
+    return out.getvalue()
+
+
 def find_ffmpeg(configured: str = "") -> str | None:
     """The ffmpeg set in Settings, else the portable package's own (MLG_FFMPEG), else the one on PATH."""
     for p in (configured, os.environ.get("MLG_FFMPEG", "")):

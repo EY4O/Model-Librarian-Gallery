@@ -111,6 +111,8 @@ def test_a_device_is_let_in_only_once_paired_and_only_so_far(lib, media, monkeyp
             assert (await c.get("/api/status", headers=api)).status == 200
             assert (await c.get("/api/files", headers=api)).status == 200
             assert (await c.get(f"/api/thumb/{file_id}", headers=dev)).status != 403  # pictures: <img> can't send the header
+            assert (await c.get(f"/api/file/{file_id}?t=device&save=1", headers=dev)).status == 200  # (saved to the phone's photos)
+            assert (await c.get(f"/api/file/{file_id}?save=1")).status == 403  # (never without the cookie)
             assert (await c.post(f"/api/file/{file_id}/mark", json={"rating": 4}, headers=api)).status == 200
             assert lib.info(file_id)["rating"] == 4
             for method, path in (("GET", "/api/settings"), ("POST", "/api/settings"), ("POST", "/api/folders"), ("POST", "/api/remote/code"),

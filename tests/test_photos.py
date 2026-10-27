@@ -146,6 +146,35 @@ def test_the_viewer_gets_heic_and_tiff_as_webp(lib, media):
     asyncio.run(go())
 
 
+def test_saved_to_a_phone_heic_and_tiff_are_a_full_size_jpeg(lib, media):
+    import io
+    from aiohttp.test_utils import TestClient, TestServer
+    from mlgallery.server import make_app
+    photo(media / "IMG_0003.HEIC", "HEIF", taken=T2021, size=(4000, 3000))  # (bigger than the viewer's copy)
+    photo(media / "scan.tif", "TIFF", size=(300, 200))
+    photo(media / "plain.png", "PNG", size=(200, 100))
+    scan.scan_folder(lib.db, folder(lib, media))
+    got = items(lib)
+
+    async def go():
+        client = TestClient(TestServer(make_app(lib, "t"), host="127.0.0.1"))
+        await client.start_server()
+        try:
+            for name, size in (("IMG_0003.HEIC", (4000, 3000)), ("scan.tif", (300, 200))):
+                r = await client.get(f"/api/file/{got[name]['id']}?t=t&save=1")
+                assert r.status == 200 and r.headers["Content-Type"] == "image/jpeg", name
+                with Image.open(io.BytesIO(await r.read())) as im:
+                    assert im.format == "JPEG" and im.size == size, name
+            r = await client.get(f"/api/file/{got['IMG_0003.HEIC']['id']}?t=t&save=1")
+            with Image.open(io.BytesIO(await r.read())) as im:  # when it was taken goes with it (the phone's photos sort by it)
+                assert im.getexif().get_ifd(0x8769).get(0x9003) == time.strftime("%Y:%m:%d %H:%M:%S", time.localtime(T2021))
+            png = await client.get(f"/api/file/{got['plain.png']['id']}?t=t&save=1")  # anything else: the original, as it is
+            assert png.headers["Content-Type"] == "image/png" and await png.read() == (media / "plain.png").read_bytes()
+        finally:
+            await client.close()
+    asyncio.run(go())
+
+
 def test_a_16_bit_scan_isnt_white(tmp_path):
     from mlgallery import thumbs
     p = tmp_path / "scan16.tif"

@@ -1908,7 +1908,13 @@ async def original(request):
     path = await asyncio.to_thread(_lib(request).file_path, fid)
     if not path or not os.path.isfile(path):
         return _err("That file isn't there any more.", 404)
-    from .thumbs import NOT_IN_BROWSER
+    from .thumbs import NOT_IN_BROWSER, jpeg_copy
+    if os.path.splitext(path)[1].lower() in NOT_IN_BROWSER and request.query.get("save") == "1":  # saved to a phone's photos: a JPEG of it
+        try:
+            data = await asyncio.to_thread(jpeg_copy, path)
+        except Exception:
+            return _err("That picture couldn't be made into a JPEG.", 500)
+        return web.Response(body=data, content_type="image/jpeg", headers={"Cache-Control": "no-cache"})
     if os.path.splitext(path)[1].lower() in NOT_IN_BROWSER and request.query.get("raw") != "1":
         shown = await asyncio.to_thread(_lib(request).thumbs.display, fid)  # HEIC, TIFF: a large WebP of it
         if shown:

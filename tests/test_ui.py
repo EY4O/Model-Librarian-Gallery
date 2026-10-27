@@ -773,6 +773,62 @@ def test_the_phone_layout(server):
     asyncio.run(go())
 
 
+# the phone's share sheet, stood in for: what it was handed, and (the first time, when asked) a tap that came too long before
+SHARE = """window.__shared = []; window.__late = false;
+Object.defineProperty(navigator, 'canShare', {value: (d) => d.files.every((f) => !/\\.mkv$/i.test(f.name))});
+Object.defineProperty(navigator, 'share', {value: async (d) => {
+  if (__late) { __late = false; throw new DOMException('Too late', 'NotAllowedError'); }
+  __shared.push(d.files.map((f) => [f.name, f.type, f.size]));
+}});"""
+
+
+def test_saving_to_the_phone(server):
+    url, api = server
+    phone = url.replace("/?t=", "/m?t=")
+    first = api("/files?sort=newest&limit=2")["items"]
+
+    async def go():
+        async with page(phone, width=390, height=844, init=SHARE) as e:
+            await e.wait("document.querySelectorAll('.p-tile').length > 4")
+            # from the viewer: the file itself, by its own name and kind
+            await e.js("document.querySelector('.p-tile').click(); true")
+            await e.wait("document.querySelector('.pv-top [aria-label=\"Save to this phone\"]')")
+            await e.js("document.querySelector('.pv-top [aria-label=\"Save to this phone\"]').click(); true")
+            await e.wait("__shared.length === 1")
+            [[name, kind, size]] = (await e.js("__shared"))[0]
+            assert name == first[0]["name"] and kind.split("/")[0] in ("image", "video") and size == first[0]["size"]
+            # the tap too long ago by the time it's fetched: one more, in a dialog
+            await e.js("__late = true; document.querySelector('.pv-top [aria-label=\"Save to this phone\"]').click(); true")
+            await e.wait("document.querySelector('dialog.dialog')?.innerText.includes('Ready to save')")
+            await e.js("document.querySelector('dialog.dialog .btn.primary').click(); true")
+            await e.wait("__shared.length === 2 && !document.querySelector('dialog.dialog')")
+            await e.js("document.querySelector('.pv-top [aria-label=Close]').click(); true")
+            await e.wait("!document.querySelector('.p-viewer')")
+            # a selection: several at once
+            for k in (0, 1):
+                await e.js(f"const t = document.querySelectorAll('.p-tile')[{k}]; t.dispatchEvent(new PointerEvent('pointerdown', {{bubbles: true, clientX: 5, clientY: 5}})); true")
+                await asyncio.sleep(0.6)
+                await e.js(f"const t = document.querySelectorAll('.p-tile')[{k}]; t.dispatchEvent(new PointerEvent('pointerup', {{bubbles: true}})); t.click(); true")
+            await e.wait("document.querySelector('.p-title').textContent === '2 selected'")
+            assert await e.js("document.documentElement.scrollWidth <= innerWidth")  # (the bar, one more in it, still fits)
+            await e.js("[...document.querySelectorAll('.p-bar .p-tab')].find(b => b.innerText === 'Save').click(); true")
+            await e.wait("__shared.length === 3")
+            assert [f[0] for f in (await e.js("__shared"))[2]] == [f["name"] for f in first]
+            # all of them: more than the phone is handed at once
+            await e.js("[...document.querySelectorAll('.p-top .p-text')].find(b => b.innerText === 'All').click(); true")
+            await e.js("[...document.querySelectorAll('.p-bar .p-tab')].find(b => b.innerText === 'Save').click(); true")
+            await e.wait("document.querySelector('.toast')?.innerText.includes('Up to 20 at a time')")
+            assert await e.js("__shared.length") == 3
+            assert not await e.js("window.__errors.length"), await e.js("window.__errors")
+        # where a page can't hand files to the phone (plain HTTP on Home Wi-Fi): no Save at all
+        async with page(phone, width=390, height=844, init="Object.defineProperty(navigator, 'canShare', {value: undefined});") as e:
+            await e.wait("document.querySelectorAll('.p-tile').length > 4")
+            await e.js("document.querySelector('.p-tile').click(); true")
+            await e.wait("document.querySelector('.pv-pos')")
+            assert not await e.js("document.querySelector('.pv-top [aria-label=\"Save to this phone\"]')")
+    asyncio.run(go())
+
+
 def test_the_sidebar_tree_by_keyboard_and_overlays_holding_the_focus(server):
     url, api = server
 

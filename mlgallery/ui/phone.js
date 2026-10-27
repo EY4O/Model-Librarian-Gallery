@@ -242,6 +242,7 @@ function renderBar() {
         act("tag", "Tag", () => org.tagDialog(sel, n)),
         act("album", "Album", () => org.albumDialog(sel, n)),
         act("person", who(false), () => org.characterDialog(sel, n, { characters: S.characters, label: who(false), onDone: loadLists })),
+        canSave ? act("save", "Save", () => saveToPhone(S.items.filter((i) => S.selAll || S.sel.has(i.id)), n)) : null,
         act("trash", "Delete", async () => { if (await org.trashFiles(sel)) clearSel(); }, ".danger")]));
     return;
   }
@@ -379,7 +380,8 @@ function viewer(start) {
     place();
     const trash = S.view.kind === "trash";
     head.replaceChildren(iconBtn("back", "Close", () => close()), h("span.pv-name", {}, it.name),
-      h("span.pv-pos", {}, `${(i + 1).toLocaleString()} of ${S.total.toLocaleString()}`), iconBtn("info", "Details", () => details(it)));
+      h("span.pv-pos", {}, `${(i + 1).toLocaleString()} of ${S.total.toLocaleString()}`),
+      canSave ? iconBtn("save", "Save to this phone", () => saveToPhone([it])) : null, iconBtn("info", "Details", () => details(it)));
     foot.replaceChildren(...(trash ? [h("button.p-tab", { type: "button", onclick: () => putBack(it) }, icon("restore"), h("span", {}, "Put back"))] : [
       h("div.pv-stars", { role: "group", "aria-label": "Rating" }, [1, 2, 3, 4, 5].map((n) => h("button.pv-star" + (it.rating >= n ? ".on" : ""),
         { type: "button", "aria-label": `Rate ${n}`, onclick: () => mark(it, { rating: it.rating === n ? 0 : n }) }, icon("star")))),
@@ -540,6 +542,40 @@ async function details(it) {
   sheet.append(h("div.pv-grab"), h("p.pv-meta", {}, "Loading…"));
   org.onChange(() => { refresh(); loadLists(); if (sheet.isConnected) again(); });
   await again();
+}
+
+// ---------------------------------------------------------------- saved to this phone's own photos
+// The phone's share sheet takes the files: an iPhone's Save Image or Save Video, Android's gallery. Only where the browser
+// lets a page hand it files, which is over HTTPS (Tailscale with its certificate): on plain Home Wi-Fi there's no Save.
+const SAVE_MAX = 20, SAVE_BYTES = 1e9;  // (each one is fetched into the phone's memory first)
+const canSave = window.isSecureContext && !!navigator.canShare?.({ files: [new File([""], "a.jpg", { type: "image/jpeg" })] });
+const TO_JPEG = /\.(heic|heif|tiff?)$/i;  // (thumbs.NOT_IN_BROWSER: phones may not take them, so the PC sends a JPEG of each)
+
+async function saveToPhone(items, n = items.length) {
+  if (n > SAVE_MAX) return toast(`Up to ${SAVE_MAX} at a time: select fewer.`, true);
+  if (items.reduce((t, it) => t + (it.size || 0), 0) > SAVE_BYTES) return toast("That's over 1 GB, more than the phone takes in one go: select fewer.", true);
+  toast(n > 1 ? `Getting ${n} files ready…` : "Getting it ready…");
+  let files;
+  try {
+    files = await Promise.all(items.map(async (it) => {
+      const jpeg = TO_JPEG.test(it.name);
+      const res = await fetch(media("file", it.id) + (jpeg ? "&save=1" : ""));
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `${it.name} couldn't be fetched.`);
+      const blob = await res.blob();
+      return new File([blob], jpeg ? it.name.replace(/\.[^.]+$/, ".jpg") : it.name, { type: blob.type });
+    }));
+  } catch (e) { return toast(e instanceof TypeError ? "Can't reach the PC." : e.message, true); }
+  const ok = files.filter((f) => navigator.canShare({ files: [f] }));  // (an MKV, say, on a phone that won't take one)
+  if (!ok.length) return toast(`This phone won't take ${n > 1 ? "these files" : "that kind of file"}.`, true);
+  const share = () => navigator.share({ files: ok }).then(() => {
+    if (ok.length < files.length) toast(`${plural(files.length - ok.length, "file")} left out: this phone won't take that kind.`, true);
+  }, (e) => { if (e.name !== "AbortError") throw e; });  // (AbortError: closed without saving)
+  try { await share(); } catch (e) {
+    if (e.name !== "NotAllowedError") return toast(e.message, true);
+    // the tap was too long ago by the time it was here (a big video, say): one more, now it's ready
+    org.dialog("Ready to save", h("p", {}, ok.length > 1 ? `${ok.length} files are ready for this phone.` : `${ok[0].name} is ready for this phone.`),
+      { submitLabel: "Save", submit: () => { share().catch((ex) => toast(ex.message, true)); } });
+  }
 }
 
 // ---------------------------------------------------------------- the Gallery as an app on the home screen
