@@ -226,7 +226,7 @@ async def _guard_device(request: web.Request, handler):
         request[WHO] = who
     elif tailnet.in_tailnet(peer):  # (Home Wi-Fi chosen: Tailscale isn't the way in)
         return web.Response(status=403, text="Not here.")
-    if request.path == "/pair":
+    if request.path == "/pair" or request.path in _PUBLIC:  # (pairing itself; the icons, which a phone asks for without its cookie)
         return await _run(request, handler)
     seen = request.app[DEVICES].visit(request.cookies.get(remote.cookie_name(https=bool(R["https"]))),
                                       rotate=request.method == "GET" and request.path in ("/", "/m"))  # (a new key as the library's opened)
@@ -248,6 +248,11 @@ async def _guard_device(request: web.Request, handler):
     if seen.get("key"):  # its new key (the one it came with is worth nothing in a moment)
         _device_cookie(request, resp, seen["key"])
     return resp
+
+
+# what a device that isn't paired may still have: the app's icons and its manifest (a phone fetches the home-screen icon
+# without its cookie). Nothing of the library.
+_PUBLIC = {"/ui/icon.png", "/ui/icon-192.png", "/ui/icon-512.png", "/ui/icon-maskable-512.png", "/ui/apple-touch-icon.png", "/ui/manifest.json"}
 
 
 def _remote_port(lib) -> int:
@@ -445,7 +450,9 @@ async def _remote_start(app) -> str | None:
             why = f"Port {port} is taken ({ex.strerror or ex}): pick another in Settings."
     if not sites:
         return why
-    names = {h.strip("[]").lower() for h in hosts} | ({st.get("name"), st.get("https")} - {None} if mode == "tailscale" else set())
+    names = {h.strip("[]").lower() for h in hosts}
+    if mode == "tailscale":  # (its full tailnet name, and the short one MagicDNS answers too)
+        names |= {n for x in (st.get("name"), st.get("https")) if x for n in (x, x.split(".")[0])}
     R.update(sites=sites, mode=mode, ts=st if mode == "tailscale" else None, https=bool(tls), hosts={n.lower() for n in names})
     if mode == "wifi" and not os.environ.get("MLG_REMOTE_HOST"):
         R["watch"] = asyncio.get_running_loop().create_task(_follow_lan(app, set(hosts)))

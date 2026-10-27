@@ -355,7 +355,7 @@ def test_the_way_is_tailscale_when_it_runs_here_and_wifi_waits_for_a_yes(lib, mo
             monkeypatch.setattr(tailnet, "status", lambda fresh=False: {"ips": ["100.64.0.7"], "name": "pc.example.ts.net", "login": "me@example.com", "https": None})
             assert await server.remote_start(app) is None
             assert app[server.REMOTE]["mode"] == "tailscale" and lib.settings.get("remote_mode") == ""  # (not saved: asked again next time)
-            assert app[server.REMOTE]["hosts"] == {"127.0.0.1", "pc.example.ts.net"}
+            assert app[server.REMOTE]["hosts"] == {"127.0.0.1", "pc.example.ts.net", "pc"}  # (MagicDNS's short name too)
             await server.remote_stop(app)
             lib.settings.update({"remote_mode": ""})
             monkeypatch.setattr(tailnet, "status", lambda fresh=False: None)  # no Tailscale here: Home Wi-Fi, which waits for a yes
@@ -409,7 +409,10 @@ def test_the_phone_app_installs_and_keeps_only_its_own_files(lib, media, monkeyp
         c = TestClient(TestServer(app, host="127.0.0.1"))
         await c.start_server()
         try:
-            assert (await c.get("/sw.js")).status == 403  # not paired: nothing, not even the app
+            assert (await c.get("/sw.js")).status == 403  # not paired: nothing, not even the app...
+            for public in ("/ui/apple-touch-icon.png", "/ui/icon-192.png", "/ui/manifest.json"):  # ... but its icons (asked for without the cookie)
+                assert (await c.get(public)).status == 200, public
+            assert (await c.get("/ui/phone.js")).status == 403 and (await c.get("/api/status", headers={"X-MLG-Token": "device"})).status == 403
             r = await c.get(f"/pair?c={app[server.DEVICES].new_code()}", allow_redirects=False)
             dev = {"Cookie": f"{remote.cookie_name()}={r.cookies[remote.cookie_name()].value}"}
             c.session.cookie_jar.clear()
