@@ -3,7 +3,8 @@ one leaning like Model Librarian's last book, the front one showing Prompto's
 red orb as a sun over ink hills, on the same white rounded tile with a lavender
 hairline (EY4O/ComfyUI-Model-Librarian, tools/make-icon.py) so the tools match.
 
-    python tools/make_icon.py      # docs/images/icon.png, mlgallery/ui/icon.png and icon.ico
+    python tools/make_icon.py      # docs/images/icon.png, mlgallery/ui/icon.png and icon.ico, and the phone app's icons
+                                   # (192 and 512, a maskable 512 and Apple's 180: the artwork on a full white square)
 
 Needs Pillow and NumPy. Everything is drawn on a 512 grid at 4x and scaled
 down with LANCZOS. The small sizes (taskbar, title bar) use simplified artwork
@@ -112,13 +113,23 @@ def orb(img, cx, cy, radius):
     img.alpha_composite(layer(lambda xx, yy: ramp(np.hypot(xx - fx, yy - fy) / fr, ORB), mask))
 
 
-def icon(small=False):
+def icon(small=False, bare=False):
     img = Image.new("RGBA", (G, G), (0, 0, 0, 0))
-    tile(img)
+    if not bare:
+        tile(img)
     back_card(img)
     mask = front_card(img)
     hills(img, mask, small)
     orb(img, 296, 248, 40 if small else 34)
+    return img
+
+
+def full(scale=0.8):
+    """The artwork on a full white square, shrunk to `scale` round the middle: a maskable icon (Android shapes it, and
+    keeps what's inside the middle 80%) and Apple's touch icon (iOS rounds its corners itself)."""
+    art = icon(bare=True).resize((int(G * scale), int(G * scale)), Image.LANCZOS)
+    img = Image.new("RGBA", (G, G), (255, 255, 255, 255))
+    img.alpha_composite(art, ((G - art.width) // 2, (G - art.height) // 2))
     return img
 
 
@@ -138,6 +149,12 @@ def main():
     frames = [small.resize((s, s), Image.LANCZOS) for s in (16, 24, 32)] + [big.resize((s, s), Image.LANCZOS) for s in (48, 64, 128, 256)]
     frames[-1].save(ico, sizes=[f.size for f in frames], append_images=frames[:-1])
     print("wrote", ico)
+    ui = os.path.join(root, "mlgallery", "ui")
+    save(big, 192, os.path.join(ui, "icon-192.png"))
+    save(big, 512, os.path.join(ui, "icon-512.png"))
+    square = full()
+    save(square, 512, os.path.join(ui, "icon-maskable-512.png"))
+    save(full(0.86).convert("RGB"), 180, os.path.join(ui, "apple-touch-icon.png"))
 
 
 if __name__ == "__main__":

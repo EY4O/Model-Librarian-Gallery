@@ -3,7 +3,7 @@
 // characters. It does what a paired device may: look, rate, favourite, tag, albums, characters, the artist and a note,
 // the Trash (and putting back), and Swipe. Settings, folders, moving and renaming stay on the PC.
 
-import { albumTree, api, askText, dayLabel, dirTree, fmtDate, fmtSize, h, holdFocus, icon, lib, media, plural, store, toast, who } from "./util.js";
+import { TOKEN, albumTree, api, askText, dayLabel, dirTree, fmtDate, fmtSize, h, holdFocus, icon, lib, media, plural, store, toast, who } from "./util.js";
 import { swipeReview } from "./swipe.js";
 import * as org from "./organize.js";
 
@@ -81,7 +81,11 @@ function loadMore() {
     grid.append(...withDays(d.items, before));
     showEmpty();
     renderTop();
-  }).catch((e) => toast(e.message, true)).finally(() => {
+  }).catch((e) => {
+    if (e.status === 403) location.reload();  // (unpaired, or Phone and tablet turned off: the PC's page says which)
+    else if (e instanceof TypeError) offline();  // (no answer at all: the PC's off, or this device isn't on its network)
+    else toast(e.message, true);
+  }).finally(() => {
     if (run !== S.run) return;
     S.loading = null;
     if (!S.end && more.getBoundingClientRect().top < innerHeight + 800) loadMore();  // (the screen isn't full yet)
@@ -110,6 +114,14 @@ async function refresh() {
   } catch (e) { toast(e.message, true); }
 }
 org.onChange(() => { refresh(); loadLists(); });
+
+// the PC doesn't answer: said plainly, with what to check and a way to try again (the app itself was kept on the phone)
+function offline() {
+  grid.replaceChildren();
+  empty.hidden = false;
+  empty.replaceChildren(h("h2", {}, "Can't reach the PC"), h("p", {}, "Check that the PC is on with the Gallery running, and that this device is on the same network, or on Tailscale."),
+    h("button.p-text", { type: "button", onclick: () => { loadLists().then(() => render()); reload(); } }, "Try again"));
+}
 
 function showEmpty() {
   empty.hidden = !!S.items.length;
@@ -316,6 +328,7 @@ function renderBrowse() {
       { depth, key, kids: n.kids.size > 0 }), ...(opened.has(key) ? albumRows(n, depth + 1) : [])];
   });
   browse.replaceChildren(...[
+    !offerApp() ? null : section("App", [h("div.p-line", {}, h("button.p-row", { type: "button", onclick: install }, icon("save"), h("span.label", {}, "Install app")))]),
     section("Library", [row("grid", "All", null, { kind: "all", title: "All" }), row("clock", "Recently viewed", null, { kind: "recent", title: "Recently viewed" }),
       row("heart", "Favourites", null, { kind: "fav", title: "Favourites" }), row("trash", "Trash", S.trash || null, { kind: "trash", title: "Trash" })]),
     section("Folders", folders),
@@ -529,7 +542,52 @@ async function details(it) {
   await again();
 }
 
+// ---------------------------------------------------------------- the Gallery as an app on the home screen
+// Installable where the browser allows (HTTPS, as over Tailscale with its certificate); on an iPhone or iPad, Share then
+// Add to Home Screen; else the browser's own Add to Home screen. Offered in Browse, and once as a hint above the grid.
+let installEvent = null;
+addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installEvent = e; });
+addEventListener("appinstalled", () => { installEvent = null; store.set("phone-install-hint", true); hint?.remove(); if (S.page === "browse") renderBrowse(); });
+const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const offerApp = () => TOKEN === "device" && !standalone();  // (a paired device's browser: never the PC's own preview, never the app itself)
+const apple = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+async function install() {
+  if (installEvent) {
+    try {
+      await installEvent.prompt();
+      const { outcome } = await installEvent.userChoice.catch(() => ({}));
+      if (outcome === "accepted") installEvent = null;
+      return;
+    } catch {}  // (the browser wouldn't show it just now: the steps instead)
+  }
+  const steps = apple() ? [h("p", {}, "Tap ", h("b", {}, "Share"), " (the square with an arrow), then ", h("b", {}, "Add to Home Screen"), ".")]
+    : [h("p", {}, "In the browser's menu, choose ", h("b", {}, "Add to Home screen"), " or ", h("b", {}, "Install app"), "."),
+      window.isSecureContext ? null : h("p.p-note", {}, "For the full app (its own window, and opening when the PC is away), the PC needs HTTPS: on the PC, Settings, Phone and tablet, over Tailscale with HTTPS.")];
+  org.dialog("Install the Gallery", h("div.p-steps", {}, ...steps,
+    h("p.p-note", {}, "The app keeps its own sign-in: the first time it opens, pair it with a new code from the PC.")), { submitLabel: "Done", submit: () => true });
+}
+let hint = null;
+function installHint() {  // once, above the grid; gone for good when installed or dismissed
+  if (!offerApp() || store.get("phone-install-hint", false)) return;
+  const done = () => { store.set("phone-install-hint", true); hint.remove(); hint = null; };
+  hint = h("div.p-hint", { role: "note" }, icon("save"), h("span", {}, "Add the Gallery to your home screen, to open it like an app."),
+    h("button.p-text", { type: "button", onclick: () => { done(); install(); } }, "How"),
+    h("button.p-icon", { type: "button", "aria-label": "Not now", title: "Not now", onclick: done }, icon("remove")));
+  grid.before(hint);
+}
+if (TOKEN === "device" && "serviceWorker" in navigator && window.isSecureContext) {  // (a paired device's; never the PC's own preview)
+  navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
+}
+
 // ---------------------------------------------------------------- start
 addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && !document.querySelector(".p-viewer")) { loadLists(); refresh(); } });
 loadLists().then(() => render());
-reload();
+{  // a home-screen shortcut: Swipe, Favourites, Recently viewed
+  const go = new URLSearchParams(location.search).get("go");
+  if (go) history.replaceState(null, "", "/");
+  if (go === "fav") show({ kind: "fav", title: "Favourites" });
+  else if (go === "recent") show({ kind: "recent", title: "Recently viewed" });
+  else reload();
+  if (go === "swipe") setTimeout(startSwipe, 0);
+}
+installHint();

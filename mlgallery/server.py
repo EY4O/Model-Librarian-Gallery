@@ -178,6 +178,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_post("/api/drag", drag_out)
     r.add_get("/api/thumb/{id}", thumb)
     r.add_get("/api/file/{id}", original)
+    r.add_get("/sw.js", service_worker)
     return app
 
 
@@ -241,7 +242,7 @@ async def _guard_device(request: web.Request, handler):
         picture = request.method == "GET" and remote.MEDIA.fullmatch(path)
         if not (request.headers.get("X-MLG-Token") or picture) or not remote.allowed(request.method, path):
             return _err("Not from a phone or tablet: do that on the PC.", 403)
-    elif not (path in ("/", "/m") or path.startswith("/ui/")):
+    elif not (path in ("/", "/m", "/sw.js") or path.startswith("/ui/")):
         return web.Response(status=404)
     resp = await _run(request, handler)
     if seen.get("key"):  # its new key (the one it came with is worth nothing in a moment)
@@ -344,6 +345,35 @@ async def phone_page(request: web.Request):
         html = f.read()
     html = html.replace("{{TOKEN}}", request.app[TOKEN] if local else "device").replace("{{VERSION}}", VERSION).replace("{{APP}}", APP_NAME)
     return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+# the phone app's service worker: keeps the app's own files (the page, its scripts and styles, its icons) so it opens at
+# once and can say when the PC can't be reached. Never a picture or anything of the library: /api always goes to the PC.
+# A new version (another VERSION) is fetched as the app's used, and taken up the next time it's opened.
+_SHELL = ["/", f"/ui/app.css?v={VERSION}", f"/ui/phone.css?v={VERSION}", "/ui/phone.js", "/ui/util.js", "/ui/swipe.js", "/ui/organize.js",
+          "/ui/characters.js", "/ui/manifest.json", "/ui/icon-192.png", "/ui/apple-touch-icon.png"]
+_SW = """// Model Librarian Gallery %(version)s on a phone: the app's own files, kept; the library, always from the PC
+const CACHE = "mlg-%(version)s";
+const SHELL = %(shell)s;
+self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))); });
+self.addEventListener("activate", (e) => {
+  e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k.startsWith("mlg-") && k !== CACHE).map((k) => caches.delete(k)))));
+});
+self.addEventListener("fetch", (e) => {
+  const url = new URL(e.request.url);
+  if (url.origin !== location.origin || e.request.method !== "GET" || url.pathname.startsWith("/api/") || url.pathname === "/pair") return;
+  if (e.request.mode === "navigate") {  // the PC's page when it answers (a pairing page, say); the kept one when it doesn't
+    e.respondWith(fetch(e.request).catch(() => caches.match("/", { ignoreSearch: true })));
+  } else if (url.pathname.startsWith("/ui/")) {
+    e.respondWith(caches.open(CACHE).then((c) => c.match(e.request).then((hit) => hit || fetch(e.request))));
+  }
+});
+"""
+
+
+async def service_worker(request: web.Request):
+    return web.Response(text=_SW % {"version": VERSION, "shell": json.dumps(_SHELL)}, content_type="text/javascript",
+                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
 
 
 async def pair(request: web.Request):

@@ -394,3 +394,36 @@ def test_dismiss_only_dismisses_and_upgraders_are_told_once(lib, monkeypatch):
     server._tell_upgraders(lib)
     server._tell_upgraders(lib)
     assert len(lib.settings.get("remote_alerts")) == 1 and lib.settings.get("remote_mode") == "tailscale"
+
+
+def test_the_phone_app_installs_and_keeps_only_its_own_files(lib, media, monkeypatch):
+    from aiohttp.test_utils import TestClient, TestServer
+    from mlgallery import VERSION, server
+    from test_server import TOKEN, indexed
+    indexed(lib, media)
+    monkeypatch.setattr(server, "_peer", lambda request: "192.168.1.50")
+    lib.settings.update({"remote": True, "remote_mode": "wifi", "remote_wifi_ok": True})
+    app = server.make_app(lib, TOKEN)
+
+    async def go():
+        c = TestClient(TestServer(app, host="127.0.0.1"))
+        await c.start_server()
+        try:
+            assert (await c.get("/sw.js")).status == 403  # not paired: nothing, not even the app
+            r = await c.get(f"/pair?c={app[server.DEVICES].new_code()}", allow_redirects=False)
+            dev = {"Cookie": f"{remote.cookie_name()}={r.cookies[remote.cookie_name()].value}"}
+            c.session.cookie_jar.clear()
+            sw = await c.get("/sw.js", headers=dev)
+            text = await sw.text()
+            assert sw.status == 200 and sw.headers["Service-Worker-Allowed"] == "/" and "javascript" in sw.headers["Content-Type"]
+            assert f"mlg-{VERSION}" in text and '"/ui/phone.js"' in text and 'url.pathname.startsWith("/api/")' in text  # the library never kept
+            man = await (await c.get("/ui/manifest.json", headers=dev)).json()
+            assert {i["sizes"] for i in man["icons"]} == {"192x192", "512x512"} and any(i["purpose"] == "maskable" for i in man["icons"])
+            assert [s["url"] for s in man["shortcuts"]] == ["/?go=swipe", "/?go=fav", "/?go=recent"] and man["id"] == "/"
+            for icon in man["icons"]:
+                assert (await c.get(icon["src"], headers=dev)).status == 200
+            page = await (await c.get("/", headers=dev)).text()
+            assert "apple-touch-icon.png" in page and 'rel="manifest"' in page
+        finally:
+            await c.close()
+    asyncio.run(go())

@@ -118,3 +118,11 @@ body.p-viewing { overflow: hidden; }
 .pv-chip { max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
 .p-ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 8px; color: var(--dim); font-size: 11px; text-align: center; overflow-wrap: anywhere; }
 .p-title, .pv-name, .p-row .label { unicode-bidi: plaintext; }
+/* the Gallery as an app: the one-time hint above the grid, the steps to add it */
+.p-hint { display: flex; align-items: center; gap: 8px; margin: 6px 4px 10px; padding: 8px 6px 8px 12px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--panel); color: var(--text-2); font-size: 14px; }
+.p-hint > svg { flex: none; color: var(--accent); }
+.p-hint > span { flex: 1; min-width: 0; }
+.p-hint .p-icon { width: 36px; height: 36px; }
+.p-steps p { margin: 0 0 10px; line-height: 1.5; }
+.p-note { color: var(--dim); font-size: 13px; }
+.p-main:has(> .p-browse:not([hidden])) > .p-hint { display: none; }  /* (on Browse, its own Install app row) */
