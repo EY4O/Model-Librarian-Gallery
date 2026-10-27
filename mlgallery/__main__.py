@@ -327,7 +327,7 @@ def main(argv=None) -> int:
             import webview
             _own_taskbar_entry()
             hidden = bool(args.tray and icon)  # (started at sign-in: only the tray icon, until it's opened)
-            window["w"] = webview.create_window(APP_NAME, url, min_size=MIN_SIZE, background_color="#262626", hidden=hidden, **_window_place(pick["home"]))
+            window["w"] = webview.create_window(APP_NAME, url, min_size=MIN_SIZE, background_color="#282623", hidden=hidden, **_window_place(pick["home"]))
 
             def shown():
                 hwnd = hwnd_of()

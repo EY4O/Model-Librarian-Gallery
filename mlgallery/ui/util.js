@@ -89,6 +89,23 @@ export function icon(name) {
   return s;
 }
 
+// a file's name shortened in its middle when it doesn't fit: its start, then the end that tells it from its
+// neighbours (the counter, the seed, the extension), which always shows
+export function midName(name, keep = 14) {
+  name = String(name ?? "");
+  if (name.length <= keep * 2 + 4) return name;
+  return h("span.mid", {}, h("span.mid-a", {}, name.slice(0, -keep)), h("span.mid-b", {}, name.slice(-keep)));
+}
+
+// a name's first letter or digit, for a portrait that has no picture (an emoji whole, never half of one)
+export const initial = (name) => {
+  const t = String(name || "").trim();
+  return (t.match(/[\p{L}\p{N}]/u)?.[0] ?? Array.from(t)[0] ?? "?").toUpperCase();
+};
+
+// an empty screen's picture: one of the app's own icons, large and quiet, over what the screen would hold
+export const emptyArt = (name) => h("span.empty-art", { "aria-hidden": "true" }, icon(name));
+
 export async function api(path, { method = "GET", body } = {}) {
   const res = await fetch("/api" + path, {
     method, headers: { "X-MLG-Token": TOKEN, ...(body ? { "Content-Type": "application/json" } : {}) },
@@ -101,13 +118,29 @@ export async function api(path, { method = "GET", body } = {}) {
 }
 export const media = (kind, id) => `/api/${kind}/${id}?t=${encodeURIComponent(TOKEN)}`;
 
-let toastTimer = null;
 export function toast(text, err = false) {
-  document.querySelector(".toast")?.remove();
-  const t = h("div.toast" + (err ? ".err" : ""), { role: err ? "alert" : "status" }, text);
+  showToast(h("div.toast" + (err ? ".err" : ""), { role: err ? "alert" : "status" }, text), err ? 7000 : 3500);
+}
+
+// one message at a time, for `ms`: it rises in (app.css); one taking the place of another that's still up just
+// changes there, with no second entrance, so a run of them (Ctrl+Z, Ctrl+Z…) doesn't bob
+let toastTimer = null;
+export function showToast(t, ms) {
+  const up = document.querySelector(".toast:not(.leaving)");
+  document.querySelectorAll(".toast").forEach((x) => x.remove());
+  if (up) t.classList.add("again");
   document.body.append(t);
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.remove(), err ? 7000 : 3500);
+  toastTimer = setTimeout(() => dropToast(t), ms);
+  return t;
+}
+// it sinks away the way it came, then goes (the timer: for when no transition runs to its end, in a hidden window say)
+export function dropToast(t) {
+  if (!t.isConnected || t.classList.contains("leaving")) return;
+  t.classList.remove("again");
+  t.classList.add("leaving");
+  t.addEventListener("transitionend", () => t.remove(), { once: true });
+  setTimeout(() => t.remove(), 400);
 }
 
 export const fmtSize = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n > 0 ? `${Math.max(1, Math.round(n / 1e3))} KB` : "0 KB");
@@ -190,7 +223,7 @@ export async function askText(title, label, value = "", { ok = "OK", placeholder
 }
 
 // a small menu under a button: items are {label, icon?, onclick, danger?} (or null for a divider)
-export function menu(anchor, items, { cls = "" } = {}) {
+export function menu(anchor, items, { cls = "", at = null, onclose = null } = {}) {  // (at: {x, y}, a right-click's point: it opens there)
   document.querySelector(".menu")?._close();
   let open = true;
   const close = () => {
@@ -202,8 +235,9 @@ export function menu(anchor, items, { cls = "" } = {}) {
     document.removeEventListener("scroll", moved, true);
     window.removeEventListener("resize", close);
     window.removeEventListener("blur", close);
-    anchor.setAttribute("aria-expanded", "false");
+    if (anchor.getAttribute("role") !== "option") anchor.setAttribute("aria-expanded", "false");
     if (anchor.isConnected) anchor.focus();
+    onclose?.();
   };
   const out = (e) => { if (!box.contains(e.target) && e.target !== anchor) close(); };
   const moved = (e) => { if (!box.contains(e.target)) close(); }; // it's placed under its button: scrolling away leaves it behind
@@ -223,11 +257,14 @@ export function menu(anchor, items, { cls = "" } = {}) {
   box.addEventListener("click", (e) => { if (e.target.closest(".menu-item")) close(); }, true); // any item, its own handler runs after
   box._close = close;
   document.body.append(box);
-  const r = anchor.getBoundingClientRect();
   const w = box.offsetWidth, ht = box.offsetHeight;
-  box.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w))}px`;
-  box.style.top = `${r.bottom + 6 + ht > window.innerHeight ? Math.max(8, r.top - ht - 6) : r.bottom + 6}px`;
-  anchor.setAttribute("aria-expanded", "true");
+  const r = at ? { left: at.x, right: at.x + w, top: at.y - 6, bottom: at.y - 6, width: 0 } : anchor.getBoundingClientRect();
+  const left = Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w)), up = r.bottom + 6 + ht > window.innerHeight;
+  box.style.left = `${left}px`;
+  box.style.top = `${up ? Math.max(8, r.top - ht - 6) : r.bottom + 6}px`;
+  // it opens out of its button: from the edge next to it, in line with the button's middle
+  box.style.transformOrigin = `${Math.round(Math.max(0, Math.min(w, r.left + r.width / 2 - left)))}px ${up ? "100%" : "0"}`;
+  if (anchor.getAttribute("role") !== "option") anchor.setAttribute("aria-expanded", "true");
   document.addEventListener("mousedown", out, true);
   document.addEventListener("keydown", key, true);
   document.addEventListener("scroll", moved, true);

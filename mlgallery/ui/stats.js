@@ -4,7 +4,7 @@
 import { api, baseName, dayLabel, fmtNum, fmtSize, h, lib, plural, stacks, store, toast, who } from "./util.js";
 
 // photos and illustrations: files over time, one series (no model families)
-const asFiles = (mw) => ({ by: mw.by, series: [{ name: "Files", color: "#7c8cff", n: mw.series.reduce((a, s) => a + s.n, 0) }],
+const asFiles = (mw) => ({ by: mw.by, series: [{ name: "Files", color: "#b3a68f", n: mw.series.reduce((a, s) => a + s.n, 0) }],
   points: mw.points.map((p) => ({ at: p.at, Files: Object.entries(p).reduce((a, [k, v]) => (k === "at" ? a : a + v), 0) })) });
 
 const RANGES = [["7", "7 days"], ["30", "30 days"], ["90", "90 days"], ["365", "1 year"], ["all", "All time"]];
@@ -76,7 +76,7 @@ export async function renderStats(root, { open }) {
       : timeline(asFiles(data.made_with), go, { title: "Over time", sub: shows("photo") ? "by the day each was taken (else modified)" : "how many files", caption: "Files over time" })) : null,
     data.totals.n && data.colors && data.colors.series.length ? timeline(data.colors, go, {
       title: "Colours, over time", sub: "the colours of your pictures, as shares of each column", caption: "The colours of the pictures over time, in percent",
-      full: true, fmt: (v) => `${fmtNum(v)}%`, pick: (s) => go({ key: "color", value: s.name }) }) : null,
+      full: true, strip: true, fmt: (v) => `${fmtNum(v)}%`, pick: (s) => go({ key: "color", value: s.name }) }) : null,
     data.totals.n ? stacks([
       ai && card("Checkpoints", "Most used", bars(data.checkpoints, { kind: "ckpt", label: (r) => [r.family ? h("span.fam", { style: { color: r.color, borderColor: r.color + "88" } }, r.family.toUpperCase()) : null, r.name],
         fill: (r) => r.color, onclick: (r) => go({ key: "model", value: r.name }),
@@ -169,8 +169,9 @@ function libraryCard(d, go) {
 
 // a timeline: one column per day (or week), stacked by series (model families in Model Librarian's colours,
 // or colour families); hover for the numbers, click a column for those files (a legend entry too, with `pick`).
-// `full`: each column is shares of 100, all the same height
-function timeline(mw, go, { title, sub, caption, full = false, fmt = (v) => v.toLocaleString(), pick = null }) {
+// `full`: each column is shares of 100, all the same height; `strip`: a short band of them, no axis (the colours: their
+// own hues, where model families are quieted so the pictures stay the brightest thing on the screen)
+function timeline(mw, go, { title, sub, caption, full = false, strip = false, fmt = (v) => v.toLocaleString(), pick = null }) {
   const series = mw.series;
   const pts = fill(mw);
   const val = (p, s) => p[s.name] || 0;
@@ -206,14 +207,16 @@ function timeline(mw, go, { title, sub, caption, full = false, fmt = (v) => v.to
     h("tr", {}, h("th", {}, mw.by === "week" ? "Week of" : "Day"), series.map((s) => h("th", {}, s.name))),
     pts.filter(sum).map((p) => h("tr", {}, h("td", {}, p.at), series.map((s) => h("td", {}, val(p, s))))));
   const legend = (s) => [swatch(s), s.name, h("span.lg-n", {}, fmt(s.n))];
-  return card(title, `${mw.by === "week" ? "Per week" : "Per day"}, ${sub}`,
+  const box = card(title, `${mw.by === "week" ? "Per week" : "Per day"}, ${sub}`,
     h("div.tl-legend", {}, series.map((s) => pick ? h("button.lg-pick", { type: "button", title: `Show files with ${s.name}`, onclick: () => pick(s) }, ...legend(s))
       : h("span", {}, ...legend(s)))),
-    h("div.tl", {},
+    h("div.tl" + (strip ? ".strip" : ""), {},
       h("div.tl-axis", { "aria-hidden": "true" }, h("span", {}, full ? "100%" : nice.toLocaleString()), h("span", {}, full ? "50%" : Math.round(nice / 2).toLocaleString()), h("span", {}, full ? "0%" : "0")),
       h("div.tl-plot", {}, h("div.tl-grid", { "aria-hidden": "true" }, h("i"), h("i"), h("i")), h("div.tl-cols", {}, cols), tip)),
     h("div.tl-x", { "aria-hidden": "true" }, ticks.map((i) => h("span", { style: { left: `${((i + 0.5) / pts.length) * 100}%` } }, short(pts[i].at, mw.by)))),
     table);
+  if (!strip) box.classList.add("calm");
+  return box;
 }
 
 function niceMax(v) {

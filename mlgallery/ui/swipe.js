@@ -70,12 +70,19 @@ export function swipeReview(opened, openedTitle, { onClose } = {}) {
     const pic = (it) => (it.kind === "video"
       ? h("video", { src: media("file", it.id), autoplay: true, muted: true, loop: true, playsInline: true })
       : h("img", { src: media("file", it.id), alt: it.name, draggable: false }));
-    const card = h("div.sw-card", { title: "Swipe right to keep, left to delete, up for a favourite" }, pic(item),
-      h("span.sw-tag.keep", {}, "KEEP"), h("span.sw-tag.del", {}, "DELETE"), h("span.sw-tag.fav", {}, "FAVOURITE"),
+    // the card that was waiting underneath comes up (kept, not drawn again: it grows into place, its picture already there)
+    const under = stage.querySelector(".sw-card.under");
+    const card = under?.dataset.id === String(item.id) ? under : h("div.sw-card", { "data-id": item.id }, pic(item));
+    card.classList.remove("under");
+    card.removeAttribute("aria-hidden");
+    card.title = "Swipe right to keep, left to delete, up for a favourite";
+    card.append(h("span.sw-tag.keep", {}, "KEEP"), h("span.sw-tag.del", {}, "DELETE"), h("span.sw-tag.fav", {}, "FAVOURITE"),
       h("div.sw-name", {}, item.name, item.rating ? h("span.sw-had", {}, "★".repeat(item.rating)) : null, item.favorite ? icon("heart") : null));
-    const next = queue[1] ? h("div.sw-card.under", { "aria-hidden": "true" }, pic(queue[1])) : null;
+    const next = queue[1] ? h("div.sw-card.under", { "aria-hidden": "true", "data-id": queue[1].id }, pic(queue[1])) : null;
     if (queue[2] && queue[2].kind !== "video") new Image().src = media("file", queue[2].id);
-    stage.replaceChildren(...[next, card].filter(Boolean));
+    for (const c of [...stage.children]) if (c !== card) c.remove();  // (the card itself stays put: moved, it would jump)
+    if (!card.isConnected) stage.append(card);
+    if (next) stage.prepend(next);
     drag(card);
     if (queue.length < 8 && left > queue.length) fetchMore();
   }
@@ -116,6 +123,7 @@ export function swipeReview(opened, openedTitle, { onClose } = {}) {
     if (!item || busy) return;
     busy = true;
     const card = stage.querySelector(".sw-card:not(.under)");
+    if (card) card.style.transform = "";  // (where it was dragged to: thrown on from there, not left hanging as it fades)
     card?.classList.add(kind === "delete" ? "out-left" : kind === "fav" ? "out-up" : kind === "album" ? "out-down" : "out-right");
     try {
       if (kind === "delete") {

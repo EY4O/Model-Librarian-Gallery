@@ -78,6 +78,9 @@ def test_colours_come_with_the_thumbnail(lib, media):
     assert main == ["blue", "white"] and abs(info["colors"][0]["ratio"] - 0.8) < 0.06
     with lib.db.read() as c:
         assert c.execute("SELECT COUNT(*) FROM files WHERE colors=1").fetchone()[0] == 2
+    # the grid's list carries each one's main colour, for its tile while the thumbnail loads
+    main_hex = {name: lib.info(ids[name])["colors"][0]["hex"] for name in ids}
+    assert {it["name"]: it["tone"] for it in lib.files()["items"]} == main_hex
 
 
 def test_backfill_and_a_changed_file(lib, media):

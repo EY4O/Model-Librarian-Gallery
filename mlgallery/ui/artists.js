@@ -2,11 +2,11 @@
 // (the file, its name, where it was downloaded from, an Artists\<name> folder) or typed by you; another name of theirs
 // (a handle on another site) makes two into one.
 
-import { api, ask, h, icon, media, plural, stacks, toast } from "./util.js";
+import { api, ask, emptyArt, h, icon, initial, media, plural, stacks, toast } from "./util.js";
 import { preview } from "./characters.js";
 
 function thumb(id, alt = "") {
-  const none = () => h("div.c-thumb.none", { "aria-hidden": "true" }, h("span.c-initial", {}, (alt || "?").trim().charAt(0).toUpperCase() || "?"));
+  const none = () => h("div.c-thumb.none", { "aria-hidden": "true" }, h("span.c-initial", {}, initial(alt)));
   if (!id) return none();
   const img = h("img", { src: media("thumb", id), alt, loading: "lazy", decoding: "async" });
   img.onerror = () => img.replaceWith(none());
@@ -42,9 +42,9 @@ export async function renderArtists(root, ctx) {
   root.replaceChildren(...[
     h("header.st-head", {}, h("h1", {}, "Artists"),
       h("div.row", {}, data.artists.length > 12 ? find : null,
-        h("button.btn.primary", { type: "button", onclick: () => editArtist(null, ctx) }, icon("plus"), "New artist"))),
+        data.artists.length ? h("button.btn.primary", { type: "button", onclick: () => editArtist(null, ctx) }, icon("plus"), "New artist") : null)),  // (none yet: the empty screen's button is the one)
     data.artists.length ? grid
-      : h("div.c-empty", {}, h("h2", {}, "No artists yet"),
+      : h("div.c-empty", {}, emptyArt("brush"), h("h2", {}, "No artists yet"),
         h("p", {}, "Who made a picture is found in it as it's indexed: in the file's own details, in the name a site gives its downloads (Pixiv, Danbooru, DeviantArt and more), in where it was downloaded from, or in a folder called Artists with one folder per artist inside. You can also type it in a picture's details, or for many pictures at once."),
         h("button.btn.primary", { type: "button", onclick: () => editArtist(null, ctx) }, "New artist")),
   ].filter(Boolean));
@@ -63,7 +63,7 @@ export async function renderArtist(root, id, ctx) {
     return;
   } finally { root.removeAttribute("aria-busy"); }
   const filter = (more = []) => ctx.open([{ key: "artist", value: a.name }, ...more]);
-  const dates = a.first ? `${new Date(a.first * 1000).toLocaleDateString()} – ${new Date(a.last * 1000).toLocaleDateString()}` : "";
+  const dates = a.first ? [...new Set([a.first, a.last].map((t) => new Date(t * 1000).toLocaleDateString()))].join(" – ") : "";
   const max = Math.max(1, ...a.sites.map((s) => s.n));
   root.replaceChildren(...[
     h("div.c-crumb", {}, h("button.link", { type: "button", onclick: () => ctx.show("artists") }, "Artists"), " / ", a.name),

@@ -262,7 +262,7 @@ def move(db, ids, dest_folder: int, sub: str = "") -> dict:
     if done:
         with db.write() as c:
             n = sum(1 for it in done if "with" not in it)
-            op = record(c, "move", f"Moved {n} file{'s' if n != 1 else ''} to {os.path.basename(plan['dest']) or plan['dest']}", done)
+            op = record(c, "move", f"Moved {n:,} file{'s' if n != 1 else ''} to {os.path.basename(plan['dest']) or plan['dest']}", done)
             scan.pair_live(c, _touched(done))
             _recount(c)
     return {"op": op, "moved": sum(1 for it in done if "with" not in it), "failed": failed}
@@ -316,7 +316,7 @@ def trash(db, ids) -> dict:
     op = None
     if done:
         with db.write() as c:
-            op = record(c, "trash", f"Moved {shown} file{'s' if shown != 1 else ''} to the Trash", done)
+            op = record(c, "trash", f"Moved {shown:,} file{'s' if shown != 1 else ''} to the Trash", done)
             scan.pair_live(c, _touched(done))
             _recount(c)
     return {"op": op, "trashed": shown, "failed": failed}
@@ -388,7 +388,7 @@ def restore(db, ids, *, as_op: bool = True) -> dict:
     if done:
         with db.write() as c:
             if as_op:
-                op = record(c, "restore", f"Put back {shown} file{'s' if shown != 1 else ''} from the Trash", done)
+                op = record(c, "restore", f"Put back {shown:,} file{'s' if shown != 1 else ''} from the Trash", done)
             scan.pair_live(c, _touched(done))
             _recount(c)
     return {"op": op, "restored": shown, "failed": failed}
@@ -438,7 +438,7 @@ def empty(db, ids=None) -> dict:
     if gone or backups:
         with db.write() as c:
             c.executemany("DELETE FROM files WHERE id=?", [(i,) for i in gone])
-            what = [f"{shown} file{'s' if shown != 1 else ''} from the Trash"] if gone else []
+            what = [f"{shown:,} file{'s' if shown != 1 else ''} from the Trash"] if gone else []
             what += [f"{backups} original{'s' if backups != 1 else ''} kept for undoing edits"] if backups else []
             record(c, "empty", f"Sent {' and '.join(what)} to the Recycle Bin", {"count": len(gone), "backups": backups})
             _recount(c)

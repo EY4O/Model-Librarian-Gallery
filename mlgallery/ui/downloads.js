@@ -1,7 +1,7 @@
 // Model Librarian Gallery: New downloads - the pictures in your Downloads folder (and others set in Settings), offered
 // for filing into the library: who made each and where it's from, as far as it says, and whether the library has it.
 
-import { TOKEN, api, ask, baseName, fmtDate, fmtSize, h, icon, plural, toast } from "./util.js";
+import { TOKEN, api, ask, baseName, emptyArt, midName, fmtDate, fmtSize, h, icon, plural, toast } from "./util.js";
 import { preview } from "./characters.js";
 import { openLink } from "./artists.js";
 import * as org from "./organize.js";
@@ -93,7 +93,7 @@ export async function renderDownloads(root, ctx) {
       h("label.dl-pick", { title: "Select" }, h("input", { type: "checkbox", checked: picked, onchange: toggle, "aria-label": `Select ${it.name}` })),
       h("button.dl-thumb", { type: "button", title: "Look closer", onclick: () => preview({ name: it.name, kind: it.kind, src: pic("file", it) }) }, img),
       h("div.dl-body", {},
-        h("p.dl-name", { title: it.title ? `${it.title}\n${it.name}` : it.name }, it.title || it.name),
+        h("p.dl-name", { title: it.title ? `${it.title}\n${it.name}` : it.name }, it.title || midName(it.name)),
         h("p.dl-sub", {}, `${fmtSize(it.size)} · ${fmtDate(it.mtime)}`),
         it.artist ? h("p.dl-artist", { title: FROM[it.artist_from] || "" }, it.artist, h("span.credit-from", {}, ` ${FROM[it.artist_from] || ""}`)) : h("p.dl-artist.dim", {}, "Artist not known"),
         it.site ? h("p.dl-site", {}, it.url ? h("button.link", { type: "button", title: it.url, onclick: () => openLink(it.url) }, it.site_name) : it.site_name,
@@ -163,7 +163,7 @@ export async function renderDownloads(root, ctx) {
           h("button.btn", { type: "button", onclick: () => ctx.show("settings") }, "Folders…"))),
       bar,
       data.items.length ? grid(data.items.map(card))
-        : h("div.c-empty", {}, h("h2", {}, "Nothing new"),
+        : h("div.c-empty", {}, emptyArt("save"), h("h2", {}, "Nothing new"),
           h("p", {}, "Pictures and videos you download show up here, with who made them and where they're from when that's known, to file into the library in one click."),
           h("button.link", { type: "button", onclick: async () => { const r = await api("/inbox/undismiss", { method: "POST" }).catch(() => ({ back: 0 })); toast(r.back ? `${plural(r.back, "dismissed download")} offered again.` : "None were dismissed."); ctx.counts(); load(); } }, "Offer the dismissed ones again")),
       data.total > data.items.length ? h("div.row.center", {}, h("button.btn", { type: "button", onclick: () => { kept.shown += PAGE * 2; load(); } }, `Show more (${(data.total - data.items.length).toLocaleString()} more)`)) : null,

@@ -3,7 +3,7 @@
 // scrolls the same at 200 files or 250,000. Day headings come from a per-day count (one small request),
 // so every tile's place is known without fetching the pages above it.
 
-import { $, KINDS, LOOK_COLORS, LOOK_ICONS, Pace, TOKEN, aiOnly, albumName, albumTree, api, dirTree, fmtLeft, has, holdFocus, inside, job, leafName, parentName, progressBar, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lib, lookIcon, media, menu, plural, sameName, stars, store, toast, who } from "./util.js";
+import { $, KINDS, emptyArt, midName, LOOK_COLORS, LOOK_ICONS, Pace, TOKEN, aiOnly, albumName, albumTree, api, dirTree, fmtLeft, has, holdFocus, inside, job, leafName, parentName, progressBar, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lib, lookIcon, media, menu, plural, sameName, stars, store, toast, who } from "./util.js";
 import { renderStats } from "./stats.js";
 import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
 import { creditEditor, renderArtist, renderArtists } from "./artists.js";
@@ -270,7 +270,7 @@ const twist = (key, has) => (has
   ? h("span.twist" + (opened.has(key) ? ".open" : ""), { "aria-hidden": "true", title: opened.has(key) ? "Close" : "Open",
     onclick: (e) => { e.stopPropagation(); setOpen(key, !opened.has(key)); renderSide(); } }, icon("twist"))
   : h("span.twist.none", { "aria-hidden": "true" }));
-const indent = (depth) => (depth ? { paddingLeft: `${10 + depth * 16}px` } : null);
+const indent = (depth) => (depth ? { paddingLeft: `${10 + Math.min(depth, 3) * 16 + Math.max(0, depth - 3) * 8}px` } : null);  // (deep ones keep room for their name)
 
 function dirRows(f, node, depth) {
   return [...node.kids.values()].flatMap((d) => {
@@ -366,7 +366,7 @@ const movedText = (path, r) => (parentName(path) === parentName(r.name) ? `Renam
   + (r.moved > 1 ? `, with the ${plural(r.moved - 1, "album")} inside it.` : ".");
 
 async function renameParent(path) {
-  const name = await askText(`Rename ${leafName(path)}`, "Name", path, { ok: "Rename" });
+  const name = await askText(`Rename “${leafName(path)}”`, "Name", path, { ok: "Rename" });
   if (name && !sameName(name, path)) moveAlbum(path, name);
 }
 
@@ -497,17 +497,20 @@ async function smartSearch(a) {
 }
 
 async function newAlbum() {
-  const name = await askText("New album", "Name", "", { ok: "Create" });
-  if (!name) return;
-  try {
-    await api("/albums", { method: "POST", body: { name } });
-    await loadAlbums();
-    if (selCount()) org.albumDialog(selection(), selCount());
-  } catch (e) { toast(e.message, true); }
+  for (let name = ""; ;) {  // (refused - too long, taken - it's asked again with the name as typed)
+    name = await askText("New album", "Name", name, { ok: "Create" });
+    if (!name) return;
+    try {
+      await api("/albums", { method: "POST", body: { name } });
+      await loadAlbums();
+      if (selCount()) org.albumDialog(selection(), selCount());
+      return;
+    } catch (e) { toast(e.message, true); }
+  }
 }
 
 async function renameAlbum(a) {
-  const name = await askText(`Rename ${a.name}`, "Name", a.name, { ok: "Rename" });
+  const name = await askText(`Rename “${a.name}”`, "Name", a.name, { ok: "Rename" });
   if (!name || name === a.name) return;
   try {
     const r = await api(`/albums/${a.id}`, { method: "POST", body: { name } });  // (the albums inside it go with it)
@@ -581,6 +584,8 @@ function selectView(view, arg = null, sub = null) {
   clearSel();
   const page = isPage();
   document.querySelector(".toolbar").hidden = page;
+  document.querySelector("main.main").classList.toggle("paged", page);
+  $("side-show-page").hidden = !page || !$("app").classList.contains("side-hidden");
   scroller.hidden = page;
   $("stats").hidden = !page;
   renderSide();
@@ -631,9 +636,15 @@ const sortFor = () => (state.view === "random" ? "random" : state.view === "rece
 
 function renderToolbar() {
   const f = state.folders.find((x) => x.id === state.folder);
-  $("view-title").textContent = { random: "Random", recent: "Recently viewed", trash: "Trash" }[state.view]
-    || (state.view === "album" ? state.album : f ? (state.sub ? `${baseName(f.path)} / ${state.sub.replaceAll("/", " / ")}` : baseName(f.path)) : "All");
-  $("view-title").title = f ? (state.sub ? `${f.path}\\${state.sub.replaceAll("/", "\\")}` : f.path) : "";
+  // a nested album or folder: what's around it first, dim and the first to give way, its own name always whole
+  const path = state.view === "album" ? state.album.split(" / ") : f && state.sub ? [baseName(f.path), ...state.sub.split("/")] : null;
+  if (path && path.length > 1 && !{ random: 1, recent: 1, trash: 1 }[state.view]) {
+    $("view-title").replaceChildren(h("span.crumb", {}, `${path.slice(0, -1).join(" / ")} / `), h("span.leaf", {}, path[path.length - 1]));
+  } else {
+    $("view-title").textContent = { random: "Random", recent: "Recently viewed", trash: "Trash" }[state.view]
+      || (state.view === "album" ? state.album : f ? baseName(f.path) : "All");
+  }
+  $("view-title").title = f ? (state.sub ? `${f.path}\\${state.sub.replaceAll("/", "\\")}` : f.path) : state.view === "album" ? state.album : "";
   $("empty-trash").hidden = state.view !== "trash" || !state.total;
   $("shuffle").hidden = state.view !== "random";
   $("save-search").hidden = !queryString();
@@ -645,10 +656,15 @@ function renderToolbar() {
 }
 
 function setSide(hidden) {
+  const at = document.activeElement;
+  const lost = !!at?.closest?.(hidden ? "#side" : "#side-show, #side-show-page");
   $("app").classList.toggle("side-hidden", hidden);
   $("side-show").hidden = !hidden;
+  $("side-show-page").hidden = !hidden || !isPage();  // (the toolbar's hidden on a screen of its own)
   store.set("sideHidden", hidden);
   requestAnimationFrame(() => { draw(); if (!$("viewer").hidden) vApply(); });
+  // B4: the focus doesn't go with the half that went away: onto the button that brings it back, or the one that hides it
+  if (lost) (!$("viewer").hidden ? $("v-media") : !hidden ? $("side-hide") : isPage() ? $("side-show-page") : $("side-show")).focus({ preventScroll: true });
 }
 
 async function addFolder() {
@@ -813,24 +829,33 @@ async function loadDays() {
 // during a refresh the pages on screen still answer (a click on a tile opens that tile), until the new ones are in
 const itemAt = (i) => (state.pages.get(Math.floor(i / PAGE)) ?? state.shownPages?.get(Math.floor(i / PAGE)))?.[i % PAGE];
 
-function tileFor(item) {
+// had: the thumbnail the tile showed before, when this is that tile drawn again
+function tileFor(item, had = null) {
   const el = h("button.tile" + (isSelected(item) ? ".picked" : ""), { type: "button", onclick: (e) => tileClick(e, item.__i), onfocus: () => { state.focus = item.__i; },
+    oncontextmenu: (e) => tileMenu(e, item),
     draggable: "true", ondragstart: (e) => dragOutFiles(e, isSelected(item) && selCount() ? selection() : [item.id], isSelected(item) ? selCount() : 1, item),
-    "aria-label": item.name, role: "gridcell", "aria-selected": String(isSelected(item)) });
-  el.append(h("span.t-pick", { role: "checkbox", "aria-checked": String(isSelected(item)), "aria-label": `Select ${item.name}`, title: "Select (Ctrl+click)",
+    "aria-label": item.name, "aria-description": tileFacts(item) || null, role: "option", "aria-selected": String(isSelected(item)), "aria-setsize": state.total, "aria-posinset": item.__i + 1 });
+  el.append(h("span.t-pick", { "aria-hidden": "true", title: "Select (Ctrl+click)",
     onclick: (e) => { e.stopPropagation(); toggleSel(item.__i); } }, icon("check")));
   if (item.thumb === -1 || item.thumb === -2) {
     el.append(h("div.ph", {}, item.thumb === -2 ? `${item.name}\n\nVideo posters need ffmpeg` : item.name));
   } else {
-    const img = h("img", { alt: "", decoding: "async", draggable: false });
-    img.onload = () => img.classList.add("on");
-    img.onerror = () => { img.remove(); el.prepend(h("div.ph", {}, item.name)); };
-    img.src = media("thumb", item.id) + thumbSize();
+    // the same thumbnail as the tile drawn before this one (its marks or the selection changed): it moves over, already
+    // shown, so nothing flashes; else a new one fades in over the picture's main colour (app.css)
+    const src = media("thumb", item.id) + thumbSize();
+    const again = had?.getAttribute("src") === src;
+    const img = again ? had : h("img", { alt: "", decoding: "async", draggable: false });
+    if (item.tone && !again) el.style.setProperty("--tone", item.tone);
+    img.onload = () => { img.classList.add("on"); el.classList.add("lit"); };
+    img.onerror = () => { img.remove(); el.style.removeProperty("--tone"); el.prepend(h("div.ph", {}, item.name)); };
+    if (again) el.classList.add("lit");
+    else img.src = src;
     el.append(img);
   }
   if (item.kind === "video") el.append(h("span.badge", {}, icon("play"), fmtDur(item.duration)));
   else if (item.motion) el.append(h("span.badge.live", { title: "A Live Photo" }, "LIVE"));
   if (item.kind === "video" ? playable(item) : item.motion) hoverPlay(el, item);
+  if (item.model) peek(el, item);
   const sh = state.show;
   const ext = (item.name.split(".").pop() || "").toUpperCase();
   el.append(h("span.t-tr", {}, sh.ext && ext ? h("span.t-ext", {}, ext) : null,
@@ -839,12 +864,18 @@ function tileFor(item) {
   if (sh.made && item.color) el.append(h("span.t-fam", { style: { background: item.color }, title: item.family || "" }));
   if (sh.name || sh.info) {
     el.classList.add("capped");
-    el.append(h("span.t-cap", {}, sh.name ? h("span.c1", {}, item.name) : null, sh.info ? h("span.c2", {}, infoLine(item, ext)) : null));
+    el.append(h("span.t-cap", {}, sh.name ? h("span.c1", {}, midName(item.name)) : null, sh.info ? h("span.c2", {}, infoLine(item, ext)) : null));
   }
   const made = [item.model, item.lora ? `${item.lora}${item.lora_strength != null ? ` ${fmtNum(item.lora_strength)}` : ""}${item.loras > 1 ? ` +${item.loras - 1}` : ""}` : null].filter(Boolean);
-  el.append(h("span.name", {}, h("span.n1", {}, item.name), sh.made && made.length ? h("span.n2", {}, made.join(" · ")) : null));
+  el.append(h("span.name", {}, h("span.n1", {}, midName(item.name)), sh.made && made.length ? h("span.n2", {}, made.join(" · ")) : null));
   el.title = `${item.name}\n${item.width && item.height ? `${item.width} × ${item.height} · ` : ""}${fmtSize(item.size)} · ${fmtDate(item.shot || item.mtime)}`;
   return el;
+}
+
+// what a tile says to a screen reader after its name: what its badges show
+function tileFacts(item) {
+  return [item.kind === "video" ? `video, ${fmtDur(item.duration)}` : item.motion ? "Live Photo" : "",
+    item.rating ? plural(item.rating, "star") : "", item.favorite ? "favourite" : "", item.model || ""].filter(Boolean).join(", ");
 }
 
 const tileKey = (item) => `${item.id}:${item.thumb}:${item.rating}:${item.favorite}:${isSelected(item) ? 1 : 0}:${thumbSize()}`;
@@ -918,7 +949,9 @@ function selChanged() {
   draw();
   const n = selCount();
   const bar = $("selbar");
+  const had = !n && !bar.hidden && bar.contains(document.activeElement);
   bar.hidden = !n;
+  if (had) { const i = Math.min(state.focus, state.total - 1); if (i >= 0) focusTile(i); else $("scroll").focus({ preventScroll: true }); }
   document.querySelector(".statusbar").hidden = !!n;
   $("app").classList.toggle("picking", !!n);
   if (!n) return;
@@ -958,6 +991,51 @@ function selChanged() {
     ]),
     h("button.icon-btn", { type: "button", "aria-label": "Clear the selection", title: "Clear the selection (Esc)", onclick: clearSel }, icon("remove")));
 }
+
+// right-click on a tile (or the menu key, Shift+F10): what can be done with it, or with the selection it's in. One that
+// isn't selected is picked first, on its own, as Explorer does
+function tileMenu(e, item) {
+  e.preventDefault();
+  const just = !isSelected(item);
+  if (just) {
+    state.sel.clear();
+    state.selAll = false;
+    state.sel.add(item.id);
+    state.anchor = item.__i;
+    selChanged();
+  }
+  const n = selCount(), sel = selection(), one = n === 1;
+  const anchor = tiles.get(item.__i) || e.currentTarget;
+  const at = e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : null;  // (from the keyboard: under the tile)
+  const look = (chips) => { clearSearch(); for (const [k, v] of chips) addChip(k, v); $("q").focus(); };  // (the search it became, in front)
+  const items = state.view === "trash" ? [
+    { label: "Put back", icon: "restore", onclick: async () => { await org.restoreFiles(sel); clearSel(); } },
+    { label: n === 1 ? "Empty this one" : "Empty these", icon: "trash", danger: true, onclick: async () => { await org.emptyTrash(sel, n); clearSel(); } },
+  ] : [
+    one ? { label: "Open", icon: "image", hint: "Enter", onclick: () => openViewer(item.__i) } : null,
+    one ? { label: "Open in ComfyUI", icon: "play", onclick: () => openInComfy(item) } : null,
+    one ? { label: "Show in Explorer", icon: "explorer", onclick: () => reveal(item) } : null,
+    one && item.model ? { label: "More like this", icon: "filter", onclick: () => look([["model", item.model], ...(item.lora ? [["lora", item.lora]] : [])]) } : null,
+    one ? { label: "Same seed", icon: "filter", onclick: async () => {
+      const seed = (await api(`/file/${item.id}/info`).catch(() => null))?.generation?.seed;
+      if (seed == null) toast("No seed is recorded in this file.", true); else look([["seed", String(seed)]]);
+    } } : null,
+    null,
+    one && item.favorite ? { label: "Take out of favourites", icon: "heart", hint: "F", onclick: () => bulk("favorite", false) }
+      : { label: "Favourite", icon: "heart", hint: "F", onclick: () => bulk("favorite", true) },
+    { label: "Tag…", icon: "tag", onclick: () => org.tagDialog(sel, n) },
+    { label: "Add to an album…", icon: "album", onclick: () => org.albumDialog(sel, n) },
+    { label: "Move…", icon: "move", onclick: () => org.moveDialog(sel, n, state.folders, { at: state.folder, after: clearSel }) },
+    null,
+    { label: "Delete", icon: "trash", hint: "Del", danger: true, onclick: async () => { if (await org.trashFiles(sel)) clearSel(); } },
+  ];
+  menu(anchor, items.filter((x, i, a) => x !== null || (i > 0 && a[i - 1] !== null)), { at,
+    onclose: () => { if (just) setTimeout(() => { if (selCount() === 1 && state.sel.has(item.id)) clearSel(); }, 0); } });  // (after the item chosen ran)
+}
+// Shift+F10 on a tile: its menu, as the menu key opens it
+$("sizer").addEventListener("keydown", (e) => {
+  if (e.shiftKey && e.key === "F10" && e.target.closest(".tile")) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); }
+});
 
 // the album shown is one you put files in, with no albums inside it (so Take out takes them out of what's shown)
 const plainAlbum = () => state.view === "album" && state.albums.some((a) => sameName(a.name, state.album) && a.query == null)
@@ -1003,9 +1081,10 @@ function draw() {
     let el = tiles.get(i);
     if (!el || el.dataset.key !== tileKey(item)) {
       const hadFocus = el && document.activeElement === el;
+      const seen = el?.dataset.key.split(":")[0] === String(item.id) ? el.querySelector("img.on") : null;  // (the same file, its marks changed)
       el?.remove();
       item.__i = i;
-      el = tileFor(item);
+      el = tileFor(item, seen);
       el.dataset.key = tileKey(item);
       sizer.append(el);
       tiles.set(i, el);
@@ -1052,7 +1131,69 @@ function draw() {
   });
   for (const [i, el] of tiles) if (!want.has(i)) { el.remove(); tiles.delete(i); }
   for (const [gi, el] of heads) if (!wantHeads.has(gi)) { el.remove(); heads.delete(gi); }
+  pinDay(L, top);
+  drawScrub(L, view);
   showEmpty();
+}
+
+// the day you're scrolled into stays at the top (its own heading has gone up out of sight); the next one pushes it away
+function pinDay(L, top) {
+  const pin = $("day-pin"), gs = L.groups;
+  let lo = 0, hi = gs.length - 1, at = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (gs[m].top <= top) { at = m; lo = m + 1; } else hi = m - 1; }
+  const g = gs[at];
+  if (!g?.label || top <= g.top + 2 || isPage()) { pin.replaceChildren(); delete pin.dataset.day; return; }
+  if (pin.dataset.day !== g.day) {
+    pin.dataset.day = g.day;
+    pin.replaceChildren(h("div.day", {}, h("button.day-link", { type: "button", tabIndex: -1, onclick: () => addChip("on", g.day, { replace: true }) }, g.label),
+      h("span.n", {}, g.n.toLocaleString())));
+  }
+  const next = gs[at + 1];
+  pin.firstChild.style.transform = next?.label ? `translateY(${Math.min(0, next.top - top - HEAD)}px)` : "";
+}
+
+// a strip of months down the right edge of a long library: hover for the day, click or drag to go there
+let scrubFor = null;
+function drawScrub(L, view) {
+  const bar = $("scrub");
+  const show = L.daily && L.groups.length > 8 && L.height > view * 3 && !isPage() && state.total > 0;
+  bar.hidden = !show;
+  if (!show) return;
+  Object.assign(bar.style, { top: `${scroller.offsetTop}px`, height: `${view}px`, right: `${scroller.offsetWidth - scroller.clientWidth + 2}px` });
+  if (scrubFor === L) return;  // (the marks: once for each layout)
+  scrubFor = L;
+  const marks = [];
+  let month = "", lastY = -99;
+  for (const g of L.groups) {
+    if (!g.day || g.day.slice(0, 7) === month) continue;
+    month = g.day.slice(0, 7);
+    const y = (g.top / L.height) * 100;
+    const [yy, mm] = month.split("-").map(Number);
+    const label = new Date(yy, mm - 1, 1).toLocaleDateString(undefined, mm === 1 ? { month: "short", year: "numeric" } : { month: "short" });
+    const room = (y - lastY) * view / 100 >= 18;  // (a label only where there's room for it; a tick always)
+    if (room) lastY = y;
+    marks.push(h("span.scrub-m" + (room ? ".named" : ""), { style: { top: `${y}%` } }, room ? h("span", {}, label) : null));
+  }
+  bar.replaceChildren(...marks, $("scrub-tip"));
+}
+{
+  const bar = $("scrub"), tip = $("scrub-tip");
+  const at = (e) => {
+    const L = lastLayout, r = bar.getBoundingClientRect();
+    const y = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)) * L.height;
+    let g = null;
+    for (const x of L.groups) { if (x.top <= y) g = x; else break; }
+    return { y, g, py: e.clientY - r.top };
+  };
+  const go = (e) => { const { y } = at(e); scroller.scrollTop = y + sizer.offsetTop - 8; };
+  bar.addEventListener("pointermove", (e) => {
+    const { g, py } = at(e);
+    tip.hidden = !g?.label;
+    if (g?.label) { tip.textContent = g.day ? new Date(g.day + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" }) : g.label; tip.style.top = `${py}px`; }
+    if (e.buttons & 1) go(e);
+  });
+  bar.addEventListener("pointerleave", () => { tip.hidden = true; });
+  bar.addEventListener("pointerdown", (e) => { bar.setPointerCapture(e.pointerId); go(e); });
 }
 
 function clearGrid() {
@@ -1148,26 +1289,47 @@ function showEmpty() {
   if (!state.folders.length) {
     if (empty.dataset.shows === "start") return;  // (drawn already: it stays as it is, the focus with it)
     empty.dataset.shows = "start";
-    empty.replaceChildren(h("h2", {}, "Add a folder to start"),
+    empty.replaceChildren(emptyArt("folder"), h("h2", {}, "Add a folder to start"),
       h("p", {}, "Pick a folder with your images and videos, such as ComfyUI's output folder. The Gallery reads it and moves or deletes files only when you ask."),
       h("button.btn.primary", { type: "button", onclick: addFolder }, "Add a folder"),
       h("ul.setup", { id: "setup" }));
     welcome();
   } else if (queryString()) {
-    empty.replaceChildren(h("h2", {}, "No matches"), h("p", {}, "Nothing here matches this search."),
+    // more than one part to the search: each with what taking it away would find, the way out in one click
+    const parts = [...state.chips.map((c, i) => ({ label: `${c.key}: ${c.value}`, drop: () => { state.chips.splice(i, 1); searchChanged(); }, skip: i })),
+      ...(state.text.trim() ? [{ label: `“${state.text.trim()}”`, drop: () => { state.text = ""; $("q").value = ""; searchChanged(); }, skip: "text" }] : [])];
+    const list = parts.length > 1 ? h("ul.nm-list", { "aria-label": "Take one away" }, parts.map((p) => {
+      const n = h("span.nm-n", {}, "…");
+      countWithout(p.skip).then((t) => { n.textContent = t ? `${plural(t, "match", "matches")} without it` : "still none without it"; n.classList.toggle("some", !!t); });
+      return h("li", {}, h("span.nm-k", {}, p.label), n, h("button.btn.small", { type: "button", "aria-label": `Take away ${p.label}`, onclick: () => { p.drop(); $("q").focus(); } }, icon("remove"), "Take away"));
+    })) : null;
+    empty.replaceChildren(emptyArt("search"), h("h2", {}, "No matches"),
+      h("p", {}, list ? "Nothing here matches all of these at once." : "Nothing here matches this search."), list,
       h("button.btn", { type: "button", onclick: clearSearch }, "Clear the search"));
   } else if (state.view === "trash") {
-    empty.replaceChildren(h("h2", {}, "The Trash is empty"), h("p", {}, "Files you delete in the Gallery wait here, so you can put them back. Emptying it sends them to the Windows Recycle Bin."));
+    empty.replaceChildren(emptyArt("trash"), h("h2", {}, "The Trash is empty"), h("p", {}, "Files you delete in the Gallery wait here, so you can put them back. Emptying it sends them to the Windows Recycle Bin."));
   } else if (state.view === "album") {
-    empty.replaceChildren(h("h2", {}, "Nothing in this album yet"), h("p", {}, "Select files (Ctrl+click) and choose Album…, or name the album in a workflow's Gallery Info node."));
+    empty.replaceChildren(emptyArt("album"), h("h2", {}, "Nothing in this album yet"), h("p", {}, "Select files (Ctrl+click) and choose Album…, or name the album in a workflow's Gallery Info node."));
   } else if (state.view === "recent") {
-    empty.replaceChildren(h("h2", {}, "Nothing viewed yet"), h("p", {}, "Files you open appear here, the last one first."));
+    empty.replaceChildren(emptyArt("clock"), h("h2", {}, "Nothing viewed yet"), h("p", {}, "Files you open appear here, the last one first."));
   } else if (lastStatus && (lastStatus.scanning || lastStatus.queued)) {
-    empty.replaceChildren(h("h2", {}, "Indexing…"), h("p", {}, "Your files appear here as they're found."));
+    empty.replaceChildren(emptyArt("rescan"), h("h2", {}, "Indexing…"), h("p", {}, "Your files appear here as they're found."));
   } else {
-    empty.replaceChildren(h("h2", {}, "Nothing here"), h("p", {}, state.kind ? "No files of that kind in this view."
+    empty.replaceChildren(emptyArt("image"), h("h2", {}, "Nothing here"), h("p", {}, state.kind ? "No files of that kind in this view."
       : state.view === "folder" ? "No images or videos were found in this folder." : "No images or videos here."));
   }
+}
+
+// how many the view would show with one part of the search taken away (a chip's place, or "text" for the words)
+async function countWithout(skip) {
+  const rest = [...state.chips.filter((_, j) => j !== skip).map(chipText), skip === "text" ? "" : state.text.trim()];
+  const q = new URLSearchParams({ offset: 0, limit: 1, sort: sortFor() });
+  if (state.view === "random") q.set("seed", state.seed);
+  if (state.folder) q.set("folder", state.folder);
+  if (state.kind) q.set("kind", state.kind);
+  const text = [state.view === "album" ? `album:${quote(state.album)}` : "", state.sub ? `path:${quote(state.sub)}` : "", ...rest].filter(Boolean).join(" ");
+  if (text) q.set("q", text);
+  return (await api(`/files?${q}`).catch(() => ({ total: 0 }))).total || 0;
 }
 
 // the first start: what the Gallery found by itself, and the Start menu
@@ -1264,7 +1426,7 @@ function openViewer(i) {
   clearTimeout(viewedTimer);
   viewedTimer = setTimeout(() => api(`/file/${item.id}/viewed`, { method: "POST" }).catch(() => {}), 800);
   if (!itemAt(i + 1) && i + 1 < state.total) loadPage(Math.floor((i + 1) / PAGE));
-  if (wasHidden) $("v-media").focus({ preventScroll: true });
+  if (wasHidden) { $("v-media").focus({ preventScroll: true }); $("v-panel").scrollTop = 0; }
 }
 
 const folderOf = (item) => state.folders.find((f) => f.id === item.folder_id);
@@ -1391,12 +1553,12 @@ function renderDetails(info) {
   $("v-panel").replaceChildren(...parts);
 }
 
-async function openInComfy(info, btn) {
-  btn.disabled = true;
+async function openInComfy(info, btn = null) {
+  if (btn) btn.disabled = true;
   try {
     await api(`/file/${info.id}/open-in-comfy`, { method: "POST" });
     toast("Sent to ComfyUI: it opens in a new tab there.");
-  } catch (e) { toast(e.message, true); } finally { btn.disabled = false; }
+  } catch (e) { toast(e.message, true); } finally { if (btn) btn.disabled = false; }
 }
 
 async function saveRecipe(info, btn) {
@@ -1537,6 +1699,24 @@ function livePhoto(box, img, item) {
 }
 
 // in the grid: a video, or a Live Photo's motion, plays silently while the pointer rests on its tile
+// the mouse resting on a tile a moment: the first words of its prompt, under its name (asked for once, then remembered)
+const prompts = new Map();
+function peek(el, item) {
+  let timer = null;
+  el.addEventListener("mouseenter", () => {
+    timer = setTimeout(async () => {
+      if (!prompts.has(item.id)) {
+        const g = (await api(`/file/${item.id}/info`).catch(() => null))?.generation;
+        if (prompts.size > 2000) prompts.clear();
+        prompts.set(item.id, (g?.positive || "").replace(/\s+/g, " ").trim());
+      }
+      const text = prompts.get(item.id), box = el.querySelector(".name");
+      if (text && box && el.matches(":hover") && !box.querySelector(".n3")) box.append(h("span.n3", {}, text));
+    }, 600);
+  });
+  el.addEventListener("mouseleave", () => { clearTimeout(timer); el.querySelector(".name .n3")?.remove(); });
+}
+
 function hoverPlay(el, item) {
   let timer = null;
   el.addEventListener("mouseenter", () => {
@@ -1761,7 +1941,7 @@ function viewerKey(e) {
     box.addEventListener("pointermove", move);
     box.addEventListener("pointerup", up);
   });
-  window.addEventListener("resize", () => { if (!$("viewer").hidden) vApply(); });
+  new ResizeObserver(() => { if (!$("viewer").hidden) vApply(); }).observe($("v-media"));  // (the window, the details, the sidebar)
   $("v-zoom-range").addEventListener("input", (e) => zoomTo(ZMIN * Math.pow(ZMAX / ZMIN, Number(e.target.value) / 1000)));
   $("v-flip").onclick = flipView;
   $("v-rotate").onclick = rotateView;
@@ -1802,6 +1982,7 @@ function tagEditor(info) {
   };
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && input.value.trim()) { e.preventDefault(); change({ add: [input.value.trim()] }); input.value = ""; }
+    if (e.key === "Escape") { e.preventDefault(); input.value = ""; $("v-media").focus({ preventScroll: true }); }
     e.stopPropagation(); // typing here isn't a shortcut
   });
   let asked = 0, wait = null;
@@ -2073,6 +2254,7 @@ $("view-downloads").onclick = () => selectView("downloads");
 $("shuffle").onclick = () => selectView("random");
 $("side-hide").onclick = () => setSide(true);
 $("side-show").onclick = () => setSide(false);
+$("side-show-page").onclick = () => setSide(false);
 function viewPanel(anchor) {
   const seg = (opts, cur, pick) => {
     const wrap = h("div.seg.small", { role: "group" });
@@ -2136,9 +2318,17 @@ function setTile(n) {
   const off = keep !== null ? place(keep, L).top - top : 0;
   state.tile = n;
   store.set("tile", n);
+  showDensity();
   if (keep !== null) scroller.scrollTop = place(keep, layout()).top + sizer.offsetTop - off;
   draw();
 }
+// three sizes to jump between (Ctrl+1, 2, 3); the one the slider is at, if it's at one, is pressed
+const DENSITY = [...$("density").querySelectorAll("button")];
+function showDensity() {
+  for (const b of DENSITY) b.setAttribute("aria-pressed", String(Number(b.dataset.tile) === state.tile));
+}
+for (const b of DENSITY) b.onclick = () => setTile(Number(b.dataset.tile));
+showDensity();
 $("zoom-range").min = TILE_MIN;
 $("zoom-range").max = TILE_MAX;
 $("zoom-range").value = state.tile;
@@ -2199,7 +2389,8 @@ $("v-details").onclick = () => setDetails($("viewer").classList.contains("no-det
 function showHelp() {
   if (document.querySelector("dialog.help")) return;
   const keys = [["Grid", [["← → ↑ ↓", "move between files"], ["Enter or Space", "open"], ["Ctrl+click, Shift+click", "select"], ["Ctrl+A", "select everything in view"],
-    ["Delete", "move to the Trash"], ["Ctrl+Z", "undo the last change"], ["/ or Ctrl+F", "search"], ["Ctrl+B", "hide or show the sidebar"]]],
+    ["Delete", "move to the Trash"], ["Ctrl+Z", "undo the last change"], ["/ or Ctrl+F", "search"], ["Ctrl+B", "hide or show the sidebar"],
+    ["Ctrl+1, 2, 3", "compact, comfortable, large tiles"], ["Shift+F10", "a file's menu (or right-click)"]]],
     ["Viewer", [["← →", "previous, next"], ["1 – 5, 0", "rate (again: clear)"], ["F", "favourite"], ["P", "slideshow (right-click its button: the pace)"], ["I", "details panel"], ["Delete", "move to the Trash"], ["Esc", "back"]]],
     ["Swipe", [["A or ←", "delete (to the Trash)"], ["D or →", "keep"], ["W or ↑", "favourite and keep"], ["1 – 5", "rate and keep"], ["Z", "take the last one back"]]],
     ["To review", [["Y / N", "yes, it's them / no"], ["← →", "next card"]]]];
@@ -2238,6 +2429,11 @@ document.addEventListener("keydown", (e) => {
   if (e.ctrlKey && ["=", "+", "-", "0"].includes(e.key) && $("viewer").hidden && !isPage()) {
     e.preventDefault();
     setTile(e.key === "0" ? 176 : state.tile * (e.key === "-" ? 1 / 1.15 : 1.15));
+    return;
+  }
+  if (e.ctrlKey && !e.shiftKey && !e.altKey && ["1", "2", "3"].includes(e.key) && $("viewer").hidden && !isPage() && !inField) {
+    e.preventDefault();
+    setTile(Number(DENSITY[Number(e.key) - 1].dataset.tile));
     return;
   }
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z" && !inField) {

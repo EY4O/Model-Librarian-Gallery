@@ -1,7 +1,7 @@
 // Model Librarian Gallery: organising - the dialogs for tags, albums and moves, the Duplicates and History
 // pages, and Undo. A selection is a list of file ids, or a whole view ({view: {...}}).
 
-import { api, ask, baseName, fmtDate, fmtDur, fmtSize, h, holdFocus, icon, media, plural, stars, toast } from "./util.js";
+import { api, ask, baseName, emptyArt, midName, fmtDate, fmtDur, fmtSize, h, holdFocus, icon, media, plural, showToast, stars, toast } from "./util.js";
 import { preview } from "./characters.js";
 
 let refreshAll = () => {};
@@ -9,11 +9,8 @@ export function onChange(fn) { refreshAll = fn; }
 
 // a toast with Undo, after anything that changed files
 export function done(res, text) {
-  document.querySelector(".toast")?.remove();
-  const t = h("div.toast", { role: "status" }, h("span", {}, text),
-    res && res.op ? h("button.btn.small", { type: "button", onclick: () => { t.remove(); undo(res.op); } }, "Undo") : null);
-  document.body.append(t);
-  setTimeout(() => t.remove(), 8000);
+  const t = showToast(h("div.toast", { role: "status" }, h("span", {}, text),
+    res && res.op ? h("button.btn.small", { type: "button", onclick: () => { t.remove(); undo(res.op); } }, "Undo") : null), 8000);
   refreshAll();
 }
 
@@ -161,7 +158,7 @@ export function renameDialog(selection, count, { pattern = "{date}_{n}" } = {}) 
         last = p;
         if (p.limited) p.preview.push({ from: "…", to: `only the first ${p.count.toLocaleString()} at once` });
         plan.replaceChildren(
-          p.preview.length ? h("ol.rn-preview", {}, p.preview.map((x) => h("li", {}, h("span.rn-from", {}, x.from), " → ", h("span.rn-to", {}, x.to)))) : null,
+          p.preview.length ? h("ol.rn-preview", {}, p.preview.map((x) => h("li", {}, h("span.rn-from", {}, x.from), h("span.rn-arrow", { "aria-label": "to" }, "→"), h("span.rn-to", {}, x.to)))) : null,
           h("p.note", {}, p.count ? `${plural(p.count, "file")} will be renamed${p.count > p.preview.length ? ` (the first ${p.preview.length} shown)` : ""}.` : "Nothing would change."),
           p.same ? h("p.note", {}, `${plural(p.same, "file has", "files have")} that name already.`) : null,
           p.unavailable ? h("p.note", {}, `${plural(p.unavailable, "file isn't", "files aren't")} reachable right now.`) : null);
@@ -285,7 +282,7 @@ export async function sendToEagle(selection, count) {
 }
 
 // ---------------------------------------------------------------- Duplicates
-export async function renderDuplicates(root) {
+export async function renderDuplicates(root, at = null) {  // (at: drawn again after an answer for the at-th group: the focus goes on there)
   root.setAttribute("aria-busy", "true");
   let d;
   try { d = await api("/duplicates"); } catch (e) { toast(e.message, true); return; } finally { root.removeAttribute("aria-busy"); }
@@ -294,11 +291,19 @@ export async function renderDuplicates(root) {
   const extra = (g) => g.files.filter((_, i) => i !== (keepOf.get(g) ?? 0)).map((f) => f.id);
   const all = d.groups.flatMap(extra);
   const bothOf = (g) => (g.files.length === 2 ? "Keep both" : `Keep all ${g.files.length}`);
+  // the groups you kept all of: not shown, and how to have them offered again
+  const keptLine = () => (d.kept ? h("p.st-none", {}, `${plural(d.kept, "group")} you kept all of ${d.kept === 1 ? "isn't" : "aren't"} shown. `,
+    h("button.link", { type: "button", onclick: async () => {
+      try { const r = await api("/duplicates/unkeep", { method: "POST" }); done(r, `${plural(r.count, "group")} offered again.`); renderDuplicates(root); } catch (e) { toast(e.message, true); }
+    } }, "Show them again")) : null);
   // they're not to be thinned out: the group goes from the list (remembered; it comes back if another copy turns up)
   const keepAll = async (g, card) => {
     try {
       const r = await api("/duplicates/keep", { method: "POST", body: { ids: g.files.map((f) => f.id) } });
+      const had = card?.contains(document.activeElement) || !!document.querySelector(".cmp");
+      const next = card?.nextElementSibling?.querySelector("button");
       card?.remove();
+      if (had) focusIn(root, next);
       d.groups.splice(d.groups.indexOf(g), 1);  // (and not in Keep one of each any more)
       done(r, `${g.files.length === 2 ? "Both kept" : `All ${g.files.length} kept`}: they won't be offered as duplicates again.`);
     } catch (e) { toast(e.message, true); }
@@ -311,18 +316,16 @@ export async function renderDuplicates(root) {
     d.groups.length ? h("div.st-lede", {},
       h("p", {}, `${plural(d.groups.length, "group")}, ${fmtSize(d.wasted)} to free.`),
       h("p.st-none", {}, "Each keeps its first file: the rated or favourite one, then the one with generation data, then the biggest. Pick another to keep it instead; the rest go to the Trash."))
-      : h("p.st-none", {}, d.kept ? "No duplicates left to look at." : "No duplicates: no file is a copy of another, and no picture is saved twice."),
-    d.kept ? h("p.st-none", {}, `${plural(d.kept, "group")} you kept all of ${d.kept === 1 ? "isn't" : "aren't"} shown. `,
-      h("button.link", { type: "button", onclick: async () => {
-        try { const r = await api("/duplicates/unkeep", { method: "POST" }); done(r, `${plural(r.count, "group")} offered again.`); renderDuplicates(root); } catch (e) { toast(e.message, true); }
-      } }, "Show them again")) : null,
-    ...d.groups.map((g) => {
+      : h("div.c-empty", {}, emptyArt("copy"), h("h2", {}, "No duplicates"),
+        h("p", {}, "No file is a copy of another, and no picture is saved twice."), keptLine()),
+    d.groups.length ? keptLine() : null,
+    ...d.groups.map((g, gi) => {
       let keep = 0;
       const files = h("div.d-files");
       const draw = () => (keepOf.set(g, keep), files).replaceChildren(...g.files.map((f, i) => h("div.d-file" + (i === keep ? ".keep" : ""), {},
         h("button.d-thumb", { type: "button", title: "Look closer", onclick: () => preview(f) }, h("img", { src: media("thumb", f.id), alt: "", loading: "lazy" })),
         h("div.d-meta", {},
-          h("span.d-name", { title: `${f.folder_path}\\${f.rel}` }, f.name),
+          h("span.d-name", { title: `${f.folder_path}\\${f.rel}` }, midName(f.name)),
           h("span.d-sub", {}, [baseName(f.folder_path), f.width ? `${f.width} × ${f.height}` : "", fmtSize(f.size), f.meta === 1 ? "generation data" : ""].filter(Boolean).join(" · "),
             f.rating ? stars(f.rating, { size: 10 }) : null),
           i === keep ? h("span.d-keep", {}, "Kept") : h("button.link", { type: "button", onclick: () => { keep = i; draw(); } }, "Keep this one instead")))));
@@ -333,17 +336,28 @@ export async function renderDuplicates(root) {
             keep = k;
             draw();
             const others = g.files.filter((_, i) => i !== keep).map((f) => f.id);
-            if (await trashFiles(others)) renderDuplicates(root);
+            if (await trashFiles(others)) renderDuplicates(root, gi);
           }, { both: bothOf(g), keepAll: () => keepAll(g, card) }) }, "Compare"),
-          h("button.btn.small", { type: "button", title: "They're not duplicates to thin out: don't offer them again", onclick: () => keepAll(g, card) }, bothOf(g)),
-          h("button.btn.small", { type: "button", onclick: async () => {
-            const others = g.files.filter((_, i) => i !== keep).map((f) => f.id);
-            if (await trashFiles(others)) renderDuplicates(root);
-          } }, `Trash the other ${g.files.length - 1}`)),
+          h("div.d-acts", {},
+            h("button.btn.small", { type: "button", title: "They're not duplicates to thin out: don't offer them again", onclick: () => keepAll(g, card) }, bothOf(g)),
+            h("button.btn.small.danger", { type: "button", title: "The others go to the Trash; Ctrl+Z puts them back", onclick: async () => {
+              const others = g.files.filter((_, i) => i !== keep).map((f) => f.id);
+              if (await trashFiles(others)) renderDuplicates(root, gi);
+            } }, `Trash the other ${g.files.length - 1}`))),
         files);
       return card;
     }),
   ]);
+  const cards = root.querySelectorAll("section.st-card");
+  if (at != null && (!document.activeElement || document.activeElement === document.body))  // (the group answered is gone: the one now in its place)
+    focusIn(root, (cards[at] || cards[cards.length - 1])?.querySelector("button"));
+}
+
+// the focus onto a button of the page drawn again, else its heading
+function focusIn(root, el) {
+  const to = el || root.querySelector("h1");
+  if (!el && to) to.tabIndex = -1;
+  to?.focus({ preventScroll: true });
 }
 
 // the copies of one picture side by side (four at a time, ← → for more), filling the window: fitted, or at actual size
@@ -438,7 +452,7 @@ export async function renderHistory(root) {
       h("span.h-what", {}, o.summary),
       o.undone ? h("span.st-none", {}, "Undone") : o.undoable ? h("button.btn.small", { type: "button", onclick: async () => { await undo(o.id); renderHistory(root); } }, "Undo")
         : h("span.st-none", { title: "Restore the files from the Windows Recycle Bin" }, "In the Recycle Bin"))))
-      : h("p.st-none", {}, "Nothing yet: moves, deletes and changes to many files at once show up here."));
+      : h("div.c-empty", {}, emptyArt("clock"), h("h2", {}, "Nothing yet"), h("p", {}, "Moves, deletes and changes to many files at once show up here, each with an Undo.")));
 }
 
 export { icon };

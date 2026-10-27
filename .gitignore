@@ -10,3 +10,4 @@ Thumbs.db
 tests/out/
 dist/
 .impeccable/live/
+.impeccable/critique/

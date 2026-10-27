@@ -19,6 +19,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
         </button>
       </div>
+      <div class="nav-label">Library</div>
       <div class="nav-group">
         <button type="button" class="nav-item" id="view-all">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
@@ -56,11 +57,8 @@
         </button>
       </div>
       <div class="nav-sep"></div>
+      <div class="nav-label">Organise</div>
       <div class="nav-group">
-        <button type="button" class="nav-item" id="view-stats">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
-          <span class="label">Statistics</span>
-        </button>
         <button type="button" class="nav-item" id="view-characters">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>
           <span class="label" id="characters-label">Characters</span><span class="n" id="char-count"></span>
@@ -73,13 +71,21 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="4" width="11" height="15" rx="2" transform="rotate(8 12.5 11.5)"/><rect x="5" y="5" width="11" height="15" rx="2"/></svg>
           <span class="label">Swipe</span>
         </button>
+        <button type="button" class="nav-item" id="view-duplicates" title="Copies of one file, and the same picture saved twice">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+          <span class="label">Duplicates</span>
+        </button>
         <button type="button" class="nav-item" id="view-artists" title="Who made your pictures, and where they're from" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 0 0 0 18c1.2 0 1.8-.9 1.8-1.8 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10" cy="7" r="1.2"/><circle cx="15" cy="7" r="1.2"/></svg>
           <span class="label">Artists</span><span class="n" id="artist-count"></span>
         </button>
-        <button type="button" class="nav-item" id="view-duplicates" title="Copies of one file, and the same picture saved twice">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
-          <span class="label">Duplicates</span>
+      </div>
+      <div class="nav-sep"></div>
+      <div class="nav-label">Insights</div>
+      <div class="nav-group">
+        <button type="button" class="nav-item" id="view-stats">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+          <span class="label">Statistics</span>
         </button>
         <button type="button" class="nav-item" id="view-history" title="What you changed, with Undo">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2"/></svg>
@@ -112,11 +118,14 @@
     </nav>
 
     <main class="main">
+      <button type="button" class="icon-btn side-show-page" id="side-show-page" aria-label="Show the sidebar" title="Show the sidebar (Ctrl+B)" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></svg>
+      </button>
       <header class="toolbar">
         <button type="button" class="icon-btn" id="side-show" aria-label="Show the sidebar" title="Show the sidebar (Ctrl+B)" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></svg>
         </button>
-        <div class="title"><h1 id="view-title">All</h1><span class="count" id="count"></span></div>
+        <div class="title"><h1 id="view-title">All</h1><span class="count" id="count" aria-live="polite" aria-atomic="true"></span></div>
         <button type="button" class="btn" id="shuffle" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h3.5c2.5 0 4 1.5 5.5 4.5S15 16 17.5 16H21M3 16h3.5c1.3 0 2.3-.4 3.2-1.2M14.3 8.2C15.2 7.4 16.2 7 17.5 7H21M18.5 4.5 21 7l-2.5 2.5M18.5 13.5 21 16l-2.5 2.5"/></svg>Shuffle again
         </button>
@@ -148,6 +157,9 @@
             <option value="0">Unrated</option>
           </select>
         </label>
+        <div class="seg small density" id="density" role="group" aria-label="Tile size">
+          <button type="button" data-tile="130" title="Compact (Ctrl+1)">Compact</button><button type="button" data-tile="200" title="Comfortable (Ctrl+2)">Comfortable</button><button type="button" data-tile="320" title="Large (Ctrl+3)">Large</button>
+        </div>
         <div class="zoom" title="Tile size (Ctrl + mouse wheel, Ctrl+= and Ctrl+−)">
           <button type="button" class="icon-btn small" id="zoom-out" aria-label="Smaller tiles"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
           <input type="range" id="zoom-range" step="2" aria-label="Tile size">
@@ -158,10 +170,14 @@
           <span id="view-label">View</span>
         </button>
       </header>
+      <div class="grid-area">
       <div class="grid-scroll" id="scroll" tabindex="-1">
-        <div class="grid-sizer" id="sizer" role="grid" aria-label="Files"></div>
+        <div class="day-pin" id="day-pin" aria-hidden="true"></div>
+        <div class="grid-sizer" id="sizer" role="listbox" aria-multiselectable="true" aria-label="Files"></div>
       </div>
+      <div class="scrub" id="scrub" aria-hidden="true" hidden><span class="scrub-tip" id="scrub-tip" hidden></span></div>
       <div class="empty" id="empty" hidden></div>
+      </div>
       <section class="stats" id="stats" aria-label="Statistics" hidden></section>
       <footer class="statusbar">
         <span class="dot" id="status-dot"></span><span id="status">Up to date</span>

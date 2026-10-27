@@ -9,9 +9,12 @@ from . import credits, fileops, metadata, search
 MAX = fileops.MAX_ITEMS
 
 
-def album_id(c, name: str, create: bool = True) -> int | None:
+def album_id(c, name: str, create: bool = True, strict: bool = False) -> int | None:
     """The album of that name (made if there's none); None for a smart album: its search decides what's in it."""
-    name = search.album_name(name)
+    try:
+        name = search.album_name(name, cut=not strict)  # (strict, a name you typed: too long is refused, not cut short without a word)
+    except ValueError as ex:
+        raise fileops.OpError(str(ex))
     if not name:
         return None
     r = c.execute("SELECT id, query FROM albums WHERE name=? COLLATE NOCASE", (name,)).fetchone()
@@ -29,7 +32,7 @@ def apply(db, ids, action: str, value=None) -> dict:
     if not ids:
         raise fileops.OpError("Nothing selected.")
     n = len(ids)
-    files = f"{n} file{'s' if n != 1 else ''}"
+    files = f"{n:,} file{'s' if n != 1 else ''}"
     with db.write() as c:
         ids = [r[0] for r in c.execute(f"SELECT id FROM files WHERE id IN ({','.join('?' * len(ids))})", ids)]
         if action in ("rate", "favorite"):
@@ -77,7 +80,7 @@ def apply(db, ids, action: str, value=None) -> dict:
         elif action in ("album", "unalbum"):
             if c.execute("SELECT 1 FROM albums WHERE name=? COLLATE NOCASE AND query IS NOT NULL", (search.album_name(value),)).fetchone():
                 raise fileops.OpError("That's a smart album: it holds what its search finds. Change its search instead.")
-            aid = album_id(c, value, create=action == "album")
+            aid = album_id(c, value, create=action == "album", strict=action == "album")
             if not aid:
                 raise fileops.OpError("Which album?")
             data = []

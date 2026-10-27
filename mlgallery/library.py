@@ -6,6 +6,7 @@ they stopped, so a session that was closed mid-way simply continues.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 
@@ -42,11 +43,16 @@ WHO = ("character", "person")  # an entry in Characters / People: someone made u
 REVIEW_RUN = 120  # seconds: answers in To review this close together are one History step
 
 
+def natural(text: str) -> list:
+    """A sort key that reads the numbers in a name as numbers: "tag 2" before "tag 19"."""
+    return [int(p) if p.isdigit() else p.casefold() for p in re.split(r"(\d+)", text)]
+
+
 def _review_summary(name: str, items: list) -> str:
     last = {it["file_id"]: it["verdict"] for it in items}  # (a file answered twice counts once, as its last answer)
     yes = sum(1 for v in last.values() if v == "confirm")
     n = len(last)
-    return f"Reviewed {n} file{'s' if n != 1 else ''} for {name}: {yes} yes, {n - yes} no"
+    return f"Reviewed {n:,} file{'s' if n != 1 else ''} for {name}: {yes} yes, {n - yes} no"
 
 
 FILE_IS = {"ai": "f.meta = 1", "photo": "f.meta <> 1 AND f.taken IS NOT NULL", "illustration": "f.meta <> 1 AND f.taken IS NULL"}
@@ -310,6 +316,8 @@ class Library:
             loras: dict[int, list] = {}
             for r in (c.execute(f"SELECT file_id, name, strength FROM uses WHERE kind='lora' AND file_id IN ({marks}) ORDER BY rowid", ids) if ids else []):
                 loras.setdefault(r[0], []).append((r[1], r[2]))
+            # its main colour (colors.py), what the tile shows while the thumbnail is on its way
+            tones = dict(c.execute(f"SELECT file_id, hex FROM colors WHERE rank=0 AND file_id IN ({marks})", ids).fetchall()) if ids else {}
         at = {r["id"]: dict(r) for r in rows}
         resolve = self.db.cached(("family-resolver",), lambda: families.Resolver(self.models))
         for i, it in at.items():
@@ -320,6 +328,8 @@ class Library:
             if loras.get(i):
                 (name, strength), n = loras[i][0], len(loras[i])
                 it.update(lora=name, lora_strength=strength, loras=n)
+            if tones.get(i):
+                it["tone"] = tones[i]
         with self.db.read() as c:
             newest = c.execute("SELECT MAX(id) FROM files").fetchone()[0] or 0  # what "Select all" covers: files up to this one
         return {"total": total, "offset": offset, "items": [at[i] for i in ids if i in at], "max_id": newest}
@@ -384,7 +394,8 @@ class Library:
                           " model, nodes, workflow IS NOT NULL AS has_workflow, info FROM generations WHERE file_id=?", (fid,)).fetchone()
             uses = [dict(r) for r in c.execute("SELECT kind, name, file, hash, strength, clip FROM uses WHERE file_id=? ORDER BY rowid", (fid,))]
             tags = [dict(r) for r in c.execute("SELECT t.name, ft.source FROM file_tags ft JOIN tags t ON t.id=ft.tag_id"
-                                               " WHERE ft.file_id=? AND ft.removed=0 ORDER BY t.name COLLATE NOCASE", (fid,))]
+                                               " WHERE ft.file_id=? AND ft.removed=0", (fid,))]
+            tags.sort(key=lambda t: natural(t["name"]))  # ("tag 2" before "tag 19")
             src = c.execute("SELECT source FROM marks WHERE file_id=?", (fid,)).fetchone()
         out = dict(f)
         out["path"] = os.path.join(f["folder_path"], *f["rel"].split("/"))
@@ -967,7 +978,7 @@ class Library:
     def album_move(self, path: str, to: str) -> dict:
         """An album and the albums inside it (or, for a name that's only their parent, those) to another name:
         "Trips / Coast" to "Coast" brings it to the top; to "Summer / Coast", into Summer."""
-        old, new = search.album_name(path), search.album_name(to)
+        old, new = search.album_name(path), search.album_name(to, cut=False)
         if not old or not new:
             raise ValueError("An album needs a name.")
         if new.casefold().startswith(old.casefold() + " / "):
@@ -1071,7 +1082,7 @@ class Library:
             query = str(query).strip()[:2000]
             if not query:
                 raise ValueError("A smart album needs a search.")
-        name = search.album_name(name)  # (a / in it puts it inside another: "Trips / Coast" is in Trips)
+        name = search.album_name(name, cut=False)  # (a / in it puts it inside another: "Trips / Coast" is in Trips)
         if not name:
             raise ValueError("An album needs a name.")
         moved = None

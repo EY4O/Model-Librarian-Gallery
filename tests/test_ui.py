@@ -409,14 +409,23 @@ def test_characters_screens(server):
             ch = api("/characters")["characters"][0]
             assert ch["name"] == "Aurelia" and ch["n"] > 0
             assert await e.js("document.getElementById('char-count').textContent") == "1"
-            # To review: Y confirms the focused one
+            # To review, one at a time (the first way it opens): Y straight after choosing it in the sidebar answers the
+            # picture shown; then all at once, Y on a card answers that card
             if ch["review"]:
                 await e.click("#view-review")
-                await e.wait("document.querySelector('.stats h1')?.textContent === 'To review' && document.querySelector('.r-card')")
-                before = await e.js("document.querySelectorAll('.r-card').length")
-                await e.js("const c = document.querySelector('.r-card'); c.focus(); c.dispatchEvent(new KeyboardEvent('keydown', {key: 'y', bubbles: true})); true")
-                await e.wait(f"document.querySelectorAll('.r-card').length === {before - 1} || document.querySelector('.c-empty')")
+                await e.wait("document.querySelector('.stats h1')?.textContent === 'To review' && document.querySelector('.rf .rf-n')")
+                left = int((await e.js("document.querySelector('.rf-n').textContent")).split(" of ")[1].replace(",", ""))
+                await e.js("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key: 'y', bubbles: true})); true")
+                await e.wait(f"document.querySelector('.rf-n')?.textContent.endsWith(' of {left - 1}') || document.querySelector('.c-empty')")
                 assert api(f"/characters/{ch['id']}")["counts"]["confirmed"] == 1
+                if left > 1:
+                    await e.js("[...document.querySelectorAll('.st-head .seg button')].find(b => b.textContent === 'All at once').click(); true")
+                    await e.wait("document.querySelector('.r-card')")
+                    before = await e.js("document.querySelectorAll('.r-card').length")
+                    await e.js("const c = document.querySelector('.r-card'); c.focus(); c.dispatchEvent(new KeyboardEvent('keydown', {key: 'y', bubbles: true})); true")
+                    await e.wait(f"document.querySelectorAll('.r-card').length === {before - 1} || document.querySelector('.c-empty')")
+                    assert api(f"/characters/{ch['id']}")["counts"]["confirmed"] == 2
+                    await e.js("localStorage.removeItem('mlg.reviewMode'); true")
             # the details panel shows the character, and "Not Aurelia" takes it off that file
             await e.click("#view-all")
             await e.js("const q = document.getElementById('q'); q.value = 'character:aurelia '; q.dispatchEvent(new Event('input')); true")
@@ -811,5 +820,13 @@ def test_the_sidebar_tree_by_keyboard_and_overlays_holding_the_focus(server):
             assert await e.js("document.getElementById('app').inert && document.querySelector('.swipe').contains(document.activeElement)")
             await e.key("Escape")
             await e.wait("!document.querySelector('.swipe') && !document.getElementById('app').inert")
+            # a screen of its own (To review) has no toolbar: with the sidebar hidden, its own button brings it back
+            await e.js("document.getElementById('view-review').click(); document.getElementById('side-hide').click(); true")
+            await e.wait("document.getElementById('app').classList.contains('side-hidden') && !document.getElementById('side-show-page').hidden")
+            await e.js("document.getElementById('side-show-page').click(); true")
+            await e.wait("!document.getElementById('app').classList.contains('side-hidden') && document.getElementById('side-show-page').hidden")
+            await e.js("document.getElementById('side-hide').click(); document.getElementById('view-all').click(); true")  # (and on the grid, the toolbar's own)
+            await e.wait("document.getElementById('side-show-page').hidden && !document.getElementById('side-show').hidden")
+            await e.js("document.getElementById('side-show').click(); true")
             assert not await e.js("window.__errors.length"), await e.js("window.__errors")
     asyncio.run(go())

@@ -1,6 +1,6 @@
 // Model Librarian Gallery: characters - the list, one character's page, the editor, and To review.
 
-import { api, ask, fmtNum, h, has, icon, media, mixedWho, plural, stacks, toast, who, holdFocus } from "./util.js";
+import { api, ask, emptyArt, fmtNum, h, has, icon, initial, media, mixedWho, plural, stacks, store, toast, who, holdFocus } from "./util.js";
 
 const KIND = { lora: "LORA", word: "WORD", tag: "TAG" };
 const KIND_HELP = {
@@ -12,7 +12,7 @@ const KIND_HELP = {
 // ---------------------------------------------------------------- shared bits
 // a picture, or (no confirmed file yet) the name's first letter on a quiet tint
 function thumb(id, alt = "") {
-  const none = () => h("div.c-thumb.none", { "aria-hidden": "true" }, h("span.c-initial", {}, (alt || "?").trim().charAt(0).toUpperCase() || "?"));
+  const none = () => h("div.c-thumb.none", { "aria-hidden": "true" }, h("span.c-initial", {}, initial(alt)));
   if (!id) return none();
   const img = h("img", { src: media("thumb", id), alt, loading: "lazy", decoding: "async" });
   img.onerror = () => img.replaceWith(none());
@@ -63,7 +63,7 @@ export async function renderCharacters(root, ctx) {
       h("div.c-sugg", {}, data.suggestions.map((s) => h("button.btn", { type: "button", title: `Make ${s.name} a character (${plural(s.n, "file")})`,
         onclick: () => editCharacter(null, ctx, { name: s.name }) }, icon("plus"), s.name, h("span.lg-n", {}, s.n.toLocaleString()))))) : null,
     cards.length ? h("div.c-grid", {}, cards)
-      : h("div.c-empty", {}, h("h2", {}, `No ${who(true, false)} yet`),
+      : h("div.c-empty", {}, emptyArt("person"), h("h2", {}, `No ${who(true, false)} yet`),
         h("p", {}, mixedWho()
           ? "Someone in your photos (a person) or someone made up (a character): a name you add to files, plus, for a character, what gives it away (its LoRA, trigger words or prompt tags). Each gets a page with every file they're in, and the Gallery asks you about the ones it isn't sure of."
           : has("photos")
@@ -74,8 +74,8 @@ export async function renderCharacters(root, ctx) {
 }
 
 // ---------------------------------------------------------------- one character
-export async function renderCharacter(root, id, ctx) {
-  reviewAgain = () => renderCharacter(root, id, ctx);
+export async function renderCharacter(root, id, ctx, again = null) {
+  reviewAgain = (fid) => renderCharacter(root, id, ctx, { fid });
   root.setAttribute("aria-busy", "true");
   let c, queue, recent;
   try {
@@ -87,7 +87,7 @@ export async function renderCharacter(root, id, ctx) {
     return;
   } finally { root.removeAttribute("aria-busy"); }
   const filter = () => ctx.open([{ key: "character", value: c.name }]);
-  const dates = c.first ? `${new Date(c.first * 1000).toLocaleDateString()} – ${new Date(c.last * 1000).toLocaleDateString()}` : "";
+  const dates = c.first ? [...new Set([c.first, c.last].map((t) => new Date(t * 1000).toLocaleDateString()))].join(" – ") : "";
   const saveRules = async (rules) => {
     try {
       await api(`/characters/${id}`, { method: "POST", body: { rules } });
@@ -141,14 +141,25 @@ export async function renderCharacter(root, id, ctx) {
           : h("p.st-none", {}, "No checkpoint recorded in its files."),
         c.timeline.length > 1 ? h("div.c-months", { "aria-label": "Files per month" }, months(c.timeline)) : null)]),
     queue.items.length ? h("section.st-card", { "aria-label": "To review" },
-      h("div.st-card-head", {}, h("h2", {}, `To review (${(queue.counts?.[id] ?? queue.items.length).toLocaleString()})`), h("span", {}, `Is ${c.name} in these? Y for yes, N for no`)),
-      reviewGrid(queue.items, ctx, () => renderCharacter(root, id, ctx), { single: true })) : null,
+      h("div.st-card-head", {}, h("h2", {}, "To review (", count(queue.counts?.[id] ?? queue.items.length), ")"), h("span", {}, `Is ${c.name} in these? Y for yes, N for no`)),
+      reviewGrid(queue.items, ctx, () => renderCharacter(root, id, ctx, {}), { single: true })) : null,
     recent.items.length ? h("section.st-card", { "aria-label": "Latest" },
       h("div.st-card-head", {}, h("h2", {}, "Latest"), h("button.link", { type: "button", onclick: filter }, `All ${c.n.toLocaleString()}`)),
       h("div.c-files", {}, recent.items.map((f) => h("button.c-file", { type: "button", title: f.name, onclick: () => preview(f),
         oncontextmenu: (e) => { e.preventDefault(); setCover(c, f.id, ctx, () => renderCharacter(root, id, ctx)); } }, thumb(f.id, f.name)))),
       h("p.st-none", {}, "Right-click a picture to use it as the portrait.")) : null,
   ].filter(Boolean));
+  settle(root, again);
+}
+
+// after a redraw that took the focus with it: on the card waiting again, else the first card, else the page's heading
+function settle(root, again) {  // (again: drawn again, {fid} the card to be on; null: opened)
+  const now = document.activeElement, fid = again?.fid;
+  if (!again || (now && now !== document.body && now.isConnected)) return;  // (somewhere else on purpose: left there)
+  const cards = [...root.querySelectorAll(".r-card")];
+  const to = cards.find((c) => c.dataset.fid === String(fid)) || cards[0] || root.querySelector(".rf") || root.querySelector("h1");
+  if (to && !cards.length) to.tabIndex = -1;
+  to?.focus({ preventScroll: !fid });
 }
 
 async function setCover(c, fileId, ctx, done) {
@@ -162,15 +173,17 @@ async function setCover(c, fileId, ctx, done) {
 
 function months(tl) {
   const max = Math.max(...tl.map((m) => m.n), 1);
-  return tl.slice(-18).map((m) => {
+  const shown = tl.slice(-18), every = Math.ceil(shown.length / 8);
+  return shown.map((m, i) => {
     const [y, mo] = m.month.split("-").map(Number);
     const label = new Date(y, mo - 1, 1).toLocaleDateString(undefined, { month: "short", year: "2-digit" });
-    return h("div.c-month", { title: `${label}: ${plural(m.n, "file")}` }, h("span.c-mbar", { style: { height: `${Math.max(4, (m.n / max) * 100)}%` } }), h("span.c-mlabel", {}, label));
+    const named = i % every === 0 || i === shown.length - 1;  // (a label where there's room: every few months, and the last)
+    return h("div.c-month", { title: `${label}: ${plural(m.n, "file")}` }, h("span.c-mbar", { style: { height: `${Math.max(4, (m.n / max) * 100)}%` } }), h("span.c-mlabel", {}, named ? label : ""));
   });
 }
 
 function histogram(values) {
-  if (!values.length) return h("p.st-none", {}, "Its LoRA isn't in any of its files (or it has no LoRA rule).");
+  if (!values.length) return h("p.st-none", {}, "No strength to show: it has no LoRA rule, or that LoRA isn't in its files.");
   const bins = Array.from({ length: 15 }, (_, i) => ({ lo: i / 10, n: 0 }));
   for (const v of values) bins[Math.max(0, Math.min(14, Math.floor(v * 10 + 1e-9)))].n++;
   const used = bins.filter((b) => b.n);
@@ -274,8 +287,8 @@ export function editCharacter(c, ctx, preset = {}) {
 }
 
 // ---------------------------------------------------------------- To review
-export async function renderReview(root, ctx) {
-  reviewAgain = () => { ctx.refresh(); renderReview(root, ctx); };
+export async function renderReview(root, ctx, again = null) {
+  reviewAgain = (fid) => { ctx.refresh(); renderReview(root, ctx, { fid }); };
   root.setAttribute("aria-busy", "true");
   let queue;
   try { queue = await api("/characters/review"); } catch (e) { toast(e.message, true); return; } finally { root.removeAttribute("aria-busy"); }
@@ -284,38 +297,116 @@ export async function renderReview(root, ctx) {
     if (!groups.has(it.character_id)) groups.set(it.character_id, { name: it.character, items: [] });
     groups.get(it.character_id).items.push(it);
   }
+  // one at a time (a big picture, what's next in a strip) or all at once (the cards, by character): remembered
+  const mode = store.get("reviewMode", "one");
+  const modes = queue.items.length ? h("div.seg.small", { role: "group", "aria-label": "How to review" }, [["one", "One at a time"], ["all", "All at once"]].map(([v, label]) =>
+    h("button" + (v === mode ? ".on" : ""), { type: "button", "aria-pressed": String(v === mode), onclick: () => { store.set("reviewMode", v); renderReview(root, ctx, {}); } }, label))) : null;
+  paneKeys = null;
+  const gone = new Set();  // answered since this page was drawn: All are / None are leave them as answered
+  const waiting = (g) => g.items.filter((it) => !gone.has(it.file_id));
+  const more = (cid, g) => (queue.counts?.[cid] || 0) > g.items.length;  // (more wait than were loaded: the next lot after these)
   root.replaceChildren(...[
-    h("header.st-head", {}, h("h1", {}, "To review"), h("div.keys", {}, h("kbd", {}, "Y"), " it's them ", h("kbd", {}, "N"), " it isn't ", h("kbd", {}, "Z"), " take back ", h("kbd", {}, "← →"), " next")),
-    queue.items.length ? null : h("div.c-empty", {}, h("h2", {}, "Nothing to review"), h("p", {}, "When a weak rule matches a file, it waits here for a yes or no.")),
-    ...[...groups.entries()].map(([cid, g]) => h("section.st-card", { "aria-label": g.name },
+    h("header.st-head", {}, h("h1", {}, "To review"), h("div.row", {}, modes,
+      h("div.keys", {}, h("kbd", {}, "Y"), " it's them ", h("kbd", {}, "N"), " it isn't ", h("kbd", {}, "Z"), " take back ", h("kbd", {}, "← →"), " next"))),
+    queue.items.length ? null : h("div.c-empty", {}, emptyArt("check"), h("h2", {}, "Nothing to review"), h("p", {}, "When a weak rule matches a file, it waits here for a yes or no.")),
+    queue.items.length && mode === "one" ? onePane() : null,
+    ...(mode === "one" ? [] : [...groups.entries()]).map(([cid, g]) => h("section.st-card", { "aria-label": g.name },
       h("div.st-card-head", {}, h("div", {}, h("h2", {}, h("button.link", { type: "button", onclick: () => ctx.show("character", cid) }, g.name),
-        ` · ${(queue.counts?.[cid] ?? g.items.length).toLocaleString()}`),
+        " · ", count(queue.counts?.[cid] ?? g.items.length)),
         h("p.st-none", {}, (queue.counts?.[cid] || 0) > g.items.length ? `A weak rule matched these: is it them? The newest ${g.items.length.toLocaleString()} are shown; the rest come next.`
           : "A weak rule matched these: is it them?")),
         h("div.row", {},
           h("button.btn.small", { type: "button", onclick: () => decideAll(cid, g, "confirm") }, (queue.counts?.[cid] || 0) > g.items.length ? `These are all ${g.name}` : `All are ${g.name}`),
           h("button.btn.small", { type: "button", onclick: () => decideAll(cid, g, "reject") }, (queue.counts?.[cid] || 0) > g.items.length ? `None of these are ${g.name}` : `None are ${g.name}`))),
-      reviewGrid(g.items, ctx, () => { ctx.refresh(); renderReview(root, ctx); }, { single: true }))),
+      reviewGrid(g.items, ctx, () => { ctx.refresh(); renderReview(root, ctx, {}); }, { single: true, answered: (it) => gone.add(it.file_id) }))),
   ].filter(Boolean));
+  settle(root, again);
+
+  // one at a time: the picture large, Y or N, and the next ones in a strip under it; the keys work from anywhere on the page
+  function onePane() {
+    const items = [...queue.items];
+    let i = Math.max(0, items.findIndex((it) => it.file_id === again?.fid));
+    const pane = h("div.rf", { tabIndex: -1, "aria-label": "One at a time: Y it's them, N it isn't, Z take back, arrows for the next" });
+    const answer = async (verdict) => {
+      const it = items[i];
+      if (!it || pane.classList.contains("busy")) return;
+      lastCid = it.character_id;
+      pane.classList.add("busy", verdict === "confirm" ? "yes" : "no");
+      try {
+        await api(`/characters/${it.character_id}/review`, { method: "POST", body: { files: [it.file_id], verdict } });
+        items.splice(i, 1);
+        gone.add(it.file_id);
+        ctx.refresh();
+      } catch (e) { toast(e.message, true); }
+      pane.classList.remove("busy", "yes", "no");
+      show();
+    };
+    const show = () => {
+      if (!items.length) return renderReview(root, ctx, {});  // (all answered: Nothing to review, or the next lot)
+      const all = Object.values(queue.counts || {}).reduce((a, b) => a + b, 0) - gone.size;
+      i = Math.max(0, Math.min(i, items.length - 1));
+      const it = items[i], g = groups.get(it.character_id);
+      const had = pane.contains(document.activeElement) || document.activeElement === document.body;
+      const big = h("img", { src: media("thumb", it.file_id) + "&s=768", alt: it.name, decoding: "async" });
+      pane.replaceChildren(
+        h("div.rf-top", {},
+          h("p.rf-q", {}, "Is ", h("button.link", { type: "button", onclick: () => ctx.show("character", it.character_id) }, it.character), " in it?"),
+          h("span.rf-n", {}, `${(i + 1).toLocaleString()} of ${items.length.toLocaleString()}`, all > items.length ? ` · ${all.toLocaleString()} waiting` : "")),
+        h("div.rf-bar", { "aria-hidden": "true" }, h("span", { style: { width: `${((i + 1) / items.length) * 100}%` } })),
+        h("button.rf-stage", { type: "button", title: "Look closer (Space)", "aria-label": `${it.name}: look closer`, onclick: () => preview(it, { answer }) }, big),
+        h("div.rf-acts", {},
+          h("button.btn.yes", { type: "button", title: `Yes, ${it.character}`, onclick: () => answer("confirm") }, h("kbd", {}, "Y"), h("span.btn-l", {}, `Yes, ${it.character}`)),
+          h("button.btn.no", { type: "button", title: `Not ${it.character}`, onclick: () => answer("reject") }, h("kbd", {}, "N"), h("span.btn-l", {}, `Not ${it.character}`))),
+        items.length > i + 1 ? h("div.rf-strip", { "aria-label": "Next" }, items.slice(i + 1, i + 13).map((n, k) =>
+          h("button.rf-next", { type: "button", title: `${n.name} (${n.character})`, onclick: () => { i += k + 1; show(); } }, thumb(n.file_id, n.name)))) : null,
+        waiting(g).length > 1 ? h("div.rf-all", {}, h("span", {}, more(it.character_id, g)
+            ? `Or these ${waiting(g).length.toLocaleString()} of ${g.name}'s ${(queue.counts[it.character_id]).toLocaleString()} at once:` : `Or all ${waiting(g).length.toLocaleString()} of ${g.name}'s at once:`),
+          h("button.btn.small", { type: "button", onclick: () => decideAll(it.character_id, g, "confirm") }, more(it.character_id, g) ? `These are all ${g.name}` : `All are ${g.name}`),
+          h("button.btn.small", { type: "button", onclick: () => decideAll(it.character_id, g, "reject") }, more(it.character_id, g) ? `None of these are ${g.name}` : `None are ${g.name}`)) : null);
+      if (had) pane.focus({ preventScroll: true });
+    };
+    paneKeys = { pane, key: (e) => {
+      const k = e.key.toLowerCase();
+      if (k === "y") answer("confirm");
+      else if (k === "n") answer("reject");
+      else if (e.key === "ArrowRight") { i += 1; show(); }
+      else if (e.key === "ArrowLeft") { i -= 1; show(); }
+      else if (k === " " && (!e.target.closest?.("button") || e.target.id === "view-review")) preview(items[i], { answer });
+      else return false;
+      return true;
+    } };
+    show();
+    return pane;
+  }
   async function decideAll(cid, g, verdict) {
     lastCid = cid;
-    if (!await ask(verdict === "confirm" ? `Are all ${g.items.length} ${g.name}?` : `Are none of these ${g.name}?`,
+    const files = waiting(g);
+    if (!files.length) return;
+    if (!await ask(verdict === "confirm" ? `Are all ${files.length} ${g.name}?` : `Are none of these ${files.length} ${g.name}?`,
       verdict === "confirm" ? `They'll count as ${g.name} from now on.` : `They won't be suggested for ${g.name} again.`, { ok: verdict === "confirm" ? `Yes, all ${g.name}` : `None are ${g.name}` })) return;
-    await api(`/characters/${cid}/review`, { method: "POST", body: { files: g.items.map((i) => i.file_id), verdict } }).catch((e) => toast(e.message, true));
+    await api(`/characters/${cid}/review`, { method: "POST", body: { files: files.map((i) => i.file_id), verdict } }).catch((e) => toast(e.message, true));
     ctx.refresh();
-    renderReview(root, ctx);
+    renderReview(root, ctx, {});
   }
 }
 
 // Z: the last yes or no for this character taken back, and the page drawn again with it waiting once more
 async function takeBack(cid) {
   try {
-    await api(`/characters/${cid}/review/back`, { method: "POST" });
+    const r = await api(`/characters/${cid}/review/back`, { method: "POST" });
     toast("Taken back: it's waiting for a yes or no again.");
-    reviewAgain?.();
+    if (document.activeElement?.closest?.(".r-card")) document.activeElement.blur();  // (the page is drawn again: the focus goes to the card back)
+    reviewAgain?.(r?.file_id);
   } catch (e) { toast(e.message === "Nothing to take back." ? "Nothing to take back here." : e.message, true); }
 }
 let reviewAgain = null, lastCid = null;  // (how to draw the page that's showing again; whose answer was last)
+let paneKeys = null;  // To review one at a time: its keys, from anywhere on the page (or straight after choosing it in the sidebar)
+document.addEventListener("keydown", (e) => {
+  if (!paneKeys || !paneKeys.pane.isConnected || paneKeys.pane.closest("[hidden]") || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.closest?.("input, select, textarea, dialog, .menu") || document.querySelector(".preview, dialog[open], .menu")) return;
+  if (e.target.closest?.("#side") && e.target.id !== "view-review") return;  // (the sidebar's own keys, but for To review's row)
+  if (paneKeys.key(e)) { e.preventDefault(); e.stopImmediatePropagation(); }
+});
 // Z on To review (or that character's page), with no card in front of it: after the last one's answered, say
 document.addEventListener("keydown", (e) => {
   if (e.key.toLowerCase() !== "z" || e.ctrlKey || e.metaKey || e.altKey || !lastCid || e.target.closest?.("input, select, textarea, dialog, .r-card") || document.querySelector(".preview")) return;
@@ -325,7 +416,10 @@ document.addEventListener("keydown", (e) => {
   takeBack(lastCid);
 });
 
-function reviewGrid(items, ctx, after, { single = false } = {}) {
+// how many wait for an answer, in a section's heading: one less with each answer given
+const count = (n) => h("span.r-n", { "data-n": n }, n.toLocaleString());
+
+function reviewGrid(items, ctx, after, { single = false, answered = null } = {}) {
   const grid = h("div.r-grid", { role: "list" });
   const decide = async (it, card, verdict) => {
     lastCid = it.character_id;
@@ -333,7 +427,10 @@ function reviewGrid(items, ctx, after, { single = false } = {}) {
     card.querySelectorAll("button").forEach((b) => { b.disabled = true; });
     try {
       await api(`/characters/${it.character_id}/review`, { method: "POST", body: { files: [it.file_id], verdict } });
+      answered?.(it);
       const next = card.nextElementSibling || card.previousElementSibling;
+      const n = card.closest("section")?.querySelector(".r-n");
+      if (n) { n.dataset.n = Math.max(0, n.dataset.n - 1); n.textContent = Number(n.dataset.n).toLocaleString(); }
       setTimeout(() => { card.remove(); next?.focus(); if (!grid.children.length) after(); else ctx.refresh(); }, 180);
     } catch (e) {
       toast(e.message, true);
@@ -341,13 +438,13 @@ function reviewGrid(items, ctx, after, { single = false } = {}) {
     }
   };
   grid.replaceChildren(...items.map((it) => {
-    const card = h("div.r-card", { role: "listitem", tabIndex: 0, "aria-label": `${it.name}: is ${it.character} in it? Y or N` });
+    const card = h("div.r-card", { role: "listitem", tabIndex: 0, "data-fid": it.file_id, "aria-label": `${it.name}: is ${it.character} in it? Y or N` });
     card.append(...[
       h("button.r-thumb", { type: "button", title: "Look closer", onclick: () => preview(it, { answer: (v) => decide(it, card, v) }) }, thumb(it.file_id, it.name)),
       single ? null : h("div.r-q", {}, h("span.r-who", {}, it.character)),
       h("div.r-acts", {},
-        h("button.btn.small.yes", { type: "button", onclick: () => decide(it, card, "confirm") }, h("kbd", {}, "Y"), it.character),
-        h("button.btn.small.no", { type: "button", onclick: () => decide(it, card, "reject") }, h("kbd", {}, "N"), `Not ${it.character}`))].filter(Boolean));
+        h("button.btn.small.yes", { type: "button", title: it.character, onclick: () => decide(it, card, "confirm") }, h("kbd", {}, "Y"), h("span.btn-l", {}, it.character)),
+        h("button.btn.small.no", { type: "button", title: `Not ${it.character}`, onclick: () => decide(it, card, "reject") }, h("kbd", {}, "N"), h("span.btn-l", {}, `Not ${it.character}`)))].filter(Boolean));
     card.addEventListener("keydown", (e) => {
       const k = e.key.toLowerCase();
       if (k === "y") { e.preventDefault(); decide(it, card, "confirm"); }

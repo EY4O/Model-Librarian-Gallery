@@ -3,7 +3,7 @@
 // characters. It does what a paired device may: look, rate, favourite, tag, albums, characters, the artist and a note,
 // the Trash (and putting back), and Swipe. Settings, folders, moving and renaming stay on the PC.
 
-import { albumTree, api, askText, dirTree, fmtDate, fmtSize, h, holdFocus, icon, lib, media, plural, store, toast, who } from "./util.js";
+import { albumTree, api, askText, dayLabel, dirTree, fmtDate, fmtSize, h, holdFocus, icon, lib, media, plural, store, toast, who } from "./util.js";
 import { swipeReview } from "./swipe.js";
 import * as org from "./organize.js";
 
@@ -75,9 +75,10 @@ function loadMore() {
   S.loading ||= api(`/files?${params(S.items.length)}`).then((d) => {
     if (run !== S.run) return;
     S.total = d.total;
+    const before = S.items[S.items.length - 1];
     S.items.push(...d.items);
     S.end = S.items.length >= d.total || !d.items.length;
-    grid.append(...d.items.map(tile));
+    grid.append(...withDays(d.items, before));
     showEmpty();
     renderTop();
   }).catch((e) => toast(e.message, true)).finally(() => {
@@ -102,7 +103,7 @@ async function refresh() {
     S.loading = null;
     const keep = new Set(S.items.map((i) => i.id));
     for (const id of [...S.sel]) if (!keep.has(id)) S.sel.delete(id);
-    grid.replaceChildren(...S.items.map(tile));
+    grid.replaceChildren(...withDays(S.items));
     window.scrollTo(0, y);
     showEmpty();
     render();
@@ -120,10 +121,22 @@ function showEmpty() {
   empty.replaceChildren(h("h2", {}, title), h("p", {}, text));
 }
 
+// newest first: a heading where the day changes (Today, Yesterday, a weekday, a date), across the whole row
+const dayOf = (it) => { const d = new Date((it.shot || it.mtime) * 1000); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+function withDays(items, before = null) {
+  if (sortFor() !== "newest" || S.q) return items.map(tile);
+  let last = before ? dayOf(before) : null;
+  return items.flatMap((it) => {
+    const day = dayOf(it), head = day !== last ? h("h2.p-day", {}, dayLabel(day)) : null;
+    last = day;
+    return head ? [head, tile(it)] : [tile(it)];
+  });
+}
+
 // ---------------------------------------------------------------- tiles: a tap opens, a long press selects
 function tile(it) {
   const el = h("button.p-tile" + (S.sel.has(it.id) || S.selAll ? ".sel" : ""), { type: "button", "aria-label": it.name },
-    h("img", { src: media("thumb", it.id), alt: "", loading: "lazy", draggable: false, onerror: (e) => e.target.remove() }),
+    h("img", { src: media("thumb", it.id), alt: "", loading: "lazy", draggable: false, onerror: (e) => e.target.replaceWith(h("span.p-ph", {}, it.name)) }),
     it.kind === "video" ? h("span.p-badge", {}, icon("play")) : null,
     it.favorite ? h("span.p-fav", {}, icon("heart")) : null,
     h("span.p-check", {}, icon("check")));
@@ -150,7 +163,7 @@ function toggle(it, el, on = !S.sel.has(it.id)) {
   if (S.selAll) {  // all of them, then one let go: the loaded ones, less that one
     S.selAll = false;
     S.sel = new Set(S.items.map((i) => i.id));
-    for (const t of grid.children) t.classList.add("sel");
+    for (const t of grid.querySelectorAll(".p-tile")) t.classList.add("sel");
   }
   if (on) S.sel.add(it.id); else S.sel.delete(it.id);
   el.classList.toggle("sel", on);
@@ -188,7 +201,7 @@ function renderTop() {
   if (S.selecting) {
     top.replaceChildren(iconBtn("remove", "Clear the selection", () => clearSel()),
       h("span.p-title", {}, `${selCount().toLocaleString()} selected`), h("span.spacer"),
-      S.selAll ? null : h("button.p-text", { type: "button", onclick: () => { S.selAll = true; for (const t of grid.children) t.classList.add("sel"); render(); } }, "All"));
+      S.selAll ? null : h("button.p-text", { type: "button", onclick: () => { S.selAll = true; for (const t of grid.querySelectorAll(".p-tile")) t.classList.add("sel"); render(); } }, "All"));
     return;
   }
   if (S.searching) {
@@ -220,13 +233,22 @@ function renderBar() {
         act("trash", "Delete", async () => { if (await org.trashFiles(sel)) clearSel(); }, ".danger")]));
     return;
   }
-  const on = S.page === "browse" ? "browse" : S.view.kind === "trash" ? "trash" : "grid";
+  const on = S.page === "browse" || S.view.kind === "trash" ? "browse" : S.searching ? "search" : "grid";
   const tab = (id, ico, label, fn) => h("button.p-tab" + (on === id ? ".on" : ""), { type: "button", onclick: fn, "aria-current": on === id ? "page" : null }, icon(ico), h("span", {}, label));
   bar.replaceChildren(
-    tab("grid", "grid", "Library", () => (S.page === "grid" && S.view.kind === "trash" ? show({ kind: "all", title: "All" }) : S.page === "grid" ? window.scrollTo({ top: 0, behavior: "smooth" }) : (S.page = "grid", reload()))),
+    tab("grid", "grid", "Library", () => {
+      if (S.searching) { S.searching = false; if (S.q) { S.q = ""; reload(); } else render(); return; }
+      if (S.page === "grid" && S.view.kind === "trash") show({ kind: "all", title: "All" });
+      else if (S.page === "grid") window.scrollTo({ top: 0, behavior: "smooth" });
+      else { S.page = "grid"; reload(); }
+    }),
     tab("browse", "folder", "Browse", openBrowse),
     h("button.p-tab", { type: "button", disabled: S.view.kind === "trash", onclick: startSwipe }, icon("swipe"), h("span", {}, "Swipe")),
-    tab("trash", "trash", "Trash", () => show({ kind: "trash", title: "Trash" })));
+    tab("search", "search", "Search", () => {  // (the Trash is in Browse)
+      S.searching = true;
+      if (S.page !== "grid") { S.page = "grid"; reload(); }
+      render();
+    }));
 }
 
 function rateMenu(anchor) {
@@ -486,17 +508,17 @@ async function details(it) {
       h("div.pv-chips", {}, people.map((c) => chip(c.name, null)),
         add(who(false), () => org.characterDialog([it.id], 1, { characters: S.characters, label: who(false), onDone: () => { loadLists(); again(); } }))),
       h("h3", {}, "Artist"),
-      h("div.pv-line", {}, h("p.pv-text" + (info.credit?.artist ? "" : ".dim"), {}, info.credit?.artist || "No one yet"),
+      h("div.pv-line", {}, h("p.pv-text" + (info.credit?.artist?.name ? "" : ".dim"), {}, info.credit?.artist?.name || "No one yet"),
         h("button.pv-add", { type: "button", onclick: async () => {
-          const name = await askText("Who made it", "Artist", info.credit?.artist || "", { ok: "Save" });
-          if (name == null || name === (info.credit?.artist || "")) return;
+          const name = await askText("Who made it", "Artist", info.credit?.artist?.name || "", { ok: "Save" });
+          if (name == null || name === (info.credit?.artist?.name || "")) return;
           try { await api(`/file/${it.id}/credit`, { method: "POST", body: { artist: name } }); again(); } catch (e) { toast(e.message, true); }
         } }, "Change")),
       info.credit?.url ? h("p.pv-meta", {}, h("a", { href: info.credit.url, target: "_blank", rel: "noopener noreferrer" }, info.credit.site_name || info.credit.url)) : null,
       h("h3", {}, "Note"),
-      h("div.pv-line", {}, h("p.pv-text" + (info.note ? "" : ".dim"), {}, info.note || "None"),
+      h("div.pv-line", {}, h("p.pv-text" + (info.note?.note ? "" : ".dim"), {}, info.note?.note || "None"),
         h("button.pv-add", { type: "button", onclick: async () => {
-          const note = await askText("Note", "Note", info.note || "", { ok: "Save" });
+          const note = await askText("Note", "Note", info.note?.note || "", { ok: "Save" });
           if (note == null) return;
           try { await api(`/file/${it.id}/note`, { method: "POST", body: { note } }); again(); } catch (e) { toast(e.message, true); }
         } }, "Change")),

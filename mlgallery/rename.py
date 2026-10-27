@@ -154,7 +154,7 @@ def apply(db, ids, pattern: str, start: int = 1) -> dict:
             n = sum(1 for it in done if "with" not in it)
             first = next((it for it in done if "with" not in it), None)
             to = first["to_rel"].split("/")[-1] if first else ""
-            op = fileops.record(c, "rename", f"Renamed {n} file{'s' if n != 1 else ''} {f'to {to}' if n == 1 and to else 'by a pattern'}", done)
+            op = fileops.record(c, "rename", f"Renamed {n:,} file{'s' if n != 1 else ''} {f'to {to}' if n == 1 and to else 'by a pattern'}", done)
     db.user_change()
     return {"op": op, "renamed": sum(1 for it in done if "with" not in it), "failed": failed}
 

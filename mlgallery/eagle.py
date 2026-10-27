@@ -341,7 +341,7 @@ def apply_import(db, plan: dict) -> dict:
         credits.resolve(c, sourced)
         n = len({i["file_id"] for i in plan["matched"]})
         copied = sorted({i["file_id"] for i in plan["matched"] if i.get("copied_rel")})
-        op = fileops.record(c, "eagle", f"Brought in {n} file{'s' if n != 1 else ''}' tags, albums and ratings from Eagle ({plan['name']})"
+        op = fileops.record(c, "eagle", f"Brought in {n:,} file{'s' if n != 1 else ''}' tags, albums and ratings from Eagle ({plan['name']})"
                             + (f", {len(copied)} of them copied in" if copied else ""),
                             {"tags": tagged, "albums": filed, "marks": rated, "notes": noted, "copied": copied, "sources": sourced,
                              "new_albums": sorted(set(made_albums))})

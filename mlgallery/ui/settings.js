@@ -1,10 +1,48 @@
 // Model Librarian Gallery: Settings - the library, folders, phones and tablets, thumbnails, videos, Model Librarian, ComfyUI, the data folder, updates.
 
-import { KINDS, Pace, api, ask, askText, baseName, fmtDate, fmtLeft, fmtSize, h, job, lib, plural, progressBar, toast } from "./util.js";
+import { KINDS, Pace, api, ask, askText, baseName, fmtDate, fmtLeft, fmtSize, h, icon, job, lib, plural, progressBar, toast } from "./util.js";
 import { dialog, done } from "./organize.js";
 import { qrSvg } from "./qr.js";
 
 const field = (label, control, note) => h("div.set-row", {}, h("label.set-label", {}, label), h("div.set-control", {}, control, note ? h("p.note", {}, note) : null));
+
+// a field saved as you leave it: a tick beside it for a moment, or what's wrong under it (the value stays, to put right)
+function saved(input, err, { clear = false } = {}) {
+  input.closest(".set-control")?.querySelector(".set-err")?.remove();
+  const box = input.closest(".inline") || input;
+  box.parentElement.querySelector(".set-saved")?.remove();
+  if (err) { box.after(h("p.set-err", { role: "alert" }, err)); input.setAttribute("aria-invalid", "true"); return; }
+  input.removeAttribute("aria-invalid");
+  if (clear) return;
+  const tick = h("span.set-saved", { role: "status" }, icon("check"), "Saved");
+  box.after(tick);
+  setTimeout(() => tick.remove(), 2200);
+}
+// what the note under these says depends on the value (found or not): the page is drawn again after them
+const REDRAW = new Set(["ffmpeg", "ml_data", "comfy_url"]);
+
+// the sections down the left, to jump to; the one at the top of the page is marked as you scroll
+function index(root, scroller) {
+  const cards = [...root.querySelectorAll("section.st-card.set")];
+  const nav = h("nav.set-index", { "aria-label": "Settings sections" }, cards.map((c, i) => {
+    c.id = `set-sec-${i}`;
+    return h("a", { href: `#${c.id}`, onclick: (e) => {
+      e.preventDefault();
+      c.scrollIntoView({ block: "start" });
+      const h2 = c.querySelector("h2");
+      if (h2) { h2.tabIndex = -1; h2.focus({ preventScroll: true }); }
+    } }, c.getAttribute("aria-label"));
+  }));
+  const mark = () => {
+    const top = scroller.getBoundingClientRect().top + 80;
+    let on = 0;
+    cards.forEach((c, i) => { if (c.getBoundingClientRect().top <= top) on = i; });
+    nav.querySelectorAll("a").forEach((a, i) => a.toggleAttribute("aria-current", i === on));
+  };
+  scroller.onscroll = () => { if (nav.isConnected) mark(); };
+  requestAnimationFrame(mark);
+  return nav;
+}
 
 export async function renderSettings(root, ctx) {
   let s, folders, lb, inbox, remote;
@@ -20,17 +58,30 @@ export async function renderSettings(root, ctx) {
       if (at) document.getElementById(at)?.focus();
     } catch (e) { toast(e.message, true); }
   };
-  const text = (key, placeholder, what) => {
-    const input = h("input", { type: "text", value: s.settings[key] || "", placeholder, spellcheck: false, "aria-label": what });
-    input.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") save({ [key]: input.value.trim() }, what); });
-    return h("div.inline", {}, input, h("button.btn", { type: "button", onclick: () => save({ [key]: input.value.trim() }, what) }, "Save"));
+  // saved as you leave the field (or press Enter): no Save buttons
+  const quiet = async (key, input) => {
+    const v = input.value.trim();
+    if (v === (s.settings[key] || "")) return saved(input, null, { clear: true });  // (put back as it was: no error left showing)
+    try {
+      await api("/settings", { method: "POST", body: { [key]: v } });
+      s.settings[key] = v;
+      if (!REDRAW.has(key)) return saved(input);
+      const to = document.activeElement?.id, top = root.scrollTop;  // (where the focus went on to: still there once drawn again)
+      await renderSettings(root, ctx);
+      root.scrollTop = top;
+      if (to) document.getElementById(to)?.focus({ preventScroll: true });
+      const again = document.getElementById(input.id);
+      if (again) saved(again);
+    } catch (e) { saved(input, e.message); }
   };
-  const secret = (key, what) => {
-    const input = h("input", { type: "password", value: s.settings[key] || "", placeholder: "None", autocomplete: "off", "aria-label": what });
-    input.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") save({ [key]: input.value.trim() }, what); });
-    return h("div.inline", {}, input, h("button.btn", { type: "button", onclick: () => save({ [key]: input.value.trim() }, what) }, "Save"));
+  const text = (key, placeholder, what, type = "text") => {
+    const input = h("input", { type, id: `set-${key}`, value: s.settings[key] || "", placeholder, spellcheck: false, autocomplete: "off", "aria-label": what,
+      onchange: () => quiet(key, input) });
+    input.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") input.dispatchEvent(new Event("change")); });
+    return h("div.inline", {}, input);
   };
-  const thumbSize = h("select", { "aria-label": "Thumbnail size", onchange: (e) => save({ thumb_size: Number(e.target.value) }, "Thumbnail size") },
+  const secret = (key, what) => text(key, "None", what, "password");
+  const thumbSize = h("select", { id: "set-thumb_size", "aria-label": "Thumbnail size", onchange: (e) => save({ thumb_size: Number(e.target.value) }, "Thumbnail size") },
     [[256, "256 px (quick, small)"], [384, "384 px"], [512, "512 px (sharp on big screens and large tiles)"]].map(([v, l]) => h("option", { value: v, selected: s.settings.thumb_size === v }, l)));
   const eagle = h("input", { type: "checkbox", checked: s.settings.skip_eagle, onchange: (e) => save({ skip_eagle: e.target.checked }, "Eagle setting"), id: "set-eagle" });
   const comfyNote = h("p.note", {}, "Open in ComfyUI sends a file's workflow there; Model Librarian (1.23 or newer) opens it in a new tab.");
@@ -81,6 +132,8 @@ export async function renderSettings(root, ctx) {
         } }, s.shortcut ? "Make it again" : "Add the Gallery to the Start menu")), "Starts it in its own window, with its icon.")),
     updates(s, () => renderSettings(root, ctx), save),
   );
+  const body = h("div.set-body", {}, ...[...root.children].filter((c) => c.matches("section")));
+  root.append(h("div.set-layout", {}, index(body, root), body));
 }
 
 // ---------------------------------------------------------------- New downloads: the folders whose pictures are offered for filing
@@ -128,9 +181,18 @@ function phones(r, again) {
   };
   const on = h("input", { type: "checkbox", id: "set-remote", checked: r.on,
     onchange: (e) => set("/remote", { on: e.target.checked }, e.target.checked ? "Phones and tablets you pair can open the library now." : "Phones and tablets can't open the library any more.") });
-  const port = h("input", { type: "number", min: 1024, max: 65535, value: r.port, "aria-label": "Port" });
-  const savePort = () => set("/remote", { port: Number(port.value) }, "Port saved.");
-  port.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") savePort(); });
+  // saved as you leave it, like the other fields: a tick, or what's wrong under it (the value left to put right)
+  const port = h("input", { type: "number", id: "set-port", min: 1024, max: 65535, value: r.port, "aria-label": "Port", onchange: async () => {
+    const was = r.port, v = Number(port.value);
+    if (v === was) return saved(port, null, { clear: true });
+    try {
+      await api("/remote", { method: "POST", body: { port: v } });
+      r.port = v;
+      saved(port);
+      for (const c of document.querySelectorAll(".set-addrs code")) c.textContent = c.textContent.replace(`:${was}`, `:${v}`);
+    } catch (e) { saved(port, e.message); }
+  } });
+  port.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") port.dispatchEvent(new Event("change")); });
   const where = r.addresses.length ? h("ul.set-addrs", {}, r.addresses.map((a) => h("li", {}, h("code", {}, a.url), h("span.st-none", {}, KIND_NET[a.kind]))))
     : h("span.st-none", {}, "This PC has no home network or Tailscale address right now.");
   const devices = r.devices.length ? h("ol.set-folders.set-devices", {}, r.devices.map((d) => h("li", {},
@@ -151,7 +213,7 @@ function phones(r, again) {
     field("Phone and tablet", h("label.check", { for: "set-remote" }, on, " Let paired phones and tablets open the library"),
       r.on && !r.running ? "On, but not listening: another program has the port. Pick another one below."
         : "The first time, Windows asks whether the Gallery may use the network: allow it on private networks."),
-    field("Port", h("div.inline.set-port", {}, port, h("button.btn", { type: "button", onclick: savePort }, "Save")),
+    field("Port", h("div.inline.set-port", {}, port),
       "It stays the same, so paired devices keep their address. Change it only if another program uses it."),
     r.on ? field("Addresses", where, "Home Wi-Fi carries it unencrypted, like anything else on your network; over Tailscale it's encrypted.") : null,
     field("Paired devices", devices));

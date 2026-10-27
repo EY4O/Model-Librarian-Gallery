@@ -124,11 +124,14 @@ def _in(values: list) -> str:
     return ",".join("?" * len(values))
 
 
-def album_name(name) -> str:
+def album_name(name, cut: bool = True) -> str:
     """An album's name with its nesting written one way: "Trips/Coast" and "Trips /Coast" are "Trips / Coast" (in Trips).
-    Within 100 letters (never ending in a /), and with ' for " (a search quotes names with ")."""
+    Within 100 letters (never ending in a /), and with ' for " (a search quotes names with "). cut=False, for a name
+    you typed: one too long is refused rather than cut short without a word."""
     tidy = lambda s: " / ".join(p.strip() for p in s.split("/") if p.strip())
     out = tidy(str(name or "").replace('"', "'"))
+    if len(out) > 100 and not cut:
+        raise ValueError(f"That name is too long: {len(out)} letters, with the albums it's in (100 at most).")
     return tidy(out[:100]) if len(out) > 100 else out
 
 
