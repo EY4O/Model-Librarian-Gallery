@@ -1671,9 +1671,9 @@ def _settings_out(lib, updater: Updater, can_restart: bool) -> dict:
     from .thumbs import find_ffmpeg
     backups = os.path.join(lib.data_dir, "backups")
     last = sorted(f for f in os.listdir(backups) if f.endswith(".db")) if os.path.isdir(backups) else []
-    from . import shortcut
+    from . import mllink, shortcut
     shown = {k: v for k, v in lib.settings.all().items() if k != "remote_devices"}  # (the devices' keys' hashes stay in the file)
-    return {"settings": shown, "ml_data_found": lib.models.data_dir(), "data_dir": lib.data_dir,
+    return {"settings": shown, "ml_data_found": lib.models.data_dir(), "ml_search": mllink.SEARCH, "data_dir": lib.data_dir,
             "ffmpeg_found": find_ffmpeg(lib.settings.get("ffmpeg")), "last_backup": last[-1] if last else None, "version": VERSION,
             "shortcut": shortcut.exists() if os.name == "nt" else None, "update": dict(updater.info(), can_restart=can_restart)}
 

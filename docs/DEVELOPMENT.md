@@ -21,7 +21,7 @@ uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
 .venv/Scripts/python -m mlgallery --server --data <folder>   # server only, on a throwaway data folder
 ```
 
-Its data (the index, thumbnails, settings) lives in `%LOCALAPPDATA%\Model Librarian Gallery`, or wherever `--data` / `MLG_DATA` points; `--library DIR` opens a library (its index in `DIR\.mlgallery`, the settings still on the PC). `MLG_HOME` moves the PC's own folder (settings, recent libraries); the tests point it at a throwaway. Try changes on a data folder of your own and generated media (`python tests/sample_media.py <folder>`), not on your real library.
+Its data (the index, thumbnails, settings) lives in `%LOCALAPPDATA%\Model Librarian Gallery`, or wherever `--data` / `MLG_DATA` points; `--library DIR` opens a library (its index in `DIR\.mlgallery`, the settings still on the PC). `MLG_HOME` moves the PC's own folder (settings, recent libraries); the tests point it at a throwaway. Try changes on a data folder of your own and generated media (`python tests/sample_media.py <folder>`), not on your real library. A Gallery on `--data` / `MLG_DATA` never looks for Model Librarian's folder (`mllink.SEARCH`): it uses one only when `MLG_ML_DATA` or Settings names it, so a test run can't sync characters into your real list or take the extension's characters from your Downloads. Give it a dummy `.sm_model_fetcher` (a folder with a `registry.json`) in `MLG_ML_DATA` when a test needs one.
 
 ## Tests
 

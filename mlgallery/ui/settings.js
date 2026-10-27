@@ -108,6 +108,7 @@ export async function renderSettings(root, ctx) {
       h("div.st-card-head", {}, h("h2", {}, "Model Librarian and ComfyUI")),
       field("Model Librarian's data", text("ml_data", "Empty: found by itself", "Model Librarian data folder"),
         s.ml_data_found ? `Using ${s.ml_data_found}: its library shows the models you never use, and Save as recipe puts recipes there.`
+          : s.ml_search === false ? "Not looked for: this Gallery has a data folder of its own (--data), so it only uses one set here."
           : "Not found. It's the .sm_model_fetcher folder inside your models folder."),
       field("ComfyUI's address", h("div", {}, text("comfy_url", "http://127.0.0.1:8188", "ComfyUI address")), null), comfyNote),
     h("section.st-card.set", { "aria-label": "Eagle" },

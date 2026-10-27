@@ -45,12 +45,19 @@ def _is_ml(p: str) -> bool:
     return any(os.path.isfile(os.path.join(p, f)) for f in ("registry.json", "hash_cache.json", "usage.json"))
 
 
+# False in a Gallery on a data folder of its own (--data or MLG_DATA: the tests, a throwaway): Model Librarian's folder
+# is never looked for, only the one set in Settings or MLG_ML_DATA, so a test run can't sync characters into yours
+SEARCH = True
+
+
 def find(configured: str = "") -> str | None:
     """Model Librarian's shared data folder, or None. A folder set in Settings (or MLG_ML_DATA) is the only one
-    looked at; otherwise the usual places are."""
+    looked at; otherwise the usual places are (unless SEARCH is off)."""
     configured = os.environ.get("MLG_ML_DATA") or configured
     if configured:
         return os.path.normpath(configured) if _is_ml(configured) else None
+    if not SEARCH:
+        return None
     return next((os.path.normpath(p) for p in _candidates() if _is_ml(p)), None)
 
 

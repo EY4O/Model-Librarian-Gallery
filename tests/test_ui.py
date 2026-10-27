@@ -35,6 +35,7 @@ def server(sample_dir, tmp_path_factory):
             return json.load(r)
 
     api.base, api.token = base, token  # (for a request api() doesn't make: DELETE)
+    assert api("/settings")["ml_search"] is False  # --data: Model Librarian's folder is never looked for (yours stays out of the tests)
     api("/library/kind", {"kind": "ai"})  # said once: these tests don't meet the question (test_empty_library does)
     api("/folders", {"path": sample_dir})
     deadline = time.time() + 90

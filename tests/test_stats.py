@@ -122,6 +122,18 @@ def test_find_only_looks_where_it_is_told(tmp_path, monkeypatch):
     assert mllink.stem("loras/Sub/x.v2.safetensors") == "x.v2" and mllink.stem("a.gguf") == "a" and mllink.stem("plain") == "plain"
 
 
+def test_a_gallery_on_a_data_folder_of_its_own_never_looks_for_model_librarian(tmp_path, monkeypatch):
+    data = fake_ml(tmp_path, [])
+    monkeypatch.delenv("MLG_ML_DATA", raising=False)
+    monkeypatch.setattr(mllink, "_candidates", lambda: [str(data)])  # (where yours would be: never the real places here)
+    assert mllink.find() == os.path.normpath(str(data))  # this PC's library: found by itself
+    monkeypatch.setattr(mllink, "SEARCH", False)  # --data: never looked for, so a test run can't sync characters into it
+    assert mllink.find() is None
+    assert mllink.find(str(data)) == os.path.normpath(str(data))  # set in Settings: that one
+    monkeypatch.setenv("MLG_ML_DATA", str(data))
+    assert mllink.find() == os.path.normpath(str(data))  # or MLG_ML_DATA
+
+
 def test_families_and_made_with(lib, media, tmp_path, monkeypatch):
     from mlgallery import families
     assert families.from_text("waiIllustriousSDXL_v15") == "Illustrious" and families.from_text("qwen_image_fp8") == "Qwen"

@@ -141,6 +141,10 @@ def main(argv=None) -> int:
         _message(str(ex))
         return 1
     data, root = pick["data"], pick["root"]
+    own = bool(args.data or os.environ.get("MLG_DATA"))  # a data folder of its own: never yours
+    if own:
+        from . import mllink
+        mllink.SEARCH = False  # (Model Librarian's folder only when it's named: MLG_ML_DATA, or Settings)
     lock = _Instance(data)
     if not lock.acquire():
         from . import tray
@@ -170,7 +174,7 @@ def main(argv=None) -> int:
     if pick["remember"]:
         libraries.remember(root)
     # how to open this same library again (Restart now, after an update)
-    lib.reopen = ["--library", root] if root else ["--data", data] if args.data or os.environ.get("MLG_DATA") else ["--local"]
+    lib.reopen = ["--library", root] if root else ["--data", data] if own else ["--local"]
     window = {"w": None, "quitting": False, "told": False}
     stop = threading.Event()
     icon = None  # the tray icon (in its own window, on Windows)
