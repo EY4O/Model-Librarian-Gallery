@@ -255,6 +255,7 @@ If the Gallery helps you find your way around your generations, you can support 
 
 Each version's full notes are on its [release page](https://github.com/EY4O/Model-Librarian-Gallery/releases). 1.15.0 to 1.17.1 went out together in 1.18.0, 1.2.0 with 1.3.0, and versions before 1.1.3 came before the Gallery had releases.
 
+- **1.19.1** — Fixes for linking characters: one with a tag of its own, two of a name in other series, Add clicked twice.
 - **1.19.0** — A picture saved from Danbooru offers its characters to add or link to yours, and counts as theirs once filed.
 - **1.18.1** — A character's name counts in either order (family name first, as Danbooru writes it, or last).
 - **1.18.0** — Save a picture or video to your phone's photos, over Tailscale with HTTPS.
