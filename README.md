@@ -184,7 +184,7 @@ A node in Model Librarian's pack: put **Gallery Info (Model Librarian)** before 
 <details>
 <summary><b>👤 Characters</b></summary>
 
-A character is a name, aliases, and rules: a **LoRA** (any version or strength) or **trigger words** are strong and count straight away; a **tag** is weak and sends matches to **To review**. Your yes and no stick: a file you rejected is never suggested again, and a weak rule you mostly reject goes quiet. Names from a workflow's Gallery Info node count as confirmed. Each character has a page with its LoRA strengths, the checkpoints it's made with, and its files by month.
+A character is a name, aliases, and rules: a **LoRA** (any version or strength) or **trigger words** are strong and count straight away; a **tag** is weak and sends matches to **To review**. Your yes and no stick: a file you rejected is never suggested again, and a weak rule you mostly reject goes quiet. Names from a workflow's Gallery Info node count as confirmed. A name is the same in either order (Danbooru's family name first, as in `uraraka_ochako`, or yours), so a trigger word that is the character's name matches prompts written either way. Each character has a page with its LoRA strengths, the checkpoints it's made with, and its files by month.
 </details>
 
 <details>
@@ -254,6 +254,7 @@ If the Gallery helps you find your way around your generations, you can support 
 
 Each version's full notes are on its [release page](https://github.com/EY4O/Model-Librarian-Gallery/releases). 1.15.0 to 1.17.1 went out together in 1.18.0, 1.2.0 with 1.3.0, and versions before 1.1.3 came before the Gallery had releases.
 
+- **1.18.1** — A character's name counts in either order (family name first, as Danbooru writes it, or last).
 - **1.18.0** — Save a picture or video to your phone's photos, over Tailscale with HTTPS.
 - **1.17.1** — Fixes and polish for the character sync with Model Librarian.
 - **1.17.0** — Link a LoRA to a character, and get hair, eye and clothing tags suggested from your images.

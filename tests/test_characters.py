@@ -108,6 +108,26 @@ def test_the_gallery_info_node_confirms_by_name(lib, media):
     assert lib.characters()["suggestions"] == []
 
 
+def test_a_name_in_either_order_is_the_same_name(lib, media):
+    ids = library(lib, media)
+    LAKE = names([i for i in range(16) if i % 8 == 1])  # (the samples whose prompt says "mountain lake")
+    # the character's own name as Danbooru writes it, family name first: the prompts' order counts too
+    cid = lib.character_save(None, "Mountain Lake", [], [{"kind": "word", "value": "lake_mountain"}])
+    assert q(lib, 'character:"mountain lake"') == LAKE and q(lib, 'character:"lake mountain"') == LAKE  # (searched for in either order too)
+    with lib.db.read() as c:
+        from mlgallery import characters as chars
+        assert chars.find(c, "Lake Mountain") == cid and chars.find(c, "lake_mountain_(lighthouse_tales)") == cid
+    # words that aren't its name stay a phrase in their own order
+    other = lib.character_save(None, "Nova", [], [{"kind": "word", "value": "lake mountain"}])
+    assert lib.character(other)["n"] == 0
+    # the Gallery Info node naming it the other way round
+    with lib.db.write() as c:
+        c.execute("UPDATE generations SET info=? WHERE file_id=?", (json.dumps({"characters": ["Uraraka Ochako"], "tags": []}), ids["c06.png"]))
+    och = lib.character_save(None, "Ochako Uraraka", [], [])
+    assert lib.info(ids["c06.png"])["characters"] == [{"id": och, "name": "Ochako Uraraka", "state": "confirmed", "source": "workflow"}]
+    assert lib.characters()["suggestions"] == []
+
+
 def test_new_files_are_matched_as_they_arrive(lib, media):
     library(lib, media, n=4)
     cid = lib.character_save(None, "Aurelia", [], [{"kind": "lora", "value": "aurelia"}])

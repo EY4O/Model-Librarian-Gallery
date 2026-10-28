@@ -5,7 +5,7 @@ keeps out of it). The Gallery keeps its name and aliases in its own columns and 
 tag, appearance, outfits, LoRA, picture, and when each part changed - as `shared` JSON. Each sync, under the list's lock:
 
 - a character in both: each part from whichever side changed it last (charstore.merge_parts)
-- one only in the list: linked to the Gallery's character of the same name, or made in the Gallery, with a rule to
+- one only in the list: linked to the Gallery's character of the same name (its words in any order), or made in the Gallery, with a rule to
   recognise it: its tag as a strong word rule (added once: one you remove stays out). Its LoRA adds no rule: a LoRA
   linked for Character Select and the Gallery's rules are kept apart
 - one only in the Gallery: added to the list
@@ -99,7 +99,7 @@ def plan(data: dict, rows: list[dict], gone: list[tuple[str, float]], now: float
     dead = charstore.deleted_ids(data)
     store = {c["id"]: c for c in data["characters"]}
     linked = {r["shared"]["id"]: r for r in rows if (r.get("shared") or {}).get("id")}
-    free = {r["name"].lower(): r for r in rows if not (r.get("shared") or {}).get("id")}
+    free = {charstore.name_key(r["name"]): r for r in rows if not (r.get("shared") or {}).get("id")}
     taken = {r["name"].lower() for r in rows} | {str(p).lower() for p in people}
 
     def to_gallery(m: dict, row: dict | None) -> tuple:
@@ -116,8 +116,8 @@ def plan(data: dict, rows: list[dict], gone: list[tuple[str, float]], now: float
 
     for sid, sc in list(store.items()):
         row = linked.pop(sid, None)
-        if row is None and str(sc.get("name") or "").lower() in free:  # the Gallery's character of that name: linked, the list's presets kept
-            row = free.pop(str(sc["name"]).lower())
+        if row is None and charstore.name_key(sc.get("name")) in free:  # the Gallery's character of that name: linked, the list's presets kept
+            row = free.pop(charstore.name_key(sc["name"]))
             m = dict(sc)
             m["aliases"] = list(sc.get("aliases") or []) + list(row.get("aliases") or [])
             m["name"] = row["name"]

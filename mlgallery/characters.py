@@ -2,6 +2,7 @@
 
     lora  a LoRA whose name contains this (any version or strength)      strong: counts straight away
     word  words in the positive prompt (a trigger word, as a phrase)    strong
+          (the character's own name, two or three words: in any order, as "uraraka ochako" or "ochako uraraka")
     tag   a prompt part or one of your tags, exactly                    weak: waits in To review
 
 A match is stored per file and character with its state: `auto` (a strong rule), `review` (only weak rules),
@@ -23,9 +24,34 @@ def norm(s: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[_\-]+", " ", str(s or ""))).strip().lower()
 
 
-def _fts_phrase(words: str) -> str | None:
-    w = norm(words).replace('"', "")
-    return f'prompt : "{w}"' if w else None
+def name_key(s) -> str:
+    """A name for telling names apart: its words in any order, its series in brackets left out. Danbooru puts a family
+    name first ("uraraka_ochako"), you may not ("Ochako Uraraka"): one name."""
+    return " ".join(sorted(re.sub(r"\s*\(.*\)$", "", norm(s)).split()))
+
+
+def _orders(c, rule) -> list[str]:
+    """A word rule's phrase, and when it's the character's own name (its name, an alias or its booru tag) of two or
+    three words, the same words in the other orders a name is written in (each word in turn first)."""
+    words = norm(rule["value"]).replace('"', "").split()
+    if not words:
+        return []
+    if not 2 <= len(words) <= 3:
+        return [" ".join(words)]
+    row = c.execute("SELECT name, aliases, shared FROM characters WHERE id=?", (rule["character_id"],)).fetchone()
+    if row:
+        names = [row["name"], *json.loads(row["aliases"] or "[]")]
+        try:
+            names.append((json.loads(row["shared"] or "{}") or {}).get("tag") or "")
+        except (ValueError, AttributeError):
+            pass
+        if name_key(" ".join(words)) in {name_key(n) for n in names}:
+            return [" ".join(words[i:] + words[:i]) for i in range(len(words))]
+    return [" ".join(words)]
+
+
+def _fts_phrase(c, rule) -> str | None:
+    return " OR ".join(f'prompt : "{w}"' for w in _orders(c, rule)) or None
 
 
 def rule_files(c, rule) -> set[int]:
@@ -41,7 +67,7 @@ def rule_files(c, rule) -> set[int]:
             return set()
         return {r[0] for r in c.execute(f"SELECT file_id FROM uses WHERE kind='lora' AND name IN ({','.join('?' * len(names))})", names)}
     if kind == "word":
-        q = _fts_phrase(value)
+        q = _fts_phrase(c, rule)
         return {r[0] for r in c.execute("SELECT rowid FROM search WHERE search MATCH ?", (q,))} if q else set()
     if kind == "tag":
         v = norm(value)
@@ -57,7 +83,7 @@ def _file_matches(c, rule, file_id: int) -> bool:
         v = norm(value)
         return bool(v) and any(v in norm(r[0]) for r in c.execute("SELECT name FROM uses WHERE file_id=? AND kind='lora'", (file_id,)))
     if kind == "word":
-        q = _fts_phrase(value)
+        q = _fts_phrase(c, rule)
         return bool(q) and c.execute("SELECT 1 FROM search WHERE search MATCH ? AND rowid=?", (q, file_id)).fetchone() is not None
     if kind == "tag":
         v = norm(value)
@@ -135,17 +161,18 @@ def match_file(c, file_id: int) -> None:
 
 
 def find(c, name) -> int | None:
-    """The character (or person) called this, by name or another name."""
-    return _names(c).get(norm(name)) if isinstance(name, str) and name.strip() else None
+    """The character (or person) called this, by name or another name (its words in any order)."""
+    return _names(c).get(name_key(name)) if isinstance(name, str) and name.strip() else None
 
 
 def _names(c) -> dict[str, int]:
-    """Every name and alias (lower case) -> its character."""
+    """Every name and alias (name_key) -> its character."""
     out = {}
-    for r in c.execute("SELECT id, name, aliases FROM characters"):
-        out[norm(r["name"])] = r["id"]
+    for r in c.execute("SELECT id, name, aliases FROM characters ORDER BY id"):
+        out.setdefault(name_key(r["name"]), r["id"])
+    for r in c.execute("SELECT id, aliases FROM characters ORDER BY id"):
         for a in json.loads(r["aliases"] or "[]"):
-            out.setdefault(norm(a), r["id"])
+            out.setdefault(name_key(a), r["id"])
     return out
 
 
@@ -155,7 +182,7 @@ def _workflow_names_for_file(c, file_id: int) -> None:
         return
     names = _names(c)
     for n in json.loads(g[0]).get("characters") or []:
-        cid = names.get(norm(n))
+        cid = names.get(name_key(n))
         if cid:
             _set(c, file_id, cid, "confirmed", "workflow")
 
@@ -165,9 +192,9 @@ def _apply_workflow_names(c, character_id: int) -> None:
     row = c.execute("SELECT name, aliases FROM characters WHERE id=?", (character_id,)).fetchone()
     if not row:
         return
-    wanted = {norm(row["name"])} | {norm(a) for a in json.loads(row["aliases"] or "[]")}
+    wanted = {name_key(row["name"])} | {name_key(a) for a in json.loads(row["aliases"] or "[]")}
     for fid, value in c.execute("SELECT g.file_id, j.value FROM generations g, json_each(g.info, '$.characters') j WHERE g.info IS NOT NULL").fetchall():
-        if norm(value) in wanted:
+        if name_key(value) in wanted:
             _set(c, fid, character_id, "confirmed", "workflow")
 
 
@@ -235,4 +262,4 @@ def suggestions(c) -> list[dict]:
     known = _names(c)
     rows = c.execute("SELECT j.value AS name, COUNT(*) AS n FROM generations g, json_each(g.info, '$.characters') j"
                      " WHERE g.info IS NOT NULL GROUP BY lower(j.value) ORDER BY n DESC LIMIT 20").fetchall()
-    return [dict(r) for r in rows if norm(r["name"]) not in known]
+    return [dict(r) for r in rows if name_key(r["name"]) not in known]

@@ -86,11 +86,12 @@ def _characters(db, name: str) -> list[int]:
     def load():
         with db.read() as c:
             return [(r[0], r[1], r[2]) for r in c.execute("SELECT id, name, aliases FROM characters")]
-    low = name.strip().lower()
+    from .characters import name_key
+    low = name_key(name)  # (its words in any order)
     out = []
     import json
     for cid, n, aliases in db.cached(("characters",), load):
-        if n.lower() == low or low in (a.lower() for a in json.loads(aliases or "[]")):
+        if name_key(n) == low or low in (name_key(a) for a in json.loads(aliases or "[]")):
             out.append(cid)
     return out
 
