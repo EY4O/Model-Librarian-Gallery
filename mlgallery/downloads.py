@@ -494,8 +494,8 @@ def _norm(tag) -> str:
 
 
 def _yours(c) -> list[dict]:
-    """Your characters as New downloads offers them: {id, name, names, tag, rules} (names: its name and aliases, name_key;
-    rules: its word rules, tag_key)."""
+    """Your characters as New downloads offers them: {id, name, names, tag, rules} (names: its name and aliases; rules: its
+    word rules, tag_key)."""
     from . import characters as chars
     rules: dict = {}
     for r in c.execute("SELECT character_id, value FROM character_rules WHERE kind='word'"):
@@ -507,23 +507,22 @@ def _yours(c) -> list[dict]:
         except ValueError:
             tag = ""
         out.append({"id": r["id"], "name": r["name"], "tag": tag, "rules": rules.get(r["id"], set()),
-                    "names": {chars.name_key(n) for n in [r["name"], *json.loads(r["aliases"] or "[]")]}})
+                    "names": [r["name"], *json.loads(r["aliases"] or "[]")]})
     return out
 
 
 def _offer(ch: dict, yours: list[dict]) -> dict:
-    """A note's character as New downloads shows it: yours already (by its tag, or a rule that is its tag), or what to
-    make of it, with yours by the same name (in any order, and without a tag of their own) suggested to add it to."""
+    """A note's character as New downloads shows it: yours already (a rule of yours is its tag: the picture is theirs once
+    filed), or what to make of it, with yours by the same name (in any order, without a tag of their own) suggested."""
     from . import characters as chars
     from .charsync import display
     out = {"tag": ch["tag"], "name": ch.get("name") or display(ch["tag"]), "series": ch.get("series") or ""}
     k = chars.tag_key(display(ch["tag"]))
-    have = next((y for y in yours if (y["tag"] and _norm(y["tag"]) == _norm(ch["tag"])) or k in y["rules"]), None)
+    have = next((y for y in yours if k in y["rules"]), None)
     if have:
         out["have"] = {"id": have["id"], "name": have["name"]}
     else:
-        n = chars.name_key(out["name"])
-        out["suggest"] = [{"id": y["id"], "name": y["name"]} for y in yours if not y["tag"] and n in y["names"]][:3]
+        out["suggest"] = [{"id": y["id"], "name": y["name"]} for y in yours if not y["tag"] and any(chars.same_name(out["name"], n) for n in y["names"])][:3]
     return out
 
 
@@ -601,6 +600,8 @@ def undo(db, data) -> dict:
                     c.execute("UPDATE files SET missing=1 WHERE id=?", (it["id"],))
                 from .metadata import refresh_search
                 refresh_search(c, it["id"])
+                from . import characters
+                characters.match_file(c, it["id"])  # (the note's tags gone: the characters they made it go too)
         back += 1
     with db.write() as c:
         credits.prune(c)

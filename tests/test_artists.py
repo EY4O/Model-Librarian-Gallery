@@ -616,3 +616,60 @@ def test_a_saved_booru_pictures_characters_are_offered_and_theirs_once_filed(inb
     assert lib.character(other)["n"] == 0, "a rule that isn't its own name: the prompt only, as before"
     with pytest.raises(ValueError):
         lib.inbox.character("nope", "vale_lumen", None)
+
+
+def test_linking_a_saved_pictures_character_from_the_qa_pass(inbox, media):
+    lib, f, dl = inbox
+    ext = ext_folder(lib, dl)
+    pics = [image(ext / f"p{i}.png", seed=20 + i) for i in range(4)]
+    for i, p in enumerate(pics):
+        noted(p, page=f"https://danbooru.donmai.us/posts/{i}", site="danbooru", post=str(i), tags=["vale lumen", "sky"],
+              characters=[{"tag": "vale_lumen", "name": "Vale Lumen", "series": "Nightglass", "outfit": ["scarf"]}])
+    settled(*pics)
+    keys = {it["name"]: it["key"] for it in lib.inbox.items()["items"]}
+    lib.inbox.file([keys["p0.png"]], f["id"], "")  # filed before she's anyone's
+    # yours has a tag of its own: the post's name becomes one of its names, so its saved pictures are its
+    lumy = lib.character_save(None, "Lumy", [], [])
+    lib.character_presets(lumy, {"tag": "lumy_(other)"})
+    lib.inbox.character(keys["p1.png"], "vale_lumen", lumy)
+    ch = lib.character(lumy)
+    assert ch["shared"]["tag"] == "lumy_(other)" and ch["aliases"] == ["vale lumen"]
+    assert ch["n"] == 1, "the one filed before: matched as soon as it's linked"
+    got = {it["name"]: it for it in lib.inbox.items()["items"]}
+    assert got["p1.png"]["characters"][0].get("have") == {"id": lumy, "name": "Lumy"}
+    lib.inbox.file([keys["p1.png"]], f["id"], "")
+    assert lib.character(lumy)["n"] == 2
+    # Add twice (a double click): one character
+    lib.character_delete(lumy)
+    a = lib.inbox.character(keys["p2.png"], "vale_lumen", None)
+    b = lib.inbox.character(keys["p2.png"], "vale_lumen", None)
+    assert a["created"] and not b["created"] and a["character"]["id"] == b["character"]["id"]
+    with lib.db.read() as c:
+        assert c.execute("SELECT COUNT(*) FROM characters").fetchone()[0] == 1
+    # one word is any picture's tag: a character called Sky isn't every picture tagged sky
+    sky = lib.character_save(None, "Sky", [], [{"kind": "word", "value": "sky"}])
+    assert lib.character(sky)["n"] == 0
+    # filing undone: its characters go with its tags
+    r = lib.inbox.file([keys["p3.png"]], f["id"], "")
+    assert lib.character(a["character"]["id"])["n"] == 3
+    fileops.undo(lib.db, r["op"])
+    assert lib.character(a["character"]["id"])["n"] == 2
+
+
+def test_a_series_tells_two_names_apart(lib, media):
+    import json as _json
+    from mlgallery import characters as chars
+    from test_characters import library
+    ids = library(lib, media, n=4)
+    fate = lib.character_save(None, "Rin (Fate)", [], [])
+    voc = lib.character_save(None, "Rin (Vocaloid)", [], [])
+    with lib.db.write() as c:
+        c.execute("UPDATE generations SET info=? WHERE file_id=?", (_json.dumps({"characters": ["Rin (Vocaloid)"]}), ids["c01.png"]))
+        c.execute("UPDATE generations SET info=? WHERE file_id=?", (_json.dumps({"characters": ["Rin"]}), ids["c02.png"]))
+    lib.character_save(voc, "Rin (Vocaloid)", [], [])
+    lib.character_save(fate, "Rin (Fate)", [], [])
+    assert [x["name"] for x in lib.info(ids["c01.png"])["characters"]] == ["Rin (Vocaloid)"], "the one it names, not both"
+    assert lib.info(ids["c02.png"])["characters"] == [], "just Rin, with two of them: neither"
+    with lib.db.read() as c:
+        assert chars.find(c, "rin (fate)") == fate and chars.find(c, "Rin") is None
+        assert chars.same_name("Lumen Vale", "vale_lumen_(nightglass)") and not chars.same_name("rin (fate)", "rin (vocaloid)")

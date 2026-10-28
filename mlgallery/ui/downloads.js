@@ -87,14 +87,20 @@ export async function renderDownloads(root, ctx) {
     });
   };
   // a character from the picture's note: made (character null), or added to one of yours
-  const takeCharacter = async (it, ch, character) => {
+  // (from a dialog: its error is said in it, which stays open; from the card: the row waits, so a second click isn't a second one)
+  const takeCharacter = async (it, ch, character, { row = null, inDialog = false } = {}) => {
+    row?.querySelectorAll("button").forEach((b) => { b.disabled = true; });
     try {
       const r = await api("/inbox/character", { method: "POST", body: { key: it.key, tag: ch.tag, character } });
       toast(r.created ? `${r.character.name} is one of your characters now: this picture is theirs once it's filed.`
         : `Added ${ch.name} to ${r.character.name}: this picture is theirs once it's filed.`);
       ctx.counts?.();
       load();
-    } catch (e) { toast(e.message, true); }
+    } catch (e) {
+      row?.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+      if (inDialog) throw e;
+      toast(e.message, true);
+    }
   };
   const linkDialog = async (it, ch) => {
     let yours = [];
@@ -104,8 +110,8 @@ export async function renderDownloads(root, ctx) {
     const list = h("div.dl-link-list", { role: "radiogroup", "aria-label": "Your characters" });
     const find = h("input.dl-link-find", { type: "search", placeholder: "Find one of yours", "aria-label": "Find one of your characters", autocomplete: "off", spellcheck: false });
     const fill = () => {
-      const q = find.value.trim().toLowerCase();
-      const shown = yours.filter((c) => !q || [c.name, ...(c.aliases || [])].some((n) => n.toLowerCase().includes(q))).slice(0, 40);
+      const words = find.value.trim().toLowerCase().replace(/[_-]+/g, " ").split(/\s+/).filter(Boolean);  // (in any order)
+      const shown = yours.filter((c) => words.every((w) => [c.name, ...(c.aliases || [])].some((n) => n.toLowerCase().replace(/[_-]+/g, " ").includes(w)))).slice(0, 40);
       list.replaceChildren(...(shown.length ? shown.map((c) => h("label.dl-link", {},
         h("input", { type: "radio", name: "dl-link", checked: c.id === picked, onchange: () => { picked = c.id; } }),
         h("span", {}, c.name), c.n ? h("span.dim", {}, plural(c.n, "picture")) : null)) : [h("p.dim", {}, "None of yours is called that.")]));
@@ -113,11 +119,11 @@ export async function renderDownloads(root, ctx) {
     find.addEventListener("input", fill);
     fill();
     org.dialog(`Add ${ch.name} to one of yours`, h("div", {}, find, list,
-      h("p.note", {}, `Its booru tag goes to the one you pick, so pictures saved with ${ch.name} are theirs; this post's look is added too, and the name stays yours.`)), {
+      h("p.note", {}, `Pictures saved with ${ch.name} become theirs (its booru tag goes to the one you pick, or one of its names when it has a tag of its own); this post's look is added too, and the name stays yours.`)), {
       submitLabel: "Add",
       submit: async () => {
         if (picked == null) throw new Error("Pick one of yours.");
-        await takeCharacter(it, ch, picked);
+        await takeCharacter(it, ch, picked, { inDialog: true });
       },
     });
   };
@@ -125,10 +131,11 @@ export async function renderDownloads(root, ctx) {
     if (ch.have) return h("p.dl-char.have", { title: "One of your characters: the picture is theirs once it's filed" }, icon("person"), ch.have.name);
     if (kept.skipped.has(`${it.key} ${ch.tag}`)) return null;
     const s = ch.suggest?.[0];
+    const take = (character) => (e) => takeCharacter(it, ch, character, { row: e.currentTarget.closest(".dl-char") });
     return h("div.dl-char", { role: "group", "aria-label": `${ch.name}, not one of your characters` },
       h("span.dl-char-name", { title: [ch.name, ch.series].filter(Boolean).join(" · ") }, icon("person"), ch.name),
-      s ? h("button.btn.small", { type: "button", title: `Add ${ch.name}'s tag and look to ${s.name}`, onclick: () => takeCharacter(it, ch, s.id) }, `Add to ${s.name}`) : null,
-      h("button.btn.small", { type: "button", title: "Make a new character of it, its look from this post", onclick: () => takeCharacter(it, ch, null) }, s ? "New" : "Add"),
+      s ? h("button.btn.small", { type: "button", title: `Add ${ch.name}'s tag and look to ${s.name}`, onclick: take(s.id) }, `Add to ${s.name}`) : null,
+      h("button.btn.small", { type: "button", title: "Make a new character of it, its look from this post", onclick: take(null) }, s ? "New" : "Add"),
       h("button.btn.small", { type: "button", title: "Add it to one of your characters", onclick: () => linkDialog(it, ch) }, s ? "Other…" : "Link…"),
       h("button.icon-btn.small", { type: "button", "aria-label": `Not ${ch.name}`, title: "Not now", onclick: () => { kept.skipped.add(`${it.key} ${ch.tag}`); draw(); } }, icon("remove")));
   };

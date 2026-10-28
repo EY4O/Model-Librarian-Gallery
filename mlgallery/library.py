@@ -651,6 +651,10 @@ class Library:
         if not tag:
             raise ValueError("That character has no tag.")
         rule = {"kind": "word", "value": display(tag), "strength": "strong"}
+        if cid is None:  # (one made a moment ago from the same tag - Add twice - is the one: not a second)
+            with self.db.read() as c:
+                cid = next((r[0] for r in c.execute("SELECT character_id, value FROM character_rules WHERE kind='word'")
+                            if chars.tag_key(r[1]) == chars.tag_key(rule["value"])), None)
         created = cid is None
         if created:
             name = str(d.get("name") or "").strip()[:100] or display(re.sub(r"\s*\(.*\)$", "", tag)).title()
@@ -664,8 +668,14 @@ class Library:
             if cur["who"] == "person":
                 raise ValueError("That's one of your people, not a character.")
             rules = [{k: r[k] for k in ("kind", "value", "strength", "muted")} for r in cur["rules"]]
-            if not any(r["kind"] == "word" and chars.tag_key(r["value"]) == chars.tag_key(rule["value"]) for r in rules):
-                self.character_save(int(cid), cur["name"], cur["aliases"], rules + [rule])
+            aliases = list(cur["aliases"])
+            if cur["shared"]["tag"] and charstore.norm(cur["shared"]["tag"]) != charstore.norm(tag):
+                also = display(tag)  # (a tag of its own: the post's, as another name, is how its saved pictures know it)
+                if not any(chars.same_name(also, n) for n in [cur["name"], *aliases]):
+                    aliases.append(also)
+            new = [rule] if not any(r["kind"] == "word" and chars.tag_key(r["value"]) == chars.tag_key(rule["value"]) for r in rules) else []
+            if new or aliases != cur["aliases"]:
+                self.character_save(int(cid), cur["name"], aliases, rules + new)
             cid = int(cid)
         sh = self.character(cid)["shared"]
         patch = {}
@@ -739,6 +749,8 @@ class Library:
             if parts:
                 charstore.stamp(sh, parts, time.time())
                 c.execute("UPDATE characters SET shared=? WHERE id=?", (json.dumps(sh), cid))
+            if "tag" in parts:  # (its tag is one of its names: a rule that's its name matches pictures' tags, and in any order)
+                chars.rematch(c, cid)
         if parts:
             self.char_wake.set()
         return self.character(cid)

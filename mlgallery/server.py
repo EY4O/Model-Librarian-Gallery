@@ -1139,7 +1139,7 @@ async def inbox_character(request):
     b = await _body(request)
     try:
         cid = b.get("character")
-        if cid is not None and not isinstance(cid, int):
+        if cid is not None and (not isinstance(cid, int) or isinstance(cid, bool)):
             raise ValueError("character is one of yours (its id), or null for a new one")
         if not isinstance(b.get("key"), str) or not isinstance(b.get("tag"), str):
             raise ValueError("key and tag are text")

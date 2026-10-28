@@ -305,3 +305,12 @@ def test_a_library_only_for_photos_keeps_out(lib, ml):
     lib.set_kinds(["photos"])
     lib.models.data_dir = lambda: ml
     assert lib.sync_characters() == {"list": False, "gallery": 0} and gallery(lib, "Aurelia") is None
+
+
+def test_two_of_a_name_in_other_series_stay_two(lib, ml):
+    mine = lib.character_save(None, "Rin (Fate)", [], [])
+    put(ml, [dict(AURELIA, id="chr_r0000001", name="Rin (Vocaloid)", tag="rin_(vocaloid)", series="Vocaloid")])
+    charsync.sync(lib, ml, now=200.0)
+    with lib.db.read() as c:
+        names = sorted(r[0] for r in c.execute("SELECT name FROM characters"))
+    assert names == ["Rin (Fate)", "Rin (Vocaloid)"] and lib.character(mine)["shared"]["tag"] == ""

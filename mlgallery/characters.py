@@ -3,7 +3,8 @@
     lora  a LoRA whose name contains this (any version or strength)      strong: counts straight away
     word  words in the positive prompt (a trigger word, as a phrase)    strong
           (the character's own name, two or three words: in any order, as "vale lumen" or "lumen vale";
-          and a picture's tags too, as a picture saved from Danbooru has them: it has no prompt)
+          and a picture's tags too, as a picture saved from Danbooru has them - it has no prompt - when the
+          name is two words or more, or has its series: one word, "sky", is any picture's tag)
     tag   a prompt part or one of your tags, exactly                    weak: waits in To review
 
 A match is stored per file and character with its state: `auto` (a strong rule), `review` (only weak rules),
@@ -25,44 +26,70 @@ def norm(s: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[_\-]+", " ", str(s or ""))).strip().lower()
 
 
-def name_key(s) -> str:
-    """A name for telling names apart: its words in any order, its series in brackets left out. Danbooru puts a family
-    name first ("vale_lumen"), you may not ("Lumen Vale"): one name."""
-    return " ".join(sorted(re.sub(r"\s*\(.*\)$", "", norm(s)).split()))
-
-
-def tag_key(s) -> str:
-    """A tag for telling tags apart: its words in any order, its series in brackets kept ("lumen vale (hero academia)")."""
+def _name_parts(s) -> tuple[str, str]:
     m = re.fullmatch(r"(.*?)\s*(\(.*\))?", norm(s))
-    return " ".join(sorted(m.group(1).split()) + ([m.group(2)] if m.group(2) else []))
+    return " ".join(sorted(m.group(1).split())), m.group(2) or ""
 
 
-def _own_name(c, rule) -> bool:
+def name_key(s) -> str:
+    """A name (or a tag) for telling names apart: its words in any order, its series in brackets kept. Danbooru puts a
+    family name first ("vale_lumen"), you may not ("Lumen Vale"): one name; Rin (Fate) and Rin (Vocaloid) are two."""
+    return " ".join(x for x in _name_parts(s) if x)
+
+
+tag_key = name_key
+
+
+def same_name(a, b) -> bool:
+    """Whether two names are one: the same words in any order, and the same series or a series on one side only."""
+    (wa, sa), (wb, sb) = _name_parts(a), _name_parts(b)
+    return bool(wa) and wa == wb and (sa == sb or not sa or not sb)
+
+
+def _by_tag(s) -> bool:
+    """Whether a name tells a picture's tags apart: two words or more, or its series (one word, "sky", is any picture's)."""
+    words, series = _name_parts(s)
+    return bool(series) or len(words.split()) >= 2
+
+
+def _own_name(c, rule, memo: dict | None = None) -> bool:
     """Whether a word rule is the character's own name: its name, an alias or its booru tag, in any order."""
+    k = ("own", rule["character_id"], rule["value"])
+    if memo is not None and k in memo:
+        return memo[k]
     row = c.execute("SELECT name, aliases, shared FROM characters WHERE id=?", (rule["character_id"],)).fetchone()
-    if not row:
-        return False
-    names = [row["name"], *json.loads(row["aliases"] or "[]")]
-    try:
-        names.append((json.loads(row["shared"] or "{}") or {}).get("tag") or "")
-    except (ValueError, AttributeError):
-        pass
-    return name_key(rule["value"]) in {name_key(n) for n in names if n}
+    own = False
+    if row:
+        names = [row["name"], *json.loads(row["aliases"] or "[]")]
+        try:
+            names.append((json.loads(row["shared"] or "{}") or {}).get("tag") or "")
+        except (ValueError, AttributeError):
+            pass
+        own = any(same_name(rule["value"], n) for n in names if n)
+    if memo is not None:
+        memo[k] = own
+    return own
 
 
 def _orders(c, rule, own: bool) -> list[str]:
     """A word rule's phrase, and when it's the character's own name of two or three words, the same words in the other
-    orders a name is written in (each word in turn first)."""
-    words = norm(rule["value"]).replace('"', "").split()
+    orders a name is written in (each word in turn first, its series after them)."""
+    phrase = norm(rule["value"]).replace('"', "")
+    m = re.fullmatch(r"(.*?)\s*(\(.*\))?", phrase)
+    words, series = m.group(1).split(), [m.group(2)] if m.group(2) else []
     if own and 2 <= len(words) <= 3:
-        return [" ".join(words[i:] + words[:i]) for i in range(len(words))]
-    return [" ".join(words)] if words else []
+        return [" ".join(words[i:] + words[:i] + series) for i in range(len(words))]
+    return [phrase] if phrase else []
 
 
 def _named_tags(c, rule) -> list[int]:
-    """The tags (ids) that are a word rule in any order, its series as it says: a saved picture's character tag."""
+    """The tags (ids) that are a word rule in any order, its series as it says: a saved picture's character tag. (Only
+    the tags with its longest word looked through.)"""
     k = tag_key(rule["value"])
-    return [r[0] for r in c.execute("SELECT id, name FROM tags") if tag_key(r[1]) == k] if k else []
+    if not k or not _by_tag(rule["value"]):
+        return []
+    longest = max(_name_parts(rule["value"])[0].split(), key=len).replace("\\", "\\\\").replace("%", "\\%")
+    return [r[0] for r in c.execute("SELECT id, name FROM tags WHERE name LIKE ? ESCAPE '\\'", (f"%{longest}%",)) if tag_key(r[1]) == k]
 
 
 def _fts_phrase(c, rule, own: bool) -> str | None:
@@ -97,19 +124,24 @@ def rule_files(c, rule) -> set[int]:
     return set()
 
 
-def _file_matches(c, rule, file_id: int) -> bool:
+def _file_matches(c, rule, file_id: int, memo: dict | None = None) -> bool:
     kind, value = rule["kind"], rule["value"]
     if kind == "lora":
         v = norm(value)
         return bool(v) and any(v in norm(r[0]) for r in c.execute("SELECT name FROM uses WHERE file_id=? AND kind='lora'", (file_id,)))
     if kind == "word":
-        own = _own_name(c, rule)
+        own = _own_name(c, rule, memo)
         q = _fts_phrase(c, rule, own)
         if q and c.execute("SELECT 1 FROM search WHERE search MATCH ? AND rowid=?", (q, file_id)).fetchone() is not None:
             return True
-        k = tag_key(value) if own else ""
-        return bool(k) and any(tag_key(r[0]) == k for r in c.execute(
-            "SELECT t.name FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.file_id=? AND ft.removed=0", (file_id,)))
+        if not own or not _by_tag(value):
+            return False
+        keys = memo.get(("tags", file_id)) if memo is not None else None
+        if keys is None:  # (the file's tags, read once for all its rules)
+            keys = {tag_key(r[0]) for r in c.execute("SELECT t.name FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.file_id=? AND ft.removed=0", (file_id,))}
+            if memo is not None:
+                memo[("tags", file_id)] = keys
+        return tag_key(value) in keys
     if kind == "tag":
         v = norm(value)
         return (c.execute("SELECT 1 FROM prompt_tags WHERE file_id=? AND tag=?", (file_id, v)).fetchone() is not None
@@ -168,16 +200,17 @@ def rematch(c, character_id: int) -> None:
 def match_file(c, file_id: int) -> None:
     """Match one (newly read) file against every character."""
     rules = _rules(c)
+    memo: dict = {}
     if rules:
         by_char: dict[int, list] = {}
         for r in rules:
             by_char.setdefault(r["character_id"], []).append(r)
         for cid, rs in by_char.items():
-            hit_strong = next((r for r in rs if r["strength"] == "strong" and _file_matches(c, r, file_id)), None)
+            hit_strong = next((r for r in rs if r["strength"] == "strong" and _file_matches(c, r, file_id, memo)), None)
             if hit_strong:
                 _set(c, file_id, cid, "auto", hit_strong["kind"])
                 continue
-            hit_weak = next((r for r in rs if r["strength"] != "strong" and not r["muted"] and _file_matches(c, r, file_id)), None)
+            hit_weak = next((r for r in rs if r["strength"] != "strong" and not r["muted"] and _file_matches(c, r, file_id, memo)), None)
             if hit_weak:
                 _set(c, file_id, cid, "review", hit_weak["kind"])
             else:
@@ -187,7 +220,16 @@ def match_file(c, file_id: int) -> None:
 
 def find(c, name) -> int | None:
     """The character (or person) called this, by name or another name (its words in any order)."""
-    return _names(c).get(name_key(name)) if isinstance(name, str) and name.strip() else None
+    return _lookup(_names(c), name) if isinstance(name, str) and name.strip() else None
+
+
+def _lookup(names: dict, name) -> int | None:
+    """A name in _names: as it's written, else the only one that's the same name (a series on one side only)."""
+    hit = names.get(name_key(name))
+    if hit is not None:
+        return hit
+    ids = {cid for k, cid in names.items() if same_name(k, name)}
+    return ids.pop() if len(ids) == 1 else None
 
 
 def _names(c) -> dict[str, int]:
@@ -207,7 +249,7 @@ def _workflow_names_for_file(c, file_id: int) -> None:
         return
     names = _names(c)
     for n in json.loads(g[0]).get("characters") or []:
-        cid = names.get(name_key(n))
+        cid = _lookup(names, n)
         if cid:
             _set(c, file_id, cid, "confirmed", "workflow")
 
@@ -217,9 +259,9 @@ def _apply_workflow_names(c, character_id: int) -> None:
     row = c.execute("SELECT name, aliases FROM characters WHERE id=?", (character_id,)).fetchone()
     if not row:
         return
-    wanted = {name_key(row["name"])} | {name_key(a) for a in json.loads(row["aliases"] or "[]")}
+    names = _names(c)
     for fid, value in c.execute("SELECT g.file_id, j.value FROM generations g, json_each(g.info, '$.characters') j WHERE g.info IS NOT NULL").fetchall():
-        if name_key(value) in wanted:
+        if _lookup(names, value) == character_id:
             _set(c, fid, character_id, "confirmed", "workflow")
 
 
@@ -287,4 +329,4 @@ def suggestions(c) -> list[dict]:
     known = _names(c)
     rows = c.execute("SELECT j.value AS name, COUNT(*) AS n FROM generations g, json_each(g.info, '$.characters') j"
                      " WHERE g.info IS NOT NULL GROUP BY lower(j.value) ORDER BY n DESC LIMIT 20").fetchall()
-    return [dict(r) for r in rows if name_key(r["name"]) not in known]
+    return [dict(r) for r in rows if _lookup(known, r["name"]) is None]
