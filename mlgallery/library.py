@@ -641,6 +641,49 @@ class Library:
             self.db.user_change()  # (the Characters list counted afresh: what came from the list shows at once)
         return n
 
+    def character_from_post(self, cid: int | None, d: dict) -> dict:
+        """A character from a saved booru picture's note (d: {tag, name, series, appearance, outfit}, as + Character would
+        file it): made (cid None), or added to yours (cid). Its booru tag becomes a rule (pictures saved with it are
+        theirs) and its tag when it has none; its series when it has none; the post's look joins its own, the outfit
+        under a name of its own. -> {character: {id, name}, created}."""
+        from .charsync import display
+        tag = re.sub(r"\s+", "_", str(d.get("tag") or "").strip())[: charstore.CAPS["tag"]]
+        if not tag:
+            raise ValueError("That character has no tag.")
+        rule = {"kind": "word", "value": display(tag), "strength": "strong"}
+        created = cid is None
+        if created:
+            name = str(d.get("name") or "").strip()[:100] or display(re.sub(r"\s*\(.*\)$", "", tag)).title()
+            with self.db.read() as c:
+                taken = [r[0] for r in c.execute("SELECT name FROM characters")]
+            cid = self.character_save(None, charstore._unique(name, taken), [], [rule], who="character")
+        else:
+            cur = self.character(int(cid))
+            if not cur:
+                raise KeyError(cid)
+            if cur["who"] == "person":
+                raise ValueError("That's one of your people, not a character.")
+            rules = [{k: r[k] for k in ("kind", "value", "strength", "muted")} for r in cur["rules"]]
+            if not any(r["kind"] == "word" and chars.tag_key(r["value"]) == chars.tag_key(rule["value"]) for r in rules):
+                self.character_save(int(cid), cur["name"], cur["aliases"], rules + [rule])
+            cid = int(cid)
+        sh = self.character(cid)["shared"]
+        patch = {}
+        if not sh["tag"]:
+            patch["tag"] = tag
+        if not sh["series"] and d.get("series"):
+            patch["series"] = d["series"]
+        more = [t for t in d.get("appearance") or [] if chars.norm(t) not in {chars.norm(x) for x in sh["appearance"]}]
+        if more:
+            patch["appearance"] = (sh["appearance"] + more)[: charstore.CAPS["tags"]]
+        if d.get("outfit") and len(sh["outfits"]) < charstore.CAPS["outfits"] and list(d["outfit"]) not in sh["outfits"].values():
+            patch["outfits"] = {**sh["outfits"], charstore._unique("default", sh["outfits"]): list(d["outfit"])}
+        if patch:
+            self.character_presets(cid, patch)
+        self.db.user_change()  # (the Characters list counted afresh)
+        ch = self.character(cid)
+        return {"character": {"id": cid, "name": ch["name"]}, "created": created}
+
     def character_presets(self, cid: int, patch: dict) -> dict:
         """Its series, booru tag, appearance and outfits, as Character Select writes them (shared with Model Librarian)."""
         cid = int(cid)

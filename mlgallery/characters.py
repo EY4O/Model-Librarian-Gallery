@@ -2,7 +2,8 @@
 
     lora  a LoRA whose name contains this (any version or strength)      strong: counts straight away
     word  words in the positive prompt (a trigger word, as a phrase)    strong
-          (the character's own name, two or three words: in any order, as "uraraka ochako" or "ochako uraraka")
+          (the character's own name, two or three words: in any order, as "vale lumen" or "lumen vale";
+          and a picture's tags too, as a picture saved from Danbooru has them: it has no prompt)
     tag   a prompt part or one of your tags, exactly                    weak: waits in To review
 
 A match is stored per file and character with its state: `auto` (a strong rule), `review` (only weak rules),
@@ -26,32 +27,46 @@ def norm(s: str) -> str:
 
 def name_key(s) -> str:
     """A name for telling names apart: its words in any order, its series in brackets left out. Danbooru puts a family
-    name first ("uraraka_ochako"), you may not ("Ochako Uraraka"): one name."""
+    name first ("vale_lumen"), you may not ("Lumen Vale"): one name."""
     return " ".join(sorted(re.sub(r"\s*\(.*\)$", "", norm(s)).split()))
 
 
-def _orders(c, rule) -> list[str]:
-    """A word rule's phrase, and when it's the character's own name (its name, an alias or its booru tag) of two or
-    three words, the same words in the other orders a name is written in (each word in turn first)."""
-    words = norm(rule["value"]).replace('"', "").split()
-    if not words:
-        return []
-    if not 2 <= len(words) <= 3:
-        return [" ".join(words)]
+def tag_key(s) -> str:
+    """A tag for telling tags apart: its words in any order, its series in brackets kept ("lumen vale (hero academia)")."""
+    m = re.fullmatch(r"(.*?)\s*(\(.*\))?", norm(s))
+    return " ".join(sorted(m.group(1).split()) + ([m.group(2)] if m.group(2) else []))
+
+
+def _own_name(c, rule) -> bool:
+    """Whether a word rule is the character's own name: its name, an alias or its booru tag, in any order."""
     row = c.execute("SELECT name, aliases, shared FROM characters WHERE id=?", (rule["character_id"],)).fetchone()
-    if row:
-        names = [row["name"], *json.loads(row["aliases"] or "[]")]
-        try:
-            names.append((json.loads(row["shared"] or "{}") or {}).get("tag") or "")
-        except (ValueError, AttributeError):
-            pass
-        if name_key(" ".join(words)) in {name_key(n) for n in names}:
-            return [" ".join(words[i:] + words[:i]) for i in range(len(words))]
-    return [" ".join(words)]
+    if not row:
+        return False
+    names = [row["name"], *json.loads(row["aliases"] or "[]")]
+    try:
+        names.append((json.loads(row["shared"] or "{}") or {}).get("tag") or "")
+    except (ValueError, AttributeError):
+        pass
+    return name_key(rule["value"]) in {name_key(n) for n in names if n}
 
 
-def _fts_phrase(c, rule) -> str | None:
-    return " OR ".join(f'prompt : "{w}"' for w in _orders(c, rule)) or None
+def _orders(c, rule, own: bool) -> list[str]:
+    """A word rule's phrase, and when it's the character's own name of two or three words, the same words in the other
+    orders a name is written in (each word in turn first)."""
+    words = norm(rule["value"]).replace('"', "").split()
+    if own and 2 <= len(words) <= 3:
+        return [" ".join(words[i:] + words[:i]) for i in range(len(words))]
+    return [" ".join(words)] if words else []
+
+
+def _named_tags(c, rule) -> list[int]:
+    """The tags (ids) that are a word rule in any order, its series as it says: a saved picture's character tag."""
+    k = tag_key(rule["value"])
+    return [r[0] for r in c.execute("SELECT id, name FROM tags") if tag_key(r[1]) == k] if k else []
+
+
+def _fts_phrase(c, rule, own: bool) -> str | None:
+    return " OR ".join(f'prompt : "{w}"' for w in _orders(c, rule, own)) or None
 
 
 def rule_files(c, rule) -> set[int]:
@@ -67,8 +82,13 @@ def rule_files(c, rule) -> set[int]:
             return set()
         return {r[0] for r in c.execute(f"SELECT file_id FROM uses WHERE kind='lora' AND name IN ({','.join('?' * len(names))})", names)}
     if kind == "word":
-        q = _fts_phrase(c, rule)
-        return {r[0] for r in c.execute("SELECT rowid FROM search WHERE search MATCH ?", (q,))} if q else set()
+        own = _own_name(c, rule)
+        q = _fts_phrase(c, rule, own)
+        found = {r[0] for r in c.execute("SELECT rowid FROM search WHERE search MATCH ?", (q,))} if q else set()
+        if own:  # (its name as one of a picture's tags)
+            for part in _chunks(_named_tags(c, rule)):
+                found |= {r[0] for r in c.execute(f"SELECT file_id FROM file_tags WHERE removed=0 AND tag_id IN ({','.join('?' * len(part))})", part)}
+        return found
     if kind == "tag":
         v = norm(value)
         a = {r[0] for r in c.execute("SELECT file_id FROM prompt_tags WHERE tag = ?", (v,))}
@@ -83,8 +103,13 @@ def _file_matches(c, rule, file_id: int) -> bool:
         v = norm(value)
         return bool(v) and any(v in norm(r[0]) for r in c.execute("SELECT name FROM uses WHERE file_id=? AND kind='lora'", (file_id,)))
     if kind == "word":
-        q = _fts_phrase(c, rule)
-        return bool(q) and c.execute("SELECT 1 FROM search WHERE search MATCH ? AND rowid=?", (q, file_id)).fetchone() is not None
+        own = _own_name(c, rule)
+        q = _fts_phrase(c, rule, own)
+        if q and c.execute("SELECT 1 FROM search WHERE search MATCH ? AND rowid=?", (q, file_id)).fetchone() is not None:
+            return True
+        k = tag_key(value) if own else ""
+        return bool(k) and any(tag_key(r[0]) == k for r in c.execute(
+            "SELECT t.name FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.file_id=? AND ft.removed=0", (file_id,)))
     if kind == "tag":
         v = norm(value)
         return (c.execute("SELECT 1 FROM prompt_tags WHERE file_id=? AND tag=?", (file_id, v)).fetchone() is not None

@@ -52,7 +52,8 @@ NOTE_MAX = 64 * 1024  # a note is a few hundred bytes: anything much bigger isn'
 
 def read_note(path: str) -> dict | None:
     """The note the Chrome extension saved beside a picture: {page, src, site, post, artist, artist_url, title,
-    description, tags} (only what's there, checked and capped). Only in its own folder (Downloads\\Model Librarian
+    description, tags, characters} (only what's there, checked and capped; characters: a booru post's, each
+    {tag, name, series, appearance, outfit} as + Character would file it). Only in its own folder (Downloads\\Model Librarian
     Gallery): a note beside a file anywhere else could have been put there by any site."""
     if os.path.basename(os.path.dirname(os.path.abspath(path))).lower() != EXT_FOLDER.lower():
         return None
@@ -67,13 +68,19 @@ def read_note(path: str) -> dict | None:
         return None
     text = lambda k, n=300: str(raw.get(k) or "").strip()[:n] or None  # noqa: E731
     tags = [str(t).strip()[:100] for t in raw.get("tags") or [] if isinstance(t, (str, int)) and str(t).strip()][:64] if isinstance(raw.get("tags"), list) else []
+    chars = []
+    for ch in raw.get("characters") if isinstance(raw.get("characters"), list) else []:
+        if isinstance(ch, dict) and isinstance(ch.get("tag"), str) and ch["tag"].strip():
+            words = lambda v: [str(t).strip()[:100] for t in v if isinstance(t, str) and t.strip()][:64] if isinstance(v, list) else []  # noqa: E731
+            chars.append({"tag": re.sub(r"\s+", "_", ch["tag"].strip())[:200], "name": str(ch.get("name") or "").strip()[:100],
+                          "series": str(ch.get("series") or "").strip()[:100], "appearance": words(ch.get("appearance")), "outfit": words(ch.get("outfit"))})
     site = text("site", 40)
     if site:  # (pixiv, Pixiv: one site, under the Gallery's own key for it)
         site = next((k for k, v in credits.SITES.items() if site.lower() in (k.lower(), str(v).lower())), site.lower())
     return {k: v for k, v in {"page": credits.clean_url(raw.get("page")), "src": credits.clean_url(raw.get("src")), "site": site,
                               "post": text("post", 80), "artist": credits.clean_name(raw.get("artist"), junk=True),
                               "artist_url": credits.clean_url(raw.get("artist_url")), "title": text("title"), "description": text("description", 3000),
-                              "tags": tags}.items() if v}
+                              "tags": tags, "characters": chars[:12]}.items() if v}
 
 
 def from_note(note: dict) -> dict:
@@ -255,6 +262,7 @@ class Inbox:
         with db.read() as c:
             names = credits.name_map(c)
             last = self._last(c)
+            yours = None  # (read once, for the first one with characters)
             for e in page:
                 a = self._about(e)
                 w = credits.winner([{"src": s, "artist": v.get("artist"), "site": v.get("site"), "post": v.get("post"), "url": v.get("url")}
@@ -262,13 +270,28 @@ class Inbox:
                 dup = c.execute("SELECT f.id, f.rel, f.missing, d.path FROM files f JOIN folders d ON d.id=f.folder_id"
                                 " WHERE f.fp=? AND f.size=? AND f.missing IN (0, 2, 3) ORDER BY f.missing LIMIT 1", (a["fp"], e["size"])).fetchone() if a["fp"] else None
                 aid = names.get(credits.norm(w["artist"])) if w["artist"] else None
+                if (a.get("note") or {}).get("characters") and yours is None:
+                    yours = _yours(c)
                 out.append({**{k: e[k] for k in ("key", "name", "size", "mtime", "kind", "folder")},
                             "artist": w["artist"], "artist_from": w["artist_from"], "artist_id": aid,
                             "site": w["site"], "site_name": credits.SITES.get(w["site"] or "", w["site"]), "url": w["url"],
                             "have": {"id": dup["id"], "path": os.path.join(dup["path"], *dup["rel"].split("/")), "trash": dup["missing"] == 2} if dup else None,
                             "title": (a.get("note") or {}).get("title"), "tags": len((a.get("note") or {}).get("tags") or []),
+                            "characters": [_offer(ch, yours) for ch in (a.get("note") or {}).get("characters") or []],
                             "suggest": self._suggest(c, aid, w["artist"], last)})
         return {"total": len(es), "offset": offset, "items": out, "folders": self.folders()}
+
+    def character(self, key: str, tag: str, cid: int | None) -> dict:
+        """One of a download's characters (from its note) made a character (cid None), or added to yours (cid)."""
+        e = next(iter(self._pick([key])), None)
+        if not e:
+            raise ValueError("That download isn't there any more.")
+        ch = next((x for x in (self._about(e).get("note") or {}).get("characters") or [] if _norm(x["tag"]) == _norm(tag)), None)
+        if not ch:
+            raise ValueError("That character isn't in the picture's note.")
+        out = self.lib.character_from_post(cid, ch)
+        self._changes += 1
+        return out
 
     # ---------------------------------------------------------------- where it goes
     def _last(self, c) -> dict | None:
@@ -466,6 +489,44 @@ class Inbox:
         return out
 
 
+def _norm(tag) -> str:
+    return re.sub(r"\s+", " ", str(tag or "").replace("_", " ")).strip().lower()
+
+
+def _yours(c) -> list[dict]:
+    """Your characters as New downloads offers them: {id, name, names, tag, rules} (names: its name and aliases, name_key;
+    rules: its word rules, tag_key)."""
+    from . import characters as chars
+    rules: dict = {}
+    for r in c.execute("SELECT character_id, value FROM character_rules WHERE kind='word'"):
+        rules.setdefault(r[0], set()).add(chars.tag_key(r[1]))
+    out = []
+    for r in c.execute("SELECT id, name, aliases, shared, who FROM characters WHERE who IS NOT 'person' ORDER BY name COLLATE NOCASE"):
+        try:
+            tag = (json.loads(r["shared"] or "{}") or {}).get("tag") or ""
+        except ValueError:
+            tag = ""
+        out.append({"id": r["id"], "name": r["name"], "tag": tag, "rules": rules.get(r["id"], set()),
+                    "names": {chars.name_key(n) for n in [r["name"], *json.loads(r["aliases"] or "[]")]}})
+    return out
+
+
+def _offer(ch: dict, yours: list[dict]) -> dict:
+    """A note's character as New downloads shows it: yours already (by its tag, or a rule that is its tag), or what to
+    make of it, with yours by the same name (in any order, and without a tag of their own) suggested to add it to."""
+    from . import characters as chars
+    from .charsync import display
+    out = {"tag": ch["tag"], "name": ch.get("name") or display(ch["tag"]), "series": ch.get("series") or ""}
+    k = chars.tag_key(display(ch["tag"]))
+    have = next((y for y in yours if (y["tag"] and _norm(y["tag"]) == _norm(ch["tag"])) or k in y["rules"]), None)
+    if have:
+        out["have"] = {"id": have["id"], "name": have["name"]}
+    else:
+        n = chars.name_key(out["name"])
+        out["suggest"] = [{"id": y["id"], "name": y["name"]} for y in yours if not y["tag"] and n in y["names"]][:3]
+    return out
+
+
 def _apply_note(c, fid: int, note: dict) -> tuple[list[str], bool]:
     """A note's tags (marked as from the site: taking one off keeps it off) and its title as the picture's note
     (unless it has one already). -> (the tags it added, whether it added the note)."""
@@ -480,6 +541,8 @@ def _apply_note(c, fid: int, note: dict) -> tuple[list[str], bool]:
     if noted:
         c.execute("INSERT INTO file_notes (file_id, note, source) VALUES (?, ?, 'site')", (fid, text[:4000]))
     metadata.refresh_search(c, fid)
+    from . import characters
+    characters.match_file(c, fid)  # (its characters, from its tags: a character's booru tag is one of them)
     return added, noted
 
 

@@ -80,14 +80,14 @@ def test_from_the_gallery_into_the_list_and_linked_by_name(lib, ml):
 
 
 def test_linked_by_name_in_either_order(lib, ml):
-    mine = lib.character_save(None, "Ochako Uraraka", [], [])  # yours, given name first
-    put(ml, [dict(AURELIA, id="chr_u0000001", name="Uraraka Ochako", tag="uraraka_ochako", series="Lighthouse Tales")])  # Danbooru's, family name first
+    mine = lib.character_save(None, "Lumen Vale", [], [])  # yours, given name first
+    put(ml, [dict(AURELIA, id="chr_u0000001", name="Vale Lumen", tag="vale_lumen", series="Lighthouse Tales")])  # Danbooru's, family name first
     charsync.sync(lib, ml, now=200.0)
     with lib.db.read() as c:
         assert c.execute("SELECT COUNT(*) FROM characters").fetchone()[0] == 1, "one character, not two"
     ch = lib.character(mine)
-    assert ch["name"] == "Ochako Uraraka" and ch["shared"]["tag"] == "uraraka_ochako"
-    assert rules(lib, mine) == [("word", "uraraka ochako", "strong")]
+    assert ch["name"] == "Lumen Vale" and ch["shared"]["tag"] == "vale_lumen"
+    assert rules(lib, mine) == [("word", "vale lumen", "strong")]
 
 
 def test_each_part_keeps_its_latest_change(lib, ml):

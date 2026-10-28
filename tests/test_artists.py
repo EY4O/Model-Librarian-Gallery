@@ -571,3 +571,48 @@ def test_a_listing_made_while_dismissing_isnt_kept(inbox, media):
     lib.inbox.dismiss([first[0]["key"]])
     lib.inbox._listing = (lib.inbox._listing[0] if lib.inbox._listing else None, first)  # a listing still being made stores the old one...
     assert lib.inbox.entries() == []  # ...but it isn't taken: dismissing started a new one
+
+
+def test_a_saved_booru_pictures_characters_are_offered_and_theirs_once_filed(inbox, media):
+    lib, f, dl = inbox
+    ext = ext_folder(lib, dl)
+    look = {"name": "Vale Lumen", "series": "Lighthouse Tales", "appearance": ["brown hair", "short hair"], "outfit": ["school uniform"]}
+    a, b, c = (image(ext / n, seed=s) for n, s in (("a.png", 11), ("b.png", 12), ("c.png", 13)))
+    for p, post in ((a, "1"), (b, "2"), (c, "3")):
+        noted(p, page=f"https://danbooru.donmai.us/posts/{post}", site="danbooru", post=post, artist="Someartist",
+              tags=["vale lumen", "nova (starfall)", "lighthouse tales", "solo"],
+              characters=[{"tag": "vale_lumen", **look}, {"tag": "nova_(starfall)", "name": "Nova", "series": "Starfall"}, "junk"])
+    settled(a, b, c)
+    mine = lib.character_save(None, "Lumen Vale", [], [])  # yours, given name first, no tag yet
+    got = {it["name"]: it for it in lib.inbox.items()["items"]}
+    och, nova = got["a.png"]["characters"]
+    assert och["suggest"] == [{"id": mine, "name": "Lumen Vale"}] and "have" not in och, "yours by name in the other order, suggested"
+    assert nova["suggest"] == [] and nova["name"] == "Nova"
+    # added to yours: its tag as a rule and preset, the post's look; then a new one for Nova
+    r = lib.inbox.character(got["a.png"]["key"], "vale_lumen", mine)
+    assert r == {"character": {"id": mine, "name": "Lumen Vale"}, "created": False}
+    ch = lib.character(mine)
+    assert ch["shared"]["tag"] == "vale_lumen" and ch["shared"]["series"] == "Lighthouse Tales" and ch["shared"]["appearance"] == ["brown hair", "short hair"]
+    assert ch["shared"]["outfits"] == {"default": ["school uniform"]} and ("word", "vale lumen") in [(x["kind"], x["value"]) for x in ch["rules"]]
+    lib.inbox.character(got["a.png"]["key"], "vale_lumen", mine)  # (again: nothing twice)
+    assert len(lib.character(mine)["rules"]) == 1 and len(lib.character(mine)["shared"]["outfits"]) == 1
+    r2 = lib.inbox.character(got["a.png"]["key"], "nova_(starfall)", None)
+    assert r2["created"] and r2["character"]["name"] == "Nova"
+    got = {it["name"]: it for it in lib.inbox.items()["items"]}
+    assert [x.get("have") for x in got["b.png"]["characters"]] == [{"id": mine, "name": "Lumen Vale"}, {"id": r2["character"]["id"], "name": "Nova"}], "yours now, on the others too"
+    # filed: the picture is theirs, with no prompt (its tags say so)
+    lib.inbox.file([got["a.png"]["key"], got["b.png"]["key"]], f["id"], "")
+    ids = items(lib)
+    for n in ("a.png", "b.png"):
+        assert sorted(x["name"] for x in lib.info(ids[n]["id"])["characters"]) == ["Lumen Vale", "Nova"], n
+    assert lib.character(mine)["n"] == 2
+    # a character made after the picture was filed finds it too
+    lib.inbox.file([got["c.png"]["key"]], f["id"], "")
+    assert lib.character(mine)["n"] == 3
+    lib.character_delete(r2["character"]["id"])
+    late = lib.character_save(None, "Nova", [], [{"kind": "word", "value": "nova (starfall)"}])
+    assert lib.character(late)["n"] == 3
+    other = lib.character_save(None, "Someone", [], [{"kind": "word", "value": "nova (starfall)"}])
+    assert lib.character(other)["n"] == 0, "a rule that isn't its own name: the prompt only, as before"
+    with pytest.raises(ValueError):
+        lib.inbox.character("nope", "vale_lumen", None)

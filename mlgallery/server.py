@@ -126,6 +126,7 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_post("/api/inbox/folders", inbox_folders_set)
     r.add_post("/api/inbox/file", inbox_file)
     r.add_post("/api/inbox/dismiss", inbox_dismiss)
+    r.add_post("/api/inbox/character", inbox_character)
     r.add_post("/api/inbox/undismiss", inbox_undismiss)
     r.add_post("/api/inbox/recycle", inbox_recycle)
     r.add_get("/api/inbox/thumb/{key}", inbox_thumb)
@@ -1129,6 +1130,22 @@ async def inbox_dismiss(request):
     b = await _body(request)
     try:
         return web.json_response({"dismissed": await asyncio.to_thread(_lib(request).inbox.dismiss, _keys(b))})
+    except ValueError as ex:
+        return _err(str(ex))
+
+
+async def inbox_character(request):
+    """{key, tag, character: id | null}: one of a download's characters made a character, or added to yours."""
+    b = await _body(request)
+    try:
+        cid = b.get("character")
+        if cid is not None and not isinstance(cid, int):
+            raise ValueError("character is one of yours (its id), or null for a new one")
+        if not isinstance(b.get("key"), str) or not isinstance(b.get("tag"), str):
+            raise ValueError("key and tag are text")
+        return web.json_response(await asyncio.to_thread(_lib(request).inbox.character, b["key"], b["tag"], cid))
+    except KeyError:
+        return _err("That character isn't there any more.", 404)
     except ValueError as ex:
         return _err(str(ex))
 

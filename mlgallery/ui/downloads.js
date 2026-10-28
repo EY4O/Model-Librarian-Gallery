@@ -1,5 +1,7 @@
 // Model Librarian Gallery: New downloads - the pictures in your Downloads folder (and others set in Settings), offered
 // for filing into the library: who made each and where it's from, as far as it says, and whether the library has it.
+// One saved from a booru post with the Chrome extension offers its characters you don't have yet: a new character, or
+// added to one of yours (its booru tag, then, makes this picture and the next ones theirs).
 
 import { TOKEN, api, ask, baseName, emptyArt, midName, fmtDate, fmtSize, h, icon, plural, toast } from "./util.js";
 import { preview } from "./characters.js";
@@ -11,7 +13,7 @@ const pic = (kind, it) => `/api/inbox/${kind}/${it.key}?t=${encodeURIComponent(T
 const FROM = { note: "from the page it was saved from", file: "from the file", download: "from where it was downloaded", name: "from its name" };
 
 // what's selected, how many are shown and the card the keyboard was on: kept while the page is drawn again (after filing, an Undo)
-const kept = { sel: new Set(), shown: PAGE, focusAt: -1 };
+const kept = { sel: new Set(), shown: PAGE, focusAt: -1, skipped: new Set() };
 
 export async function renderDownloads(root, ctx) {
   const sel = kept.sel;
@@ -84,6 +86,52 @@ export async function renderDownloads(root, ctx) {
       submit: () => fileThem(keys, { folder: Number(folder.value), sub: sub.value }, artist.value.trim() ? artist.value.trim() : undefined),
     });
   };
+  // a character from the picture's note: made (character null), or added to one of yours
+  const takeCharacter = async (it, ch, character) => {
+    try {
+      const r = await api("/inbox/character", { method: "POST", body: { key: it.key, tag: ch.tag, character } });
+      toast(r.created ? `${r.character.name} is one of your characters now: this picture is theirs once it's filed.`
+        : `Added ${ch.name} to ${r.character.name}: this picture is theirs once it's filed.`);
+      ctx.counts?.();
+      load();
+    } catch (e) { toast(e.message, true); }
+  };
+  const linkDialog = async (it, ch) => {
+    let yours = [];
+    try { yours = (await api("/characters")).characters.filter((c) => c.who !== "person"); } catch (e) { return toast(e.message, true); }
+    if (!yours.length) return toast("You have no characters yet: Add makes this one.", true);
+    let picked = ch.suggest?.[0]?.id ?? null;
+    const list = h("div.dl-link-list", { role: "radiogroup", "aria-label": "Your characters" });
+    const find = h("input.dl-link-find", { type: "search", placeholder: "Find one of yours", "aria-label": "Find one of your characters", autocomplete: "off", spellcheck: false });
+    const fill = () => {
+      const q = find.value.trim().toLowerCase();
+      const shown = yours.filter((c) => !q || [c.name, ...(c.aliases || [])].some((n) => n.toLowerCase().includes(q))).slice(0, 40);
+      list.replaceChildren(...(shown.length ? shown.map((c) => h("label.dl-link", {},
+        h("input", { type: "radio", name: "dl-link", checked: c.id === picked, onchange: () => { picked = c.id; } }),
+        h("span", {}, c.name), c.n ? h("span.dim", {}, plural(c.n, "picture")) : null)) : [h("p.dim", {}, "None of yours is called that.")]));
+    };
+    find.addEventListener("input", fill);
+    fill();
+    org.dialog(`Add ${ch.name} to one of yours`, h("div", {}, find, list,
+      h("p.note", {}, `Its booru tag goes to the one you pick, so pictures saved with ${ch.name} are theirs; this post's look is added too, and the name stays yours.`)), {
+      submitLabel: "Add",
+      submit: async () => {
+        if (picked == null) throw new Error("Pick one of yours.");
+        await takeCharacter(it, ch, picked);
+      },
+    });
+  };
+  const characterRow = (it, ch) => {
+    if (ch.have) return h("p.dl-char.have", { title: "One of your characters: the picture is theirs once it's filed" }, icon("person"), ch.have.name);
+    if (kept.skipped.has(`${it.key} ${ch.tag}`)) return null;
+    const s = ch.suggest?.[0];
+    return h("div.dl-char", { role: "group", "aria-label": `${ch.name}, not one of your characters` },
+      h("span.dl-char-name", { title: [ch.name, ch.series].filter(Boolean).join(" · ") }, icon("person"), ch.name),
+      s ? h("button.btn.small", { type: "button", title: `Add ${ch.name}'s tag and look to ${s.name}`, onclick: () => takeCharacter(it, ch, s.id) }, `Add to ${s.name}`) : null,
+      h("button.btn.small", { type: "button", title: "Make a new character of it, its look from this post", onclick: () => takeCharacter(it, ch, null) }, s ? "New" : "Add"),
+      h("button.btn.small", { type: "button", title: "Add it to one of your characters", onclick: () => linkDialog(it, ch) }, s ? "Other…" : "Link…"),
+      h("button.icon-btn.small", { type: "button", "aria-label": `Not ${ch.name}`, title: "Not now", onclick: () => { kept.skipped.add(`${it.key} ${ch.tag}`); draw(); } }, icon("remove")));
+  };
   const card = (it) => {
     const picked = sel.has(it.key);
     const toggle = () => { if (sel.has(it.key)) sel.delete(it.key); else sel.add(it.key); draw(); };
@@ -99,6 +147,7 @@ export async function renderDownloads(root, ctx) {
         it.site ? h("p.dl-site", {}, it.url ? h("button.link", { type: "button", title: it.url, onclick: () => openLink(it.url) }, it.site_name) : it.site_name,
           it.tags ? h("span.credit-from", {}, ` · ${plural(it.tags, "tag")}`) : null) : null,
         it.have ? h("p.dl-have", { title: it.have.path }, icon("check"), it.have.trash ? "In the library's Trash already" : "In the library already") : null,
+        ...(it.characters || []).map((ch) => characterRow(it, ch)),
         it.suggest ? h("p.dl-dest", { title: it.suggest.why ? `Suggested: ${it.suggest.why}` : "" }, "→ ", where(it.suggest, ctx.folders())) : null),
       h("div.dl-acts", {},
         it.have

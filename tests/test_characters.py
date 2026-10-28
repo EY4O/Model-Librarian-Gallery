@@ -122,9 +122,9 @@ def test_a_name_in_either_order_is_the_same_name(lib, media):
     assert lib.character(other)["n"] == 0
     # the Gallery Info node naming it the other way round
     with lib.db.write() as c:
-        c.execute("UPDATE generations SET info=? WHERE file_id=?", (json.dumps({"characters": ["Uraraka Ochako"], "tags": []}), ids["c06.png"]))
-    och = lib.character_save(None, "Ochako Uraraka", [], [])
-    assert lib.info(ids["c06.png"])["characters"] == [{"id": och, "name": "Ochako Uraraka", "state": "confirmed", "source": "workflow"}]
+        c.execute("UPDATE generations SET info=? WHERE file_id=?", (json.dumps({"characters": ["Vale Lumen"], "tags": []}), ids["c06.png"]))
+    och = lib.character_save(None, "Lumen Vale", [], [])
+    assert lib.info(ids["c06.png"])["characters"] == [{"id": och, "name": "Lumen Vale", "state": "confirmed", "source": "workflow"}]
     assert lib.characters()["suggestions"] == []
 
 
