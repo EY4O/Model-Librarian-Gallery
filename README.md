@@ -42,6 +42,7 @@ A Windows app for large libraries of AI generations, photos and illustrations: i
 - 🎨 **Your sidebar** — folders open to show their subfolders, and albums nest inside albums (by keyboard too, as in File Explorer's tree; moving or renaming one is undoable) ("Trips / Coast" is in Trips: drag one onto another, or **Move to…**), each showing everything inside it; **Tidy up** (beside the Albums heading) finds the albums that only repeat a folder, as an Eagle library brings in, and deletes the ones you tick in one undoable step; give any folder or album an icon (or a number, or an emoji) and a colour, from its right-click menu.
 - 📱 **Phone and tablet** — pair a phone or tablet by scanning a QR code and look through the library on it, anywhere over Tailscale (only your own Tailscale account's devices, with HTTPS if you like) or on your home Wi-Fi: big tiles, swipe from one picture to the next, pinch to zoom; rate, favourite, tag, albums, Swipe and the Trash, and save a picture or video to the phone's own photos. Add it to the home screen and it opens like an app. Only the devices you pair get in.
 - ♻️ **Duplicates** — exact copies, and the same picture saved twice in another format or size; **Compare** shows them side by side at full size before you choose (videos play together), and **Keep both** leaves a group alone for good.
+- 🧾 **Recipes** — turn on **Recipes** in Settings and Model Librarian's recipes are in the sidebar as cards, with a page each: the prompt, settings and every model with its strength, to copy, tag, favourite, find the pictures made with them, or open in Model Librarian's Recipes tab in ComfyUI (to download what's missing) or as a new workflow. Bring them in from pictures in the library, files dropped from Explorer, CivitAI links and recipe files, and from the Chrome extension when ComfyUI isn't running.
 - 🔗 **Model Librarian and ComfyUI** — **Open in ComfyUI** opens a file's workflow in a new ComfyUI tab, **Save as recipe** puts it in Model Librarian's recipes, and the **Gallery Info** node tags images as they're made.
 - 🦅 **Leaving Eagle** — bring an Eagle library in as plain files, laid out by its folders, into a library of its own or this one, with its tags, ratings, notes, links and colours (Eagle's library is only read); or send any selection to Eagle.
 - 🧺 **In the tray** — turn on **Keep running in the tray** and closing the window leaves the Gallery by the clock: phones, new-download notifications and the folder watcher keep working, and its menu opens New downloads, turns Phone and tablet on or off, pauses watching and quits. It can start there when you sign in, too.
@@ -99,7 +100,7 @@ The first start sets up the app's own Python in `.venv`; later starts open strai
 
 - **ffmpeg** — for video posters and lengths. The portable folder (downloaded or built) brings its own; otherwise the one on PATH is used, or set its path in **Settings**.
 - **Model Librarian** — found by itself in your models folder (`.sm_model_fetcher`). It links your files to the models you have (and shows the ones you never use), and receives **Save as recipe**.
-- **ComfyUI with Model Librarian 1.23 or newer** — for **Open in ComfyUI**; set ComfyUI's address in **Settings** if it isn't `http://127.0.0.1:8188`.
+- **ComfyUI with Model Librarian 1.23 or newer** — for **Open in ComfyUI** (1.29.0 or newer to open a recipe in its Recipes tab); set ComfyUI's address in **Settings** if it isn't `http://127.0.0.1:8188`.
 </details>
 
 ## 🚀 Getting Started
@@ -178,6 +179,16 @@ The readers are Model Librarian's, kept identical by a test: ComfyUI's `prompt` 
 </details>
 
 <details>
+<summary><b>🧾 Recipes</b></summary>
+
+- **Recipes** is off until you turn it on (**Settings → Model Librarian and ComfyUI**). They're Model Librarian's own: each is a file in the `recipes` folder of its data folder (found as for Statistics, or set in Settings), the same ones its Recipes tab shows, so there's nothing to keep in step. Without Model Librarian's folder there are none to show.
+- **Bringing them in:** drop pictures, videos or recipe files (Model Librarian's `.json`, or LoRA Manager's) on the Recipes page or use **Choose files…**; **Paste a link…** takes a CivitAI image or post (pick one of a post's images) or a link to a picture; **Save as recipe(s)** in the selection's More menu takes pictures from the library. Each is a new recipe with a 512 px picture; a file with no generation data is skipped and said so.
+- **From the Chrome extension** (0.10.0+): on a CivitAI image, while ComfyUI isn't running, **Save for the Gallery** leaves the image's link in `Downloads\Model Librarian Gallery` as a `.mlrecipe.json` file. While the Gallery is open (with Recipes on) it reads the image from CivitAI, saves the recipe and removes the file; one CivitAI can't be reached for is tried again later.
+- **A recipe's page:** the picture, where it came from, the prompt and negative prompt, the settings and each model with its strength. **Copy all** copies it as A1111-style text; rename it, tag it, favourite it, write notes, or delete it (it goes to `recipes\_deleted`). **Find its pictures** searches the library for its checkpoint and LoRAs. The Recipes list searches titles, prompts, models and tags, with Favourites and a tag filter.
+- **To ComfyUI:** **Open in Model Librarian** opens it in Model Librarian's Recipes tab in your ComfyUI (Model Librarian 1.29.0 or newer), to download what's missing and fill the workflow; **Open as a new workflow** opens the workflow it was made with in a new tab, when it has one.
+</details>
+
+<details>
 <summary><b>🏷️ The Gallery Info node</b></summary>
 
 A node in Model Librarian's pack: put **Gallery Info (Model Librarian)** before your save node and fill in albums, tags, characters, a project, a rating or a note. Every save node writes it into the file with the workflow, and the Gallery files the image under it straight away: albums and tags are added, characters count as confirmed, and the rating applies unless you've set your own. Its folder pattern (`{project}/{character}/{date}/`) can also save each file straight into its folder.
@@ -216,7 +227,7 @@ Statistics count the files made in a range (7 days to all time): what they were 
 - Indexing only reads. Files are moved or deleted only when you ask, and everything you change is in **History** with **Undo** (Ctrl+Z).
 - A move shows what will happen first and only goes into your library folders. Across drives it copies, checks the copy's size and fingerprint, then removes the original.
 - **Delete** moves a file to the Gallery's Trash (a hidden `.mlg-trash` folder in its own library folder), from where **Put back** restores it. Emptying the Trash sends files to the Windows Recycle Bin.
-- The Gallery listens on 127.0.0.1 only, with a new token each start; other programs and web pages can't use it. It sends nothing anywhere: Open in ComfyUI talks only to the ComfyUI address you set.
+- The Gallery listens on 127.0.0.1 only, with a new token each start; other programs and web pages can't use it. It sends nothing anywhere: Open in ComfyUI talks only to the ComfyUI address you set, and Recipes only reads a CivitAI image or picture you give it a link to (public `https://` addresses only, never one on your own network).
 - **Phone and tablet** is off until you turn it on. Then the Gallery also listens on one network, on a port of its own: Tailscale's addresses (answering only your own account's devices) or the home network's address. It answers only devices you've paired and only private addresses: a request from the internet isn't answered, even if a router forwards the port. A paired device can look and organise; it can't change Settings or folders, move, rename or empty anything. Its key changes as it's used, and an old copy that turns up gets the device unpaired. Only the Gallery's own address or name is answered, and the Tailscale command is only ever the one Tailscale installs.
 - **Starting at sign-in** is off until you turn it on in Settings, In the background: it adds the Gallery to your own Windows user's sign-in list (the Run key), and turning it off takes it out again.
 - **Updates** are off until you turn them on. Checking only reads GitHub's list of releases. An update is checked against its SHA-256 before it's unpacked beside the app, and the Gallery swaps it in at its next start, while it's closed.
@@ -256,6 +267,7 @@ If the Gallery helps you find your way around your generations, you can support 
 
 Each version's full notes are on its [release page](https://github.com/EY4O/Model-Librarian-Gallery/releases). 1.15.0 to 1.17.1 went out together in 1.18.0, 1.2.0 with 1.3.0, and versions before 1.1.3 came before the Gallery had releases.
 
+- **1.21.0** — Recipes: Model Librarian's recipes in the sidebar, brought in from pictures, files, CivitAI links and the Chrome extension, and opened in ComfyUI.
 - **1.20.1** — Swipe: a star lights every star up to it, and the picture stays a moment with its rating before the next one.
 - **1.20.0** — Make, rename, move and delete folders from the sidebar; drag pictures onto a folder to move them, and drop files from Explorer to copy them in.
 - **1.19.1** — Fixes for linking characters: one with a tag of its own, two of a name in other series, Add clicked twice.

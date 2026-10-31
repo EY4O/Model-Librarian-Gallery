@@ -26,7 +26,9 @@ FOLDERID_DOWNLOADS = "{374DE290-123F-4565-9164-39C4925E467B}"
 
 
 def downloads_folder() -> str | None:
-    """Windows' Downloads folder, wherever you moved it."""
+    """Windows' Downloads folder, wherever you moved it (MLG_DOWNLOADS instead: the tests and a throwaway Gallery)."""
+    if os.environ.get("MLG_DOWNLOADS"):
+        return os.environ["MLG_DOWNLOADS"]
     if os.name == "nt":
         try:
             import ctypes

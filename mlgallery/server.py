@@ -160,6 +160,14 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_post("/api/duplicates/unkeep", duplicates_unkeep)
     r.add_post("/api/file/{id}/open-in-comfy", open_in_comfy)
     r.add_post("/api/file/{id}/recipe", save_recipe)
+    r.add_get("/api/recipes", recipes_list)
+    r.add_post("/api/recipes/import", recipes_import)
+    r.add_post("/api/recipes/from-files", recipes_from_files)
+    r.add_get("/api/recipes/{rid}", recipe_get)
+    r.add_post("/api/recipes/{rid}", recipe_update)
+    r.add_delete("/api/recipes/{rid}", recipe_delete)
+    r.add_get("/api/recipes/{rid}/thumb", recipe_thumb)
+    r.add_post("/api/recipes/{rid}/comfy", recipe_to_comfy)
     r.add_post("/api/backup", backup_now)
     r.add_post("/api/open-data", open_data)
     r.add_post("/api/shortcut", make_shortcut)
@@ -1548,10 +1556,197 @@ async def save_recipe(request):
     if not path or not os.path.isfile(path):
         return _err("not found", 404)
     try:
-        r = await asyncio.to_thread(comfy.save_recipe, lib.models.data_dir(), path, info["kind"], info["name"], b.get("title"))
+        from .thumbs import find_ffmpeg
+        r = await asyncio.to_thread(comfy.save_recipe, lib.models.data_dir(), path, info["kind"], info["name"], b.get("title"),
+                                    find_ffmpeg(lib.settings.get("ffmpeg")))
     except comfy.ComfyError as ex:
         return _err(str(ex), 422)
     return web.json_response(r)
+
+
+# ---------------------------------------------------------------- Recipes: Model Librarian's (recipes.py), while they're on
+def _recipes_dir(request) -> str:
+    lib = _lib(request)
+    if not lib.settings.get("recipes"):
+        raise web.HTTPConflict(text=json.dumps({"error": "Recipes are off: turn them on in Settings."}), content_type="application/json")
+    d = lib.models.data_dir()
+    if not d:
+        raise web.HTTPConflict(text=json.dumps({"error": "Model Librarian's data folder wasn't found: set it in Settings, Model Librarian and ComfyUI."}),
+                               content_type="application/json")
+    return d
+
+
+_NO_RECIPE = "There's no such recipe (deleted in Model Librarian?)."
+
+
+async def recipes_list(request):
+    from . import recipes
+    d = _recipes_dir(request)
+    items = await asyncio.to_thread(recipes.list_all, d)
+    tags = sorted({t for r in items for t in r["tags"]}, key=str.lower)
+    return web.json_response({"recipes": items, "tags": tags})
+
+
+async def recipe_get(request):
+    from . import recipes
+    d = _recipes_dir(request)
+    try:
+        r = await asyncio.to_thread(recipes.get, d, request.match_info["rid"])
+    except recipes.RecipeError:
+        r = None
+    if not r:
+        return _err(_NO_RECIPE, 404)
+    return web.json_response({"recipe": r, "summary": recipes.summary(d, r)})
+
+
+async def recipe_update(request):
+    from . import recipes
+    d = _recipes_dir(request)
+    try:
+        r = await asyncio.to_thread(recipes.update, d, request.match_info["rid"], await _body(request))
+    except recipes.RecipeError as ex:
+        return _err(str(ex), 422)
+    return web.json_response({"recipe": recipes.summary(d, r)}) if r else _err(_NO_RECIPE, 404)
+
+
+async def recipe_delete(request):
+    from . import recipes
+    d = _recipes_dir(request)
+    try:
+        ok = await asyncio.to_thread(recipes.delete, d, request.match_info["rid"])
+    except recipes.RecipeError:
+        ok = False
+    return web.json_response({"ok": True}) if ok else _err(_NO_RECIPE, 404)
+
+
+async def recipe_thumb(request):
+    from . import recipes
+    d = _recipes_dir(request)
+    try:
+        p = recipes.thumb_path(d, request.match_info["rid"])
+    except recipes.RecipeError:
+        p = None
+    if not p:
+        return web.Response(status=404)
+    return web.FileResponse(p, headers={"Content-Type": "image/webp", "Cache-Control": "max-age=3600"})
+
+
+def _save_all(d: str, got: list) -> list[dict]:
+    from . import recipes
+    return [recipes.summary(d, recipes.save(d, rec, thumb)) for rec, thumb in got]
+
+
+async def recipes_import(request):
+    """Files (multipart, any number: pictures, videos, recipe files), or JSON {url} (a link) or {recipe, thumb}
+    -> {saved: [summary], skipped: [{name, error}]}, or {choices} for a CivitAI post (pick a picture, then its link)."""
+    from . import recipes
+    from .meta import recipe_parse
+    from .thumbs import find_ffmpeg
+    d = _recipes_dir(request)
+    ffmpeg = find_ffmpeg(_lib(request).settings.get("ffmpeg"))
+    saved, skipped = [], []
+    if (request.content_type or "").startswith("multipart/"):
+        reader = await request.multipart()
+        while (part := await reader.next()) is not None:
+            name = os.path.basename(part.filename or "") or "file"
+            data, big = bytearray(), False
+            while chunk := await part.read_chunk(1 << 20):
+                if big:
+                    continue  # (the rest of it read and dropped, so the next file is reached)
+                data += chunk
+                big = len(data) > recipes.MAX_IMAGE * 4
+            try:
+                if big:
+                    raise recipe_parse.NoMetadata("That file is too big to read a recipe from.")
+                if name.lower().endswith(".json"):
+                    got = await asyncio.to_thread(recipes.from_json, bytes(data), name)
+                else:
+                    got = [await asyncio.to_thread(recipes.from_media, bytes(data), name, ffmpeg)]
+                saved += await asyncio.to_thread(_save_all, d, got)
+            except recipe_parse.NoMetadata as ex:
+                skipped.append({"name": name, "error": str(ex)})
+        return web.json_response({"saved": saved, "skipped": skipped})
+    b = await _body(request)
+    try:
+        if isinstance(b.get("recipe"), dict):
+            rec = recipe_parse.normalize(b["recipe"])
+            if not recipes._useful(rec):
+                raise recipe_parse.NoMetadata("That recipe has no prompt or models in it.")
+            got = [(rec, recipes.thumb_from_data_url(b.get("thumb")))]
+        elif b.get("url"):
+            r = await recipes.from_url(str(b["url"]), ffmpeg)
+            if "choices" in r:
+                return web.json_response(r)
+            got = [(r["recipe"], r["thumb"])]
+        else:
+            return _err("Send files, a link or a recipe.")
+    except recipe_parse.NoMetadata as ex:
+        return _err(str(ex), 422)
+    except recipes.RecipeError as ex:
+        return _err(str(ex), 502)
+    return web.json_response({"saved": await asyncio.to_thread(_save_all, d, got), "skipped": []})
+
+
+async def recipes_from_files(request):
+    """A selection of the library's pictures -> a recipe from each one that has generation data."""
+    from . import comfy, recipes
+    from .thumbs import find_ffmpeg
+    d = _recipes_dir(request)
+    lib = _lib(request)
+    ids = await _ids(request, await _body(request))
+    if len(ids) > 200:
+        return _err("Up to 200 at a time: select fewer.", 422)
+    ffmpeg = find_ffmpeg(lib.settings.get("ffmpeg"))
+
+    def run():
+        saved, skipped = [], []
+        for fid in ids:
+            info = lib.info(fid)
+            path = lib.file_path(fid) if info else None
+            if not path or not os.path.isfile(path):
+                continue
+            try:
+                r = comfy.save_recipe(d, path, info["kind"], info["name"], ffmpeg=ffmpeg)
+                saved.append(recipes.summary(d, recipes.get(d, r["id"])))
+            except comfy.ComfyError as ex:
+                skipped.append({"name": info["name"], "error": str(ex)})
+        return {"saved": saved, "skipped": skipped}
+    return web.json_response(await asyncio.to_thread(run))
+
+
+async def recipe_to_comfy(request):
+    """{mode: "recipe"}: into Model Librarian's Recipes tab in ComfyUI; {mode: "workflow"}: its workflow, in a new tab."""
+    from . import comfy, recipes
+    d = _recipes_dir(request)
+    lib = _lib(request)
+    b = await _body(request)
+    try:
+        r = await asyncio.to_thread(recipes.get, d, request.match_info["rid"])
+    except recipes.RecipeError:
+        r = None
+    if not r:
+        return _err(_NO_RECIPE, 404)
+    try:
+        if b.get("mode") == "workflow":
+            c = r.get("comfy") if isinstance(r.get("comfy"), dict) else {}
+            if not (c.get("workflow") or c.get("prompt")):
+                return _err("This recipe has no ComfyUI workflow: open it in Model Librarian's Recipes tab instead.", 422)
+            out = await comfy.open_in_comfy(lib.settings.get("comfy_url"), c.get("workflow"), c.get("prompt"), r.get("title") or "Recipe")
+        else:
+            tp = recipes.thumb_path(d, r["id"])
+            thumb = await asyncio.to_thread(_read_bytes, tp) if tp else None
+            out = await comfy.open_recipe(lib.settings.get("comfy_url"), r, thumb)
+    except comfy.ComfyError as ex:
+        return _err(str(ex), 502)
+    return web.json_response(out)
+
+
+def _read_bytes(p: str) -> bytes | None:
+    try:
+        with open(p, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
 
 
 async def backup_now(request):

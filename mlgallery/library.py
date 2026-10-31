@@ -12,7 +12,7 @@ import time
 
 import json
 
-from . import bulk, charfiles, charstore, charsync, colors, credits, dates, downloads, families, fileops, looks
+from . import bulk, charfiles, charstore, charsync, colors, credits, dates, downloads, families, fileops, looks, recipes
 from . import characters as chars
 from . import metadata
 from . import scan as scanner
@@ -158,6 +158,7 @@ class Library:
         threading.Thread(target=self._scan_loop, name="scanner", daemon=True).start()
         threading.Thread(target=self.inbox.notify_loop, args=(self._stop,), name="inbox-notify", daemon=True).start()
         threading.Thread(target=charfiles.loop, args=(self, self._stop), name="characters-in", daemon=True).start()  # (from the Chrome extension; the sync with Model Librarian)
+        threading.Thread(target=recipes.loop, args=(self, self._stop), name="recipes-in", daemon=True).start()  # (from the Chrome extension, with Recipes on)
         if rescan:
             self.scan_all()
 
@@ -1482,7 +1483,9 @@ class Library:
             total = c.execute("SELECT COUNT(*) FROM files WHERE missing=0").fetchone()[0]
             trash = c.execute(f"SELECT COUNT(*) FROM files f WHERE f.missing=2 AND f.id NOT IN ({TRASHED_MOTION})").fetchone()[0]
             offline = c.execute("SELECT COUNT(*) FROM folders WHERE online=0").fetchone()[0]
-        return {"files": total, "offline": offline, "scanning": self.scanning, "last_scan": self.last_scan,
+        ml = self.models.data_dir() if self.settings.get("recipes") else None
+        return {"recipes": recipes.count(ml) if ml else None,  # (None: Recipes off, or no Model Librarian to keep them)
+                "files": total, "offline": offline, "scanning": self.scanning, "last_scan": self.last_scan,
                 "queued": len(self._queue), "thumbs_pending": self.thumbs.pending(), "thumbs_failed": self.thumbs.failed,
                 "meta_pending": self.meta.pending(), "trash": trash, "kinds": kinds, "inbox": inbox,
                 "dates_pending": self.dater.pending(), "dates_moved": self.dater.moved, "credits_pending": self.credits.pending()}

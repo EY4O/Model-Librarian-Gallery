@@ -110,7 +110,11 @@ export async function renderSettings(root, ctx) {
         s.ml_data_found ? `Using ${s.ml_data_found}: its library shows the models you never use, and Save as recipe puts recipes there.`
           : s.ml_search === false ? "Not looked for: this Gallery has a data folder of its own (--data), so it only uses one set here."
           : "Not found. It's the .sm_model_fetcher folder inside your models folder."),
-      field("ComfyUI's address", h("div", {}, text("comfy_url", "http://127.0.0.1:8188", "ComfyUI address")), null), comfyNote),
+      field("ComfyUI's address", h("div", {}, text("comfy_url", "http://127.0.0.1:8188", "ComfyUI address")), null), comfyNote,
+      field("Recipes", h("label.check", { for: "set-recipes" }, h("input", { type: "checkbox", id: "set-recipes", checked: !!s.settings.recipes,
+        onchange: (e) => save({ recipes: e.target.checked }, "Recipes setting") }), " Show Model Librarian's recipes in the sidebar"),
+        s.ml_data_found ? "Bring recipes in from pictures, videos, recipe files and CivitAI links, look through them, and open one in ComfyUI. The Chrome extension's Save for the Gallery is picked up while this is on."
+          : "Needs Model Librarian's data folder (above): the recipes are its own.")),
     h("section.st-card.set", { "aria-label": "Eagle" },
       h("div.st-card-head", {}, h("h2", {}, "Eagle"), h("button.btn.small", { type: "button", onclick: () => eagleImport(folders, lb) }, "Bring in an Eagle library…")),
       h("p.note.set-lede", {}, "Bringing in a library only reads it. Its files are copied out, laid out by Eagle folder, into a new library of their own or into this one, with their tags, folders (as albums), ratings, notes, source links and colours; a file this library already has just gets the marks. Send to Eagle (in the selection's More menu) adds files to Eagle through Eagle itself."),

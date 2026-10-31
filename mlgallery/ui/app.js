@@ -11,6 +11,7 @@ import { swipeReview } from "./swipe.js";
 import { renderDownloads } from "./downloads.js";
 import * as org from "./organize.js";
 import { renderSettings } from "./settings.js";
+import { renderRecipe, renderRecipes, saveAsRecipes } from "./recipes.js";
 
 const PAGE = 300;
 const HEAD = 40;      // a day heading's height
@@ -190,6 +191,7 @@ function renderSide() {
   $("view-characters").classList.toggle("sel", state.view === "characters" || state.view === "character");
   $("view-artists").classList.toggle("sel", state.view === "artists" || state.view === "artist");
   $("view-downloads").classList.toggle("sel", state.view === "downloads");
+  $("view-recipes").classList.toggle("sel", state.view === "recipes" || state.view === "recipe");
   const trees = new Map(state.folders.map((f) => [f.id, dirTree(state.dirs[f.id] || [])]));
   const anyDirs = [...trees.values()].some((t) => t.kids.size);
   const hadRow = document.activeElement?.closest?.("#folders [role=treeitem], #albums [role=treeitem]");  // (drawn again: focus stays on it)
@@ -767,7 +769,7 @@ async function tidyAlbums() {
   for (const b of boxes) b.addEventListener("change", () => { go.textContent = `Delete ${plural(count(), "album")}`; go.disabled = !count(); });
 }
 
-const PAGES = new Set(["stats", "characters", "character", "review", "artists", "artist", "downloads", "duplicates", "history", "settings"]); // screens of their own, instead of the grid
+const PAGES = new Set(["stats", "characters", "character", "review", "artists", "artist", "downloads", "recipes", "recipe", "duplicates", "history", "settings"]); // screens of their own, instead of the grid
 const isPage = () => PAGES.has(state.view);
 const pageCtx = { open: (chips) => openFromStats(chips), show: (view, id) => selectView(view, id), refresh: () => loadCharacters(),
   counts: () => pollSoon(), folders: () => state.folders };
@@ -801,6 +803,8 @@ function selectView(view, arg = null, sub = null) {
   else if (view === "artists") renderArtists($("stats"), pageCtx);
   else if (view === "artist") renderArtist($("stats"), arg, pageCtx);
   else if (view === "downloads") renderDownloads($("stats"), pageCtx);
+  else if (view === "recipes") renderRecipes($("stats"), pageCtx);
+  else if (view === "recipe") renderRecipe($("stats"), arg, pageCtx);
   else if (view === "duplicates") org.renderDuplicates($("stats"));
   else if (view === "history") org.renderHistory($("stats"));
   else if (view === "settings") renderSettings($("stats"), settingsCtx);
@@ -1166,6 +1170,7 @@ function selChanged() {
   const moreBtn = h("button.icon-btn", { type: "button", "aria-haspopup": "menu", "aria-label": "More", title: "More", onclick: (e) => menu(e.currentTarget, [
     { label: "Move…", icon: "move", onclick: () => org.moveDialog(sel, n, state.folders, { at: state.folder, after: clearSel }) },
     { label: "Send to Eagle…", icon: "send", onclick: () => org.sendToEagle(sel, n) },
+    lib.recipes != null ? { label: n > 1 ? "Save as recipes" : "Save as recipe", icon: "save", onclick: () => saveAsRecipes(sel, n, pageCtx) } : null,
     has("illustrations") ? { label: "Set the artist…", icon: "person", onclick: () => org.artistDialog(sel, n) } : null,
     null,
     { label: "Take out of favourites", icon: "heart", onclick: () => bulk("favorite", false) },
@@ -2320,6 +2325,15 @@ function applyKinds(kinds) {
   if (!$("viewer").hidden && shown) loadDetails(shown);
 }
 
+// Recipes (Settings, Model Librarian and ComfyUI): in the sidebar while they're on and Model Librarian's folder is found
+function applyRecipes(n) {
+  const was = lib.recipes;
+  lib.recipes = n ?? null;
+  $("view-recipes").hidden = lib.recipes == null;
+  $("recipe-count").textContent = n ? n.toLocaleString() : "";
+  if (was != null && lib.recipes == null && (state.view === "recipes" || state.view === "recipe")) selectView("all");
+}
+
 // asked once per library, the first time it opens in a version that knows about kinds: one or more
 function askKind() {
   const boxes = KINDS.map(([k, label, text]) => h("label.kind-choice", {}, h("input", { type: "checkbox", value: k }), h("span.kc", {}, h("b", {}, label), h("span", {}, text))));
@@ -2398,6 +2412,7 @@ async function poll() {
     lastStatus = st;
     if (JSON.stringify(st.kinds) !== JSON.stringify(lib.kinds)) applyKinds(st.kinds);
     if (st.kinds === null && !askedKind) { askedKind = true; askKind(); }
+    applyRecipes(st.recipes);
     const busy = st.scanning || st.queued || st.thumbs_pending || st.meta_pending || st.job;
     $("status-dot").classList.toggle("busy", !!(busy || st.dates_pending || st.credits_pending));
     if (st.job && (st.job.state === "done" || st.job.state === "failed")) {  // ended while its dialog wasn't open (hidden, or the window reloaded)
@@ -2462,6 +2477,7 @@ $("empty-trash").onclick = () => org.emptyTrash(null, state.total);
 $("view-characters").onclick = () => selectView("characters");
 $("view-review").onclick = () => selectView("review");
 $("view-artists").onclick = () => selectView("artists");
+$("view-recipes").onclick = () => selectView("recipes");
 $("save-search").onclick = saveSearch;
 // Swipe (in the sidebar): the pictures you're looking at, one at a time; on another screen (or the Trash), all of them
 $("view-swipe").onclick = () => {

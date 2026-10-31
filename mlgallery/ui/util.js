@@ -4,7 +4,7 @@ export const TOKEN = document.querySelector('meta[name="mlg-token"]').content;
 export const $ = (id) => document.getElementById(id);
 
 // what this library is for: one or more of ai, photos, illustrations (null until it's been asked); it decides what the screens show
-export const lib = { kinds: null };
+export const lib = { kinds: null, recipes: null };  // (recipes: how many, while Recipes are on)
 export const has = (kind) => (lib.kinds || ["ai"]).includes(kind);  // not asked yet: as before, AI generations
 export const aiOnly = () => !lib.kinds || lib.kinds.join() === "ai";
 // what one file is, from what's been read of it (as the server's library.FILE_IS): generation data, else a date taken, else neither
