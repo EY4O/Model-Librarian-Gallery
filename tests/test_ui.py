@@ -819,8 +819,8 @@ def test_saving_to_the_phone(server):
             await e.wait("document.querySelector('dialog.dialog')?.innerText.includes('Ready to save')")
             await e.js("document.querySelector('dialog.dialog .btn.primary').click(); true")
             await e.wait("__shared.length === 2 && !document.querySelector('dialog.dialog')")
-            await e.js("document.querySelector('.pv-top [aria-label=Close]').click(); true")
-            await e.wait("!document.querySelector('.p-viewer')")
+            await e.js("document.querySelector('.p-tile').dataset.old = 1; document.querySelector('.pv-top [aria-label=Close]').click(); true")
+            await e.wait("!document.querySelector('.p-viewer') && !document.querySelector('.p-tile').dataset.old")  # (closing fetches the grid again: a press on a tile it's about to replace goes nowhere)
             # a selection: several at once
             for k in (0, 1):
                 await e.js(f"const t = document.querySelectorAll('.p-tile')[{k}]; t.dispatchEvent(new PointerEvent('pointerdown', {{bubbles: true, clientX: 5, clientY: 5}})); true")
