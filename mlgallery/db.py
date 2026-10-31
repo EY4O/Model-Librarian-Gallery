@@ -272,6 +272,15 @@ MIGRATIONS = [
     ALTER TABLE characters ADD COLUMN shared TEXT;  -- JSON: {id (the list's), series, tag, appearance, outfits, lora, image, source, changed, ...}
     CREATE TABLE characters_deleted (shared_id TEXT PRIMARY KEY, at REAL NOT NULL);
     """,
+    # 15: empty folders inside library folders (found by a scan, or made in the sidebar): the sidebar lists them too,
+    # though no file says they're there
+    """
+    CREATE TABLE dirs (
+        folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+        rel TEXT NOT NULL,              -- path inside the folder, with forward slashes
+        PRIMARY KEY (folder_id, rel)
+    );
+    """,
 ]
 CACHE = 256  # cached query results kept (each tied to the index as it was)
 

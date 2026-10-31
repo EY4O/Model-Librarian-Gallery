@@ -15,6 +15,28 @@ from . import scan
 QUIET = 1.0           # seconds a file must stay the same size before it's indexed
 OFFLINE_CHECK = 30    # how often a folder that isn't reachable is looked for again
 GONE_CHECK = 5        # how often the folders that are online are checked still to be there (renamed, unplugged)
+EXPECT_FOR = 30      # seconds a folder the Gallery itself renamed, moved or removed is known to have been (folders.py)
+
+# folders the Gallery itself just renamed, moved or removed (its index follows them already): their events need no rescan
+_expected: dict[str, float] = {}
+_expected_lock = threading.Lock()
+
+
+def expect(paths) -> None:
+    """These folders are about to be renamed, moved or removed by the Gallery (and the folders inside them with them)."""
+    until = time.time() + EXPECT_FOR
+    with _expected_lock:
+        for p in paths:
+            _expected[os.path.normcase(os.path.normpath(p))] = until
+
+
+def expected(path: str) -> bool:
+    now = time.time()
+    p = os.path.normcase(os.path.normpath(path))
+    with _expected_lock:
+        for k in [k for k, until in _expected.items() if until < now]:
+            del _expected[k]
+        return any(p == k or p.startswith(k + os.sep) for k in _expected)
 
 
 class Watcher:
@@ -82,6 +104,15 @@ class Watcher:
         with self._lock:
             self._pending[(folder["id"], rel)] = (time.time(), -1)
 
+    def dir_made(self, folder: dict, path: str) -> None:
+        """A folder made (in Explorer, or in the sidebar): listed while it's empty, as a scan would."""
+        rel = os.path.relpath(path, folder["path"]).replace("\\", "/")
+        if rel.startswith("../") or rel == "." or any(scan.skip_dir(p, bool(self.lib.settings.get("skip_eagle"))) for p in rel.split("/")):
+            return
+        if scan.is_empty_dir(path):
+            with self.lib.db.write() as c:
+                c.execute("INSERT OR IGNORE INTO dirs (folder_id, rel) VALUES (?, ?)", (folder["id"], rel))
+
     def _loop(self) -> None:
         last_offline = last_gone = time.time()
         while not self._stop.wait(0.5):
@@ -147,8 +178,14 @@ class _Handler:
         if self.w.paused:
             return
         if event.is_directory:
-            if event.event_type in ("moved", "deleted"):
+            src = os.fsdecode(getattr(event, "src_path", "") or "")
+            if event.event_type in ("moved", "deleted") and not expected(src):
                 self.w.lib.scan(self.folder["id"])  # a whole folder moved or went: a rescan sorts it out
+            elif event.event_type == "created" or (event.event_type == "moved" and getattr(event, "dest_path", None)):
+                try:  # (made, or moved here from another library folder)
+                    self.w.dir_made(self.folder, os.fsdecode(event.dest_path) if event.event_type == "moved" else src)
+                except Exception:
+                    pass
             return
         for p in (getattr(event, "src_path", None), getattr(event, "dest_path", None)):
             if p:

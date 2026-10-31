@@ -265,6 +265,7 @@ def move(db, ids, dest_folder: int, sub: str = "") -> dict:
             op = record(c, "move", f"Moved {n:,} file{'s' if n != 1 else ''} to {os.path.basename(plan['dest']) or plan['dest']}", done)
             scan.pair_live(c, _touched(done))
             _recount(c)
+        _note_empty(db, _left(done, "from_folder", "from_rel"))
     return {"op": op, "moved": sum(1 for it in done if "with" not in it), "failed": failed}
 
 
@@ -319,6 +320,7 @@ def trash(db, ids) -> dict:
             op = record(c, "trash", f"Moved {shown:,} file{'s' if shown != 1 else ''} to the Trash", done)
             scan.pair_live(c, _touched(done))
             _recount(c)
+        _note_empty(db, _left(done, "folder", "rel"))
     return {"op": op, "trashed": shown, "failed": failed}
 
 
@@ -459,6 +461,22 @@ def _tidy_trash(root: str, trash_rel: str) -> None:
         d = os.path.dirname(d)
 
 
+def _note_empty(db, places) -> None:
+    """Folders left empty, their files moved away or put in the Trash: still listed in the sidebar (as the next scan
+    would list them), until they're deleted. places: (folder id, folder inside it)."""
+    with db.read() as c:
+        roots = {r["id"]: r["path"] for r in c.execute("SELECT id, path FROM folders")}
+    empty = sorted({(fid, rel) for fid, rel in places if rel and fid in roots and scan.is_empty_dir(_full(roots[fid], rel))})
+    if empty:
+        with db.write() as c:
+            c.executemany("INSERT OR IGNORE INTO dirs (folder_id, rel) VALUES (?, ?)", empty)
+
+
+def _left(items, folder: str, rel: str) -> set:
+    """The folders some file items were taken out of."""
+    return {(it[folder], it[rel].rsplit("/", 1)[0]) for it in items if "/" in it[rel]}
+
+
 def _recount(c) -> None:
     c.execute("UPDATE folders SET file_count=(SELECT COUNT(*) FROM files f WHERE f.folder_id=folders.id AND f.missing=0)")
 
@@ -540,6 +558,9 @@ def undo(db, op_id: int) -> dict:
     elif kind == "rename":
         from . import rename
         result = rename.undo(db, data)
+    elif kind in ("dir_make", "dir_move", "dir_delete", "copy_in"):
+        from . import folders
+        result = folders.undo(db, kind, data)
     else:
         raise OpError("Emptying the Trash can't be undone here: the files are in the Windows Recycle Bin.")
     with db.write() as c:

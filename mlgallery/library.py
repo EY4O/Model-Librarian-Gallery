@@ -202,7 +202,8 @@ class Library:
         return folder
 
     def dirs(self, folder_id: int) -> list[dict]:
-        """A library folder's subfolders that hold files (in them or deeper): {rel, n}, n counting the ones deeper too."""
+        """A library folder's subfolders that hold files (in them or deeper), and the empty ones: {rel, n}, n counting
+        the ones deeper too."""
         def run():
             n: dict[str, int] = {}
             with self.db.read() as c:
@@ -211,6 +212,14 @@ class Library:
                     for i in range(1, len(parts) + 1):
                         k = "/".join(parts[:i])
                         n[k] = n.get(k, 0) + 1
+                known = {k.casefold() for k in n}
+                for (rel,) in c.execute("SELECT rel FROM dirs WHERE folder_id=?", (int(folder_id),)):
+                    parts = rel.split("/")
+                    for i in range(1, len(parts) + 1):  # (with the folders it's in, though nothing else is)
+                        k = "/".join(parts[:i])
+                        if k.casefold() not in known:
+                            known.add(k.casefold())
+                            n[k] = 0
             return [{"rel": k, "n": v} for k, v in sorted(n.items(), key=lambda kv: kv[0].casefold())]
         return self.db.cached(("dirs", int(folder_id)), run)
 

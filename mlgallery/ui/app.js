@@ -3,7 +3,7 @@
 // scrolls the same at 200 files or 250,000. Day headings come from a per-day count (one small request),
 // so every tile's place is known without fetching the pages above it.
 
-import { $, KINDS, emptyArt, midName, LOOK_COLORS, LOOK_ICONS, Pace, TOKEN, aiOnly, albumName, albumTree, api, dirTree, fmtLeft, has, holdFocus, inside, job, leafName, parentName, progressBar, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lib, lookIcon, media, menu, plural, sameName, stars, store, toast, who } from "./util.js";
+import { $, KINDS, emptyArt, midName, LOOK_COLORS, LOOK_ICONS, Pace, TOKEN, aiOnly, albumName, albumTree, api, dirTree, fmtLeft, has, holdFocus, inside, job, leafName, parentName, progressBar, ask, askText, baseName, closeMenu, copyText, dayLabel, fmtDate, fmtDur, fmtNum, fmtSize, h, icon, lib, lookIcon, media, menu, plural, sameName, showToast, stars, store, toast, who } from "./util.js";
 import { renderStats } from "./stats.js";
 import { editCharacter, renderCharacter, renderCharacters, renderReview } from "./characters.js";
 import { creditEditor, renderArtist, renderArtists } from "./artists.js";
@@ -197,7 +197,7 @@ function renderSide() {
   const items = state.folders.flatMap((f) => {
     const sel = state.view === "folder" && state.folder === f.id && !state.sub, tree = trees.get(f.id), key = `f:${f.id}`;
     return [h("div.nav-item" + (sel ? ".sel" : ""), { ...treeRow(key, null, 1, tree.kids.size > 0, sel), title: f.path, onclick: () => selectView("folder", f.id),
-      oncontextmenu: (e) => { e.preventDefault(); lookMenu(e.currentTarget, "folder", f); } },
+      oncontextmenu: (e) => { e.preventDefault(); lookMenu(e.currentTarget, "folder", f); }, ...folderDrop(f, "") },
       anyDirs ? twist(key, tree.kids.size > 0) : null,
       lookIcon(f, "folder"),
       h("span.label", {}, baseName(f.path)),
@@ -275,14 +275,215 @@ const indent = (depth) => (depth ? { paddingLeft: `${10 + Math.min(depth, 3) * 1
 function dirRows(f, node, depth) {
   return [...node.kids.values()].flatMap((d) => {
     const key = `f:${f.id}/${d.rel}`, sel = state.view === "folder" && state.folder === f.id && state.sub === d.rel;
-    const reveal = () => api(`/folders/${f.id}/reveal`, { method: "POST", body: { rel: d.rel } }).catch((e) => toast(e.message, true));
-    const up = d.rel.includes("/") ? `f:${f.id}/${d.rel.slice(0, d.rel.lastIndexOf("/"))}` : `f:${f.id}`;
+    const up =d.rel.includes("/") ? `f:${f.id}/${d.rel.slice(0, d.rel.lastIndexOf("/"))}` : `f:${f.id}`;
     return [h("div.nav-item" + (sel ? ".sel" : ""), { ...treeRow(key, up, depth + 1, d.kids.size > 0, sel), title: `${f.path}\\${d.rel.replaceAll("/", "\\")}`, style: indent(depth),
       onclick: () => selectView("folder", f.id, d.rel),
-      oncontextmenu: (e) => { e.preventDefault(); menu(e.currentTarget, [{ label: "Show in Explorer", icon: "explorer", onclick: reveal }]); } },
+      oncontextmenu: (e) => { e.preventDefault(); dirMenu(e.currentTarget, f, d); },
+      draggable: "true",
+      ondragstart: (e) => { draggingDir = { fid: f.id, rel: d.rel }; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", d.rel); },
+      ondragend: () => { draggingDir = null; },
+      ...folderDrop(f, d.rel) },
       twist(key, d.kids.size > 0), icon("folder"), h("span.label", {}, d.name), h("span.n", {}, d.n.toLocaleString())),
       ...(d.kids.size && opened.has(key) ? dirRows(f, d, depth + 1) : [])];
   });
+}
+
+// ---------------------------------------------------------------- the folders inside library folders (folders.py): made,
+// renamed, moved and deleted from their right-click menu; pictures dragged onto one move there; a folder dragged onto
+// another moves into it; files dropped on one from Explorer are copied in. Each with Undo. A library folder itself is
+// only made into: it's renamed, moved and removed in Explorer.
+let draggingDir = null;  // {fid, rel}: the folder being dragged in the sidebar
+const lastPart = (rel) => rel.split("/").pop();
+const upRel = (rel) => (rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "");
+const dirName = (f, rel) => (rel ? lastPart(rel) : baseName(f.path));
+const under = (rel, top) => rel === top || rel.startsWith(top + "/");
+
+function dirMenu(anchor, f, d) {
+  const reveal = () => api(`/folders/${f.id}/reveal`, { method: "POST", body: { rel: d.rel } }).catch((e) => toast(e.message, true));
+  menu(anchor, [
+    { label: "New folder…", icon: "plus", onclick: () => newDir(f, d.rel) },
+    { label: "Rename…", icon: "pen", onclick: () => renameDir(f, d) },
+    { label: "Move to…", icon: "move", onclick: () => moveDirDialog(f, d) },
+    { label: "Show in Explorer", icon: "explorer", onclick: reveal },
+    null,
+    { label: "Delete…", icon: "trash", danger: true, onclick: () => deleteDir(f, d) },
+  ]);
+}
+
+// the sidebar (and the view) follows a folder that moved or was renamed: what was open stays open, under its new name
+function followDir(fid, rel, toFid, to) {
+  const was = `f:${fid}/${rel}`, now = `f:${toFid}/${to}`;
+  for (const k of [...opened]) if (k === was || k.startsWith(was + "/")) { opened.delete(k); opened.add(now + k.slice(was.length)); }
+  store.set("open", [...opened].slice(-500));
+  if (state.view === "folder" && state.folder === fid && state.sub && under(state.sub, rel)) { state.folder = toFid; state.sub = to + state.sub.slice(rel.length); }
+  treeNext = now;
+}
+
+// a folder's name asked for: a name Windows won't take is said in the dialog, which stays open with what was typed
+function nameDialog(title, value, submitLabel, use) {
+  const input = h("input", { type: "text", value, "aria-label": "Name", spellcheck: false });
+  const { dlg } = org.dialog(title, h("label.field-row", {}, h("span", {}, "Name"), input), {
+    submitLabel,
+    submit: async () => {
+      const name = input.value.trim();
+      if (!name) throw new Error("Give the folder a name.");
+      return use(name);
+    },
+  });
+  input.select();
+  return dlg;
+}
+
+function newDir(f, parent) {
+  nameDialog(`New folder in ${dirName(f, parent)}`, "", "Create", async (name) => {
+    const r = await api(`/folders/${f.id}/dirs/new`, { method: "POST", body: { parent, name } });
+    setOpen(parent ? `f:${f.id}/${parent}` : `f:${f.id}`, true);
+    treeNext = `f:${f.id}/${r.rel}`;
+    org.done(r, `Made the folder ${lastPart(r.rel)}.`);
+  });
+}
+
+function renameDir(f, d) {
+  nameDialog(`Rename “${d.name}”`, d.name, "Rename", async (name) => {
+    if (name === d.name) return;
+    const r = await api(`/folders/${f.id}/dirs/rename`, { method: "POST", body: { rel: d.rel, name } });
+    followDir(f.id, d.rel, f.id, r.rel);
+    org.done(r, `Renamed ${d.name} to ${lastPart(r.rel)}.`);
+  });
+}
+
+async function moveDir(src, f, parent) {
+  try {
+    const r = await api(`/folders/${src.fid}/dirs/move`, { method: "POST", body: { rel: src.rel, to_folder: f.id, to_parent: parent } });
+    setOpen(parent ? `f:${f.id}/${parent}` : `f:${f.id}`, true);
+    followDir(src.fid, src.rel, f.id, r.rel);
+    org.done(r, `Moved ${lastPart(src.rel)} into ${dirName(f, parent)}.`);
+  } catch (e) { toast(e.message, true); }
+}
+
+function moveDirDialog(f, d) {
+  const places = state.folders.filter((x) => x.online).flatMap((x) => [{ f: x, rel: "" }, ...(state.dirs[x.id] || []).map((dd) => ({ f: x, rel: dd.rel }))])
+    .filter((p) => !(p.f.id === f.id && (under(p.rel, d.rel) || p.rel === upRel(d.rel))));
+  if (!places.length) return toast("There's no other folder to put it in.");
+  const pick = h("select", { "aria-label": "Into" }, places.map((p, i) => h("option", { value: i },
+    p.rel ? `${baseName(p.f.path)} / ${p.rel.replaceAll("/", " / ")}` : `${baseName(p.f.path)} (the top)`)));
+  org.dialog(`Move ${d.name}`, h("div", {}, h("label.field-row", {}, h("span", {}, "Into"), pick),
+    h("p.note", {}, "Everything in it goes with it, and its pictures keep their ratings, tags, albums and characters. You can undo it.")), {
+    submitLabel: "Move",
+    submit: async () => {
+      const p = places[Number(pick.value)];
+      const r = await api(`/folders/${f.id}/dirs/move`, { method: "POST", body: { rel: d.rel, to_folder: p.f.id, to_parent: p.rel } });
+      setOpen(p.rel ? `f:${p.f.id}/${p.rel}` : `f:${p.f.id}`, true);
+      followDir(f.id, d.rel, p.f.id, r.rel);
+      org.done(r, `Moved ${d.name} into ${dirName(p.f, p.rel)}.`);
+    },
+  });
+}
+
+async function deleteDir(f, d) {
+  const what = d.n ? `Its ${plural(d.n, "picture")} go${d.n === 1 ? "es" : ""} to the Trash, where you can put ${d.n === 1 ? "it" : "them"} back. Files the Gallery doesn't show (text files, zips…) stay where they are.`
+    : "It has no pictures in it.";
+  if (!await ask(`Delete ${d.name}?`, what, { ok: "Delete", danger: true })) return;
+  try {
+    const r = await api(`/folders/${f.id}/dirs/delete`, { method: "POST", body: { rel: d.rel } });
+    if (state.view === "folder" && state.folder === f.id && state.sub && under(state.sub, d.rel) && r.gone) state.sub = upRel(d.rel) || null;
+    const left = r.kept ? ` ${plural(r.kept, "other file")} stayed, so ${r.gone ? "it" : "the folder"} did too.` : "";
+    org.done(r, `Deleted ${d.name}${r.trashed ? `: ${plural(r.trashed, "picture")} to the Trash` : ""}.${left}${r.failed.length ? ` ${r.failed.length} couldn't go: ${r.failed[0].error}` : ""}`);
+  } catch (e) { toast(e.message, true); }
+}
+
+// a folder row as a place to drop: pictures from the grid (moved there), a folder from the sidebar (moved into it),
+// files and folders from Explorer (copied in)
+function folderDrop(f, rel) {
+  const dirOk = () => draggingDir && !(draggingDir.fid === f.id && (under(rel, draggingDir.rel) || rel === upRel(draggingDir.rel)));
+  const external = (e) => !dragOut && !draggingDir && e.dataTransfer?.types?.includes("Files");
+  return {
+    ondragover: (e) => {
+      if (!f.online) return;
+      if (dragOut && !dragOut.trash) e.dataTransfer.dropEffect = dragOut.page ? "move" : "copy";  // (Windows' own file drag offers only a copy)
+      else if (dirOk()) e.dataTransfer.dropEffect = "move";
+      else if (external(e)) e.dataTransfer.dropEffect = "copy";
+      else return;
+      e.preventDefault();
+      e.currentTarget.classList.add("drop");
+    },
+    ondragleave: (e) => e.currentTarget.classList.remove("drop"),
+    ondrop: (e) => {
+      e.currentTarget.classList.remove("drop");
+      if (!f.online) return;
+      if (dragOut && !dragOut.trash) { e.preventDefault(); movePicturesTo(f, rel); }
+      else if (dirOk()) { e.preventDefault(); moveDir(draggingDir, f, rel); }
+      else if (external(e)) { e.preventDefault(); copyIn(e.dataTransfer, f, rel); }
+    },
+  };
+}
+
+async function movePicturesTo(f, rel) {
+  const { selection } = dragOut;
+  try {
+    const r = await api("/ops/move", { method: "POST", body: { selection, folder: f.id, sub: rel } });
+    clearSel();
+    org.done(r, `Moved ${plural(r.moved, "file")} to ${dirName(f, rel)}${r.failed.length ? `; ${r.failed.length} couldn't be: ${r.failed[0].error}` : ""}.`);
+  } catch (e) { toast(e.message, true); }
+}
+
+// files and folders dropped from Explorer: copied into f/rel (a folder as a new folder there, with what's inside it), a few
+// at a time, then one History step whose Undo sends the copies to the Trash
+const COPY_EXT = /\.(png|jpe?g|webp|gif|heic|heif|tiff?|bmp|avif|mp4|webm|mov|mkv|m4v|avi|3gp|3g2)$/i;
+function copyIn(dt, f, rel) {
+  const entries = [...dt.items].filter((i) => i.kind === "file").map((i) => i.webkitGetAsEntry?.()).filter(Boolean);  // (only while the drop lasts)
+  copyInRun(entries, entries.length ? [] : [...dt.files], f, rel);
+}
+
+async function copyInRun(entries, loose, f, rel) {
+  const into = dirName(f, rel), jobs = [], dirs = [];
+  let skipped = 0;
+  const fileOf = (entry) => new Promise((ok, no) => entry.file(ok, no));
+  const listOf = async (dir) => {
+    const reader = dir.createReader(), out = [];
+    for (;;) {  // (it hands them over a hundred or so at a time)
+      const got = await new Promise((ok, no) => reader.readEntries(ok, no));
+      if (!got.length) return out;
+      out.push(...got);
+    }
+  };
+  const walk = async (entry, sub) => {
+    if (entry.isFile) {
+      if (COPY_EXT.test(entry.name)) jobs.push({ file: await fileOf(entry), sub }); else skipped++;
+    } else if (!/^[.$]/.test(entry.name)) {  // (hidden folders stay behind, as a scan leaves them out)
+      const d = await api(`/folders/${f.id}/copy/dir`, { method: "POST", body: { parent: sub, name: entry.name, fresh: sub === rel } });
+      if (d.made) dirs.push(d.rel);
+      for (const e of await listOf(entry)) await walk(e, d.rel);
+    }
+  };
+  const line = h("span", {}, `Getting ready to copy into ${into}…`);
+  showToast(h("div.toast", { role: "status" }, line), 600000);
+  try {
+    for (const e of entries) await walk(e, rel);
+  } catch (e) { return toast(e.message, true); }
+  for (const file of loose) { if (COPY_EXT.test(file.name)) jobs.push({ file, sub: rel }); else skipped++; }
+  const ids = [], failed = [];
+  let next = 0, n = 0;
+  const one = async () => {
+    while (next < jobs.length) {
+      const { file, sub } = jobs[next++];
+      try {
+        const q = new URLSearchParams({ sub, name: file.name, mtime: String(file.lastModified / 1000) });
+        const res = await fetch(`/api/folders/${f.id}/copy?${q}`, { method: "POST", headers: { "X-MLG-Token": TOKEN }, body: file });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+        ids.push(data.id);
+      } catch (e) { failed.push(e.message); }
+      line.textContent = `Copying into ${into}: ${(++n).toLocaleString()} of ${jobs.length.toLocaleString()}…`;
+      if (n % 40 === 0) reload(false);  // (they appear as they come)
+    }
+  };
+  await Promise.all([one(), one(), one()]);
+  const r = (ids.length || dirs.length) ? await api(`/folders/${f.id}/copy/done`, { method: "POST", body: { ids, dirs, into } }).catch(() => ({ op: null })) : { op: null };
+  const notes = [skipped ? `${plural(skipped, "file")} left out (only pictures and videos are copied in)` : "",
+    failed.length ? `${failed.length} couldn't be: ${failed[0]}` : ""].filter(Boolean).join("; ");
+  if (!jobs.length && !dirs.length) return toast(skipped ? `Nothing copied: only pictures and videos are copied in.` : "Nothing to copy.", !!skipped);
+  org.done(r, `Copied ${plural(ids.length, "file")} into ${into}${notes ? `; ${notes}` : ""}.`);
 }
 
 let dragging = null;  // the album being dragged in the sidebar (its name), to drop into another or on Albums for the top
@@ -329,7 +530,7 @@ async function addDraggedTo(album) {
 }
 
 // the albums heading takes a dragged album back to the top
-for (const t of ["dragend", "drop"]) document.addEventListener(t, () => setTimeout(() => { dragging = null; }), true);  // (even if its row was drawn again meanwhile)
+for (const t of ["dragend", "drop"]) document.addEventListener(t, () => setTimeout(() => { dragging = null; draggingDir = null; }), true);  // (even if its row was drawn again meanwhile)
 {
   const head = $("album-new").parentElement;
   head.addEventListener("dragover", (e) => { if (dragging && parentName(dragging)) { e.preventDefault(); head.classList.add("drop"); } });
@@ -442,7 +643,8 @@ function lookMenu(anchor, kind, it) {
     { node: colours },
     null,
     ...(kind === "folder"
-      ? [{ label: "Look again", icon: "rescan", onclick: () => rescan(it) }, { label: "Show in Explorer", icon: "explorer", onclick: () => api(`/folders/${it.id}/reveal`, { method: "POST" }).catch((e) => toast(e.message, true)) }]
+      ? [...(it.online ? [{ label: "New folder…", icon: "plus", onclick: () => newDir(it, "") }] : []),
+        { label: "Look again", icon: "rescan", onclick: () => rescan(it) }, { label: "Show in Explorer", icon: "explorer", onclick: () => api(`/folders/${it.id}/reveal`, { method: "POST" }).catch((e) => toast(e.message, true)) }]
       : [{ label: "Rename…", icon: "pen", onclick: () => renameAlbum(it) },
         it.query != null ? { label: "Change its search…", icon: "filter", onclick: () => smartSearch(it) } : null,
         { label: "New album inside…", icon: "plus", onclick: () => newAlbumIn(albumName(it.name)) },
@@ -2027,9 +2229,36 @@ async function dragOutFiles(e, sel, n, it) {
   } catch (ex) { toast(ex.message, true); }
   setTimeout(() => { dragOut = null; }, 200);
 }
-// files dragged over the window (ours, or from Explorer) aren't opened in it: only an album takes them, and only ours
-document.addEventListener("dragover", (e) => { if (e.dataTransfer?.types?.includes("Files") && !e.defaultPrevented) { e.preventDefault(); e.dataTransfer.dropEffect = "none"; } });
-document.addEventListener("drop", (e) => { if (e.dataTransfer?.types?.includes("Files")) e.preventDefault(); });
+// files dragged over the window (ours, or from Explorer) aren't opened in it: an album takes ours, a folder takes both
+// (ours move there, Explorer's are copied in), and so do the pictures while a folder is shown
+const fromExplorer = (e) => !dragOut && !draggingDir && e.dataTransfer?.types?.includes("Files");
+const shownFolder = () => (state.view === "folder" ? state.folders.find((f) => f.id === state.folder && f.online) : null);
+scroller.addEventListener("dragover", (e) => {
+  if (!fromExplorer(e) || !shownFolder()) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+  scroller.classList.add("drop-in");
+});
+scroller.addEventListener("dragleave", (e) => { if (!scroller.contains(e.relatedTarget)) scroller.classList.remove("drop-in"); });
+scroller.addEventListener("drop", (e) => {
+  scroller.classList.remove("drop-in");
+  const f = shownFolder();
+  if (!fromExplorer(e) || !f) return;
+  e.preventDefault();
+  copyIn(e.dataTransfer, f, state.sub || "");
+});
+let hinted = false;  // (once per drag: where Explorer's files can go, when they're over a place that won't take them)
+document.addEventListener("dragover", (e) => {
+  if (!e.dataTransfer?.types?.includes("Files") || e.defaultPrevented) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "none";
+  if (fromExplorer(e) && !hinted && !e.target.closest?.("#side, .side")) {
+    hinted = true;
+    toast("To copy files in, drop them on a folder in the sidebar, or on the pictures while a folder is open.");
+  }
+});
+document.addEventListener("dragleave", (e) => { if (!e.relatedTarget) hinted = false; });
+document.addEventListener("drop", (e) => { hinted = false; if (e.dataTransfer?.types?.includes("Files")) e.preventDefault(); });
 document.addEventListener("dragend", () => { if (dragOut?.page) setTimeout(() => { dragOut = null; }, 0); });
 
 let viewerHold = null;

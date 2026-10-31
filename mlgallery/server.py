@@ -86,6 +86,13 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_post("/api/folders/{fid}/scan", scan_folder)
     r.add_post("/api/folders/{fid}/look", folder_look)
     r.add_get("/api/folders/{fid}/dirs", folder_dirs)
+    r.add_post("/api/folders/{fid}/dirs/new", dir_new)
+    r.add_post("/api/folders/{fid}/dirs/rename", dir_rename)
+    r.add_post("/api/folders/{fid}/dirs/move", dir_move)
+    r.add_post("/api/folders/{fid}/dirs/delete", dir_delete)
+    r.add_post("/api/folders/{fid}/copy", copy_in)
+    r.add_post("/api/folders/{fid}/copy/dir", copy_dir)
+    r.add_post("/api/folders/{fid}/copy/done", copy_done)
     r.add_post("/api/albums/{aid}/look", album_look)
     r.add_get("/api/shapes", shapes)
     r.add_post("/api/scan", scan_all)
@@ -1365,6 +1372,86 @@ async def folder_dirs(request):
     except ValueError:
         return _err("bad id")
     return web.json_response({"dirs": await asyncio.to_thread(_lib(request).dirs, fid)})
+
+
+# the folders inside library folders, from the sidebar (folders.py): each a History step
+def _library_folder(request) -> int:
+    try:
+        return int(request.match_info["fid"])
+    except ValueError:
+        from .fileops import OpError
+        raise OpError("bad id")
+
+
+@_op
+async def dir_new(request, b):
+    from . import folders
+    return await asyncio.to_thread(folders.make, _lib(request).db, _library_folder(request), str(b.get("parent") or ""), b.get("name"))
+
+
+@_op
+async def dir_rename(request, b):
+    from . import folders
+    return await asyncio.to_thread(folders.rename, _lib(request).db, _library_folder(request), str(b.get("rel") or ""), b.get("name"))
+
+
+@_op
+async def dir_move(request, b):
+    from . import folders
+    return await asyncio.to_thread(folders.move, _lib(request).db, _library_folder(request), str(b.get("rel") or ""),
+                                   int(b.get("to_folder") or 0), str(b.get("to_parent") or ""))
+
+
+@_op
+async def dir_delete(request, b):
+    from . import folders
+    return await asyncio.to_thread(folders.delete, _lib(request).db, _library_folder(request), str(b.get("rel") or ""))
+
+
+@_op
+async def copy_dir(request, b):
+    from . import folders
+    return await asyncio.to_thread(folders.copy_dir, _lib(request).db, _library_folder(request), str(b.get("parent") or ""), b.get("name"), bool(b.get("fresh")))
+
+
+@_op
+async def copy_done(request, b):
+    from . import folders
+    return await asyncio.to_thread(folders.copy_done, _lib(request).db, _library_folder(request), b.get("ids") or [], b.get("dirs") or [], str(b.get("into") or ""))
+
+
+async def copy_in(request):
+    """A file dropped from Explorer, copied into a library folder: ?sub=&name=&mtime= (seconds), and the file as the body."""
+    from . import folders
+    from .fileops import OpError
+    lib, q = _lib(request), request.query
+    try:
+        target = await asyncio.to_thread(folders.copy_target, lib.db, _library_folder(request), q.get("sub") or "", q.get("name") or "")
+    except OpError as ex:
+        return _err(str(ex), 422)
+    ok = False
+    try:
+        f = await asyncio.to_thread(open, target["tmp"], "wb")
+        try:
+            async for chunk in request.content.iter_chunked(1 << 20):
+                await asyncio.to_thread(f.write, chunk)
+        finally:
+            await asyncio.to_thread(f.close)
+        r = await asyncio.to_thread(folders.copy_finish, lib.db, target, q.get("mtime"), bool(lib.settings.get("skip_eagle")))
+        ok = True
+    except OpError as ex:
+        return _err(str(ex), 422)
+    except OSError as ex:
+        return _err(f"{target['name']} couldn't be written ({ex.strerror or ex}): is the drive full?", 507)
+    finally:
+        if not ok:  # (stopped part way, or refused: the part written goes)
+            try:
+                os.remove(target["tmp"])
+            except OSError:
+                pass
+    lib.thumbs.nudge()
+    lib.meta.nudge()
+    return web.json_response(r)
 
 
 async def album_create(request):

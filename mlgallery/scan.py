@@ -57,8 +57,17 @@ def skip_dir(name: str, skip_eagle: bool) -> bool:
             or (skip_eagle and low.endswith(".library")))
 
 
-def walk(root: str, skip_eagle: bool = True):
-    """(full path, relative path with /, DirEntry) for every media file under root, without following links."""
+def is_empty_dir(path: str) -> bool:
+    try:
+        with os.scandir(path) as it:
+            return next(it, None) is None
+    except OSError:
+        return False
+
+
+def walk(root: str, skip_eagle: bool = True, empty: set | None = None):
+    """(full path, relative path with /, DirEntry) for every media file under root, without following links.
+    empty: a set given here gets the folders inside root that have nothing in them at all."""
     stack = [""]
     while stack:
         rel_dir = stack.pop()
@@ -67,6 +76,8 @@ def walk(root: str, skip_eagle: bool = True):
                 entries = list(it)
         except OSError:
             continue  # a folder we may not read: skipped, not fatal
+        if empty is not None and rel_dir and not entries:
+            empty.add(rel_dir)
         for e in entries:
             rel = f"{rel_dir}/{e.name}" if rel_dir else e.name
             try:
@@ -114,10 +125,11 @@ def scan_folder(db, folder: dict, *, skip_eagle: bool = True, progress=None, sto
     with db.read() as c:
         known = {r["rel"]: r for r in c.execute("SELECT id, rel, size, mtime, missing FROM files WHERE folder_id=?", (fid,))}
     seen: set[str] = set()
+    empty: set[str] = set()
     touched: list[int] = []
     pending: list[tuple] = []  # (op, args)
 
-    for full, rel, entry in walk(root, skip_eagle):
+    for full, rel, entry in walk(root, skip_eagle, empty):
         if stop and stop():
             break
         seen.add(rel)
@@ -146,6 +158,12 @@ def scan_folder(db, folder: dict, *, skip_eagle: bool = True, progress=None, sto
                 if cur and cur["folder_id"] == fid and cur["rel"] not in seen and cur["missing"] in (0, PAIRED):
                     c.execute("UPDATE files SET missing=1 WHERE id=?", (i,))
                     counts["missing"] += 1
+            # the empty folders, as the disk has them now (and one made in the sidebar while the walk went on)
+            had = {r[0] for r in c.execute("SELECT rel FROM dirs WHERE folder_id=?", (fid,))}
+            empty |= {r for r in had - empty if is_empty_dir(os.path.join(root, *r.split("/")))}
+            if had != empty:
+                c.execute("DELETE FROM dirs WHERE folder_id=?", (fid,))
+                c.executemany("INSERT INTO dirs (folder_id, rel) VALUES (?, ?)", [(fid, r) for r in sorted(empty)])
         pair_live(c, fid)
         n = c.execute("SELECT COUNT(*) FROM files WHERE folder_id=? AND missing=0", (fid,)).fetchone()[0]
         c.execute("UPDATE folders SET online=1, last_scan=?, file_count=? WHERE id=?", (now, n, fid))

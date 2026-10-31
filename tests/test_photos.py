@@ -590,7 +590,7 @@ def test_a_rescan_doesnt_take_a_file_put_back_meanwhile_for_gone(lib, media, mon
     f = folder(lib, media)
     scan.scan_folder(lib.db, f)
     walk = scan.walk
-    monkeypatch.setattr(scan, "walk", lambda root, skip_eagle=True: (x for x in walk(root, skip_eagle) if not x[1].endswith("a.png")))
+    monkeypatch.setattr(scan, "walk", lambda root, skip_eagle=True, empty=None: (x for x in walk(root, skip_eagle, empty) if not x[1].endswith("a.png")))
     scan.scan_folder(lib.db, f)
     with lib.db.read() as c:
         assert c.execute("SELECT missing FROM files WHERE name='a.png'").fetchone()[0] == 0
