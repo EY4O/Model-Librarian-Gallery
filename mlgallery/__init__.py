@@ -1,6 +1,6 @@
 """Model Librarian Gallery: your AI images, photos and illustrations, and (for the AI ones) what made them."""
 
-VERSION = "1.20.0"
+VERSION = "1.20.1"
 APP_NAME = "Model Librarian Gallery"
 
 try:  # iPhone photos (HEIC/HEIF) open through Pillow like any other picture, when pillow-heif is installed

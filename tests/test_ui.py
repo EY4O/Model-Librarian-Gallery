@@ -515,11 +515,27 @@ def test_swipe_review_and_smart_albums(server):
             await e.key("z")
             await e.wait(f"{pos}?.startsWith('2 / {total} ·')")
             assert api("/status")["trash"] == 0
-            # a star rates it and moves on; an album puts it there and moves on (Z takes it out again)
+            # a star lights every star up to it and shows the rating on the picture, which stays a moment (Z there takes the
+            # rating back; another star changes it) before it's given and the next one comes; an album puts it there and
+            # moves on (Z takes it out again)
+            lit = "[...document.querySelectorAll('.sw-star')].map(b => b.classList.contains('on') ? 1 : 0).join('')"
             rated = await e.js("document.querySelector('.sw-card:not(.under) img')?.alt")
-            await e.js("document.querySelectorAll('.sw-star')[3].click(); true")
+            rating = lambda: next(i["rating"] for i in api("/files?limit=500")["items"] if i["name"] == rated)
+            had = rating()
+            await e.js("document.querySelectorAll('.sw-star')[1].click(); true")
+            assert await e.js(lit) == "11000" and await e.js("document.querySelector('.sw-card:not(.under) .sw-tag.rated').textContent") == "★★☆☆☆"
+            await e.key("z")
+            assert await e.js(lit) == "00000" and not await e.js("document.querySelector('.sw-tag.rated')")
+            await asyncio.sleep(1.2)
+            assert (await e.js(pos)).startswith(f"2 / {total} ·") and rating() == had
+            await e.js("document.querySelectorAll('.sw-star')[2].click(); true")
+            await e.js("document.querySelectorAll('.sw-star')[4].click(); true")
+            assert await e.js(lit) == "11111" and await e.js("document.querySelector('.sw-tag.rated').textContent") == "★★★★★"
+            assert (await e.js(pos)).startswith(f"2 / {total} ·")  # (still there: the moment to see it)
+            await e.key("d")  # (another answer meanwhile is left out: the rating stands)
             await e.wait(f"{pos}?.startsWith('3 / {total} ·')")
-            assert any(i["name"] == rated and i["rating"] == 4 for i in api("/files?q=rating:4&limit=500")["items"])
+            assert await e.js(lit) == "00000"
+            assert rating() == 5
             await e.wait("[...document.querySelectorAll('.sw-album')].some(b => b.textContent === 'Swiped')")
             await e.js("[...document.querySelectorAll('.sw-album')].find(b => b.textContent === 'Swiped').click(); true")
             await e.wait(f"{pos}?.startsWith('4 / {total} ·')")

@@ -7,6 +7,7 @@
 import { albumName, api, ask, fmtDate, h, holdFocus, icon, leafName, media, menu, plural, store, toast } from "./util.js";
 
 const FAR = 110;  // pixels a swipe must go to count
+const LINGER = 900;  // ms a rated picture stays, its stars lit, before it goes
 const quote = (v) => (/[\s"]/.test(v) ? `"${v.replaceAll('"', "")}"` : v);
 
 export function swipeReview(opened, openedTitle, { onClose } = {}) {
@@ -26,10 +27,16 @@ export function swipeReview(opened, openedTitle, { onClose } = {}) {
   const stage = h("div.sw-stage");
   const where = h("p.sw-where", { "aria-live": "polite" });
   const pick = h("button.sw-pick", { type: "button", "aria-haspopup": "menu", onclick: () => pickView() });
-  const close = () => { box.remove(); document.removeEventListener("keydown", key, true); letGo?.(); onClose?.(tally); };
+  let closing = false;
+  const close = async () => {
+    if (closing) return;
+    closing = true;
+    if (lingering) { const n = lingering.n; stopLingering(); await decide("rate", n); }  // (closed while it showed: given, as chosen)
+    box.remove(); document.removeEventListener("keydown", key, true); letGo?.(); onClose?.(tally);
+  };
   let letGo = null;
   const rates = h("div.sw-rate", { role: "group", "aria-label": "Rate and keep (1 to 5)" },
-    [1, 2, 3, 4, 5].map((n) => h("button.sw-star", { type: "button", title: `Rate ${n} and keep (${n})`, "aria-label": `Rate ${n} and keep`, onclick: () => decide("rate", n) }, icon("star"))));
+    [1, 2, 3, 4, 5].map((n) => h("button.sw-star", { type: "button", title: `Rate ${n} and keep (${n})`, "aria-label": `Rate ${n} and keep`, onclick: () => rate(n) }, icon("star"))));
   const shelf = h("div.sw-albums", { role: "group", "aria-label": "Sort to album" });
   const box = h("div.swipe", { role: "dialog", "aria-modal": "true", "aria-label": `Swipe review: ${title}` },
     h("header.sw-bar", {},
@@ -117,6 +124,28 @@ export function swipeReview(opened, openedTitle, { onClose } = {}) {
     card.addEventListener("pointercancel", up);
   }
 
+  // a star: every one up to it lights, the rating shows on the picture, and the picture stays a moment before it goes, so
+  // you see what you gave it (another star meanwhile changes it and starts the moment again; Z takes it back)
+  let lingering = null;
+  const lightStars = (n) => [...rates.children].forEach((b, i) => b.classList.toggle("on", i < n));
+  function rate(n) {
+    const card = stage.querySelector(".sw-card:not(.under)");
+    if (!queue[0] || !card || (busy && !lingering)) return;
+    clearTimeout(lingering?.timer);
+    busy = true;  // (no swipe or other answer while it lingers)
+    lightStars(n);
+    card.querySelector(".sw-tag.rated")?.remove();
+    card.append(h("span.sw-tag.rated", { "aria-live": "polite", "aria-label": `Rated ${n}` }, "★".repeat(n), h("span.off", {}, "☆".repeat(5 - n))));
+    lingering = { n, timer: setTimeout(() => { lingering = null; busy = false; decide("rate", n); }, LINGER) };
+  }
+  function stopLingering() {
+    clearTimeout(lingering.timer);
+    lingering = null;
+    busy = false;
+    lightStars(0);
+    stage.querySelector(".sw-card:not(.under) .sw-tag.rated")?.remove();
+  }
+
   // kind: delete, keep, fav, rate (value: 1-5), album (value: its name)
   async function decide(kind, value) {
     const item = queue[0];
@@ -151,11 +180,13 @@ export function swipeReview(opened, openedTitle, { onClose } = {}) {
     }
     await new Promise((r) => setTimeout(r, 160));
     busy = false;
+    lightStars(0);
     show();
     if (kind === "album") shelve();
   }
 
   async function undo() {
+    if (lingering) return stopLingering();  // (a rating still showing: not given yet, so nothing to take back but it)
     if (busy) return;  // (a swipe still going: the step it makes is the one to take back, once it's there)
     const last = history.pop();
     if (!last) return toast("Nothing to take back yet.");
@@ -208,6 +239,7 @@ export function swipeReview(opened, openedTitle, { onClose } = {}) {
   }
 
   function switchTo(v, t) {
+    if (lingering) stopLingering();  // (another set of pictures: the rating shown wasn't given)
     view = v;
     title = t;
     queue = []; left = 0; done = 0; reviewed = 0;
@@ -289,7 +321,7 @@ export function swipeReview(opened, openedTitle, { onClose } = {}) {
     else if (k === "d" || e.key === "ArrowRight") decide("keep");
     else if (k === "w" || e.key === "ArrowUp") decide("fav");
     else if (k === "z") undo();
-    else if (/^[1-5]$/.test(e.key)) decide("rate", Number(e.key));
+    else if (/^[1-5]$/.test(e.key)) rate(Number(e.key));
     else if (e.key === "Tab" || ((e.key === "Enter" || e.key === " ") && e.target.closest?.(".swipe button"))) return;
     e.preventDefault();
   }

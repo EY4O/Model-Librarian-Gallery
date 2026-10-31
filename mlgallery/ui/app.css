@@ -999,9 +999,24 @@ h1, h2, .v-fname, .kpi .v { font-family: var(--display); }
 .sw-rate { display: flex; justify-self: start; }
 .sw-star { width: 38px; height: 44px; padding: 0; border: 0; background: none; color: var(--line-3); display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .sw-star svg { width: 24px; height: 24px; }
-.sw-rate:hover .sw-star, .sw-rate:focus-within .sw-star { color: #ffd166; }
-.sw-rate .sw-star:hover ~ .sw-star, .sw-rate .sw-star:focus ~ .sw-star { color: var(--line-3); }
-.sw-rate .sw-star:hover svg, .sw-rate .sw-star:focus svg { fill: currentColor; }
+.sw-star.on { color: #ffd166; }
+.sw-star.on svg { fill: currentColor; }
+/* a preview of the rating, up to the star you're on: with a mouse (a phone's tap would leave it lit) or the keyboard */
+@media (hover: hover) {
+  .sw-rate:hover .sw-star { color: #ffd166; }
+  .sw-rate:hover .sw-star svg { fill: currentColor; }
+  .sw-rate .sw-star:hover ~ .sw-star:not(.on) { color: var(--line-3); }
+  .sw-rate .sw-star:hover ~ .sw-star:not(.on) svg { fill: none; }
+}
+.sw-rate:has(.sw-star:focus-visible) .sw-star { color: #ffd166; }
+.sw-rate:has(.sw-star:focus-visible) .sw-star svg { fill: currentColor; }
+.sw-rate .sw-star:focus-visible ~ .sw-star:not(.on) { color: var(--line-3); }
+.sw-rate .sw-star:focus-visible ~ .sw-star:not(.on) svg { fill: none; }
+.sw-tag.rated { left: 50%; top: 50%; transform: translate(-50%, -50%); color: #ffd166; border-color: transparent; background: rgba(0, 0, 0, .6);
+  font-size: 34px; letter-spacing: 4px; opacity: 1; animation: sw-rated .18s ease-out; }
+.sw-tag.rated .off { color: rgba(255, 255, 255, .35); }
+@keyframes sw-rated { from { opacity: 0; transform: translate(-50%, -50%) scale(.85); } }
+@media (prefers-reduced-motion: reduce) { .sw-tag.rated { animation: none; } }
 .sw-act { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border: 0; border-radius: 12px; background: none; color: var(--text);
   font: 700 16px var(--display); letter-spacing: .5px; text-transform: uppercase; cursor: pointer; }
 .sw-act svg { width: 24px; height: 24px; }
