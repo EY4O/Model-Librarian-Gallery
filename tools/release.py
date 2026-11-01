@@ -69,7 +69,8 @@ def full_zip(dist: str = DIST) -> str:
 
 
 def git(*args: str) -> str:
-    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+    # (git writes UTF-8: read as Windows' own code page, a − or ★ in the notes came out as âˆ’ on GitHub)
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", check=True).stdout.strip()
 
 
 def publish(files: list[str]) -> None:

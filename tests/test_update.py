@@ -223,6 +223,12 @@ def test_install_only_in_the_portable_folder(tmp_path, monkeypatch):
     assert update.portable_root() is None  # this checkout isn't one
 
 
+def test_release_notes_keep_their_characters():
+    # 1.22.0's notes (its commit message) have a − in them: read as Windows' code page, GitHub showed âˆ’
+    notes = release.git("log", "-1", "--format=%B", "3314b6c")
+    assert notes.startswith("1.22.0: Smart Folders") and "with − and +" in notes and "â" not in notes
+
+
 def test_release_zip_is_what_the_updater_takes(tmp_path):
     z = release.update_zip(str(tmp_path / "dist"))
     blob = open(z, "rb").read()
