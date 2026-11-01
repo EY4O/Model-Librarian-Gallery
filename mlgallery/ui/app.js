@@ -1271,6 +1271,7 @@ org.onChange(async () => {
   if (!isPage()) await reload(false);
   else if (state.view === "history") org.renderHistory($("stats"));
   else if (state.view === "downloads") renderDownloads($("stats"), pageCtx);  // (filed, or a filing undone)
+  else if (state.view === "artists") renderArtists($("stats"), pageCtx);  // (one deleted, or brought back)
   pollSoon();
   if (!$("viewer").hidden) refreshViewer();
 });

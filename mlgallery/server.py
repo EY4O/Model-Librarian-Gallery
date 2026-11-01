@@ -1073,8 +1073,8 @@ async def artist_update(request):
 
 async def artist_delete(request):
     aid = _aid(request)
-    ok = await asyncio.to_thread(_lib(request).artist_delete, aid) if aid else False
-    return web.json_response({"ok": True}) if ok else _err("not found", 404)
+    r = await asyncio.to_thread(_lib(request).artist_delete, aid) if aid else None
+    return web.json_response({"ok": True, **r}) if r else _err("not found", 404)
 
 
 async def file_credit(request):

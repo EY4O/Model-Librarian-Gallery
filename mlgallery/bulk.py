@@ -243,6 +243,29 @@ def undo(db, kind: str, data) -> dict:
                         c.execute("INSERT OR IGNORE INTO album_files (album_id, file_id, source, removed, added) VALUES (?,?,?,?,?)",
                                   (aid, f["file_id"], f["source"], f["removed"], f["added"]))
             return {"undone": len(data["albums"])}
+        if kind == "artist_delete":  # the artist back (as the one of that name, if one's been made since), and each picture's credit
+            a = data["artist"]
+            have = c.execute("SELECT id FROM artists WHERE name=? COLLATE NOCASE", (a["name"],)).fetchone()
+            if not have:
+                free = not c.execute("SELECT 1 FROM artists WHERE id=?", (a["id"],)).fetchone()
+                cover = a.get("cover") if a.get("cover") and c.execute("SELECT 1 FROM files WHERE id=?", (a["cover"],)).fetchone() else None
+                c.execute("INSERT INTO artists (id, name, aliases, links, cover, auto, created) VALUES (?,?,?,?,?,?,?)",
+                          (a["id"] if free else None, a["name"], a["aliases"], a["links"], cover, a["auto"], a.get("created")))
+            items = alive(c, data["items"])
+            back = []
+            for it in items:
+                cur = c.execute("SELECT artist FROM credits WHERE file_id=? AND src='user'", (it["file_id"],)).fetchone()
+                if not cur or cur["artist"] != "":
+                    continue  # (given an artist since: that stays)
+                c.execute("DELETE FROM credits WHERE file_id=? AND src='user'", (it["file_id"],))
+                was = it["was"]
+                if was:
+                    c.execute("INSERT INTO credits (file_id, src, artist, site, post, url) VALUES (?, 'user', ?,?,?,?)",
+                              (it["file_id"], was["artist"], was["site"], was["post"], was["url"]))
+                back.append(it["file_id"])
+            credits.resolve(c, back)
+            credits.prune(c)
+            return {"undone": 1}
         if kind == "albums":
             data = {**data, "items": alive(c, data["items"])}
             aid = data["album"]

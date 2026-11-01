@@ -1056,20 +1056,25 @@ class Library:
         self.db.user_change()
         return aid
 
-    def artist_delete(self, aid: int) -> bool:
-        """The artist goes from the list; their pictures keep what was found in them (and get that artist back, made anew)."""
+    def artist_delete(self, aid: int) -> dict | None:
+        """The artist goes from the list and their pictures say No artist (a name found in them would bring the artist
+        straight back); the files stay. A History step: Undo brings the artist back with each picture's credit. None: no such artist."""
         with self.db.write() as c:
-            ids = [r[0] for r in c.execute("SELECT id FROM files WHERE artist_id=?", (int(aid),))]
-            if not c.execute("DELETE FROM artists WHERE id=?", (int(aid),)).rowcount:
-                return False
-            for part in chars._chunks(ids):  # what you typed for them goes too (it would bring the artist straight back)
-                marks = ",".join("?" * len(part))
-                c.execute(f"UPDATE credits SET artist=NULL WHERE src='user' AND file_id IN ({marks})", part)
-                c.execute(f"DELETE FROM credits WHERE src='user' AND file_id IN ({marks}) AND artist IS NULL AND url IS NULL AND site IS NULL", part)
+            a = c.execute("SELECT id, name, aliases, links, cover, auto, created FROM artists WHERE id=?", (int(aid),)).fetchone()
+            if not a:
+                return None
+            ids = [r[0] for r in c.execute("SELECT id FROM files WHERE artist_id=?", (a["id"],))]
+            items = []
+            for fid in ids:
+                was = c.execute("SELECT artist, site, post, url FROM credits WHERE file_id=? AND src='user'", (fid,)).fetchone()
+                items.append({"file_id": fid, "was": dict(was) if was else None})
+                credits.set_user(c, fid, artist="")
+            c.execute("DELETE FROM artists WHERE id=?", (a["id"],))
             credits.resolve(c, ids)
             credits.prune(c)
+            op = fileops.record(c, "artist_delete", f"Deleted the artist {a['name']}", {"artist": dict(a), "items": items})
         self.db.user_change()
-        return True
+        return {"deleted": 1, "n": len(ids), "op": op}
 
     def set_credit(self, file_id: int, artist=..., url=...) -> dict:
         """Your artist ('' none, None what was found) and source for one file."""

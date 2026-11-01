@@ -535,6 +535,61 @@ def test_filing_several_artists_downloads_at_once(server, tmp_path):
         api("/library/kind", {"kinds": ["ai"]})
 
 
+def test_an_artists_right_click_menu(server):
+    url, api = server
+    api("/library/kind", {"kinds": ["ai", "illustrations"]})
+    one, two = api("/files?limit=2")["items"]
+    api(f"/file/{one['id']}/credit", {"artist": "Quill"})
+    api(f"/file/{two['id']}/credit", {"artist": "Inkwell"})
+    quill = next(a for a in api("/artists")["artists"] if a["name"] == "Quill")
+    api(f"/artists/{quill['id']}", {"links": ["https://x.com/quill"]})
+    card = "[...document.querySelectorAll('.c-card')].find(c => c.querySelector('.c-name').textContent === {!r})"
+    names = "[...document.querySelectorAll('.c-card .c-name')].map(n => n.textContent)"
+    items = "[...document.querySelectorAll('.menu .menu-item')].map(b => b.textContent)"
+
+    async def go():
+        async with page(url) as e:
+            await e.wait("!document.getElementById('view-artists').hidden")
+            await e.click("#view-artists")
+            await e.wait(f"{names}.includes('Quill') && {names}.includes('Inkwell')")
+            # right-click: Edit opens the artist's editor over the list, and the list stays
+            await e.js(card.format("Quill") + ".dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, cancelable: true, clientX: 200, clientY: 200})); true")
+            await e.wait("document.querySelector('.menu')")
+            assert await e.js(items) == ["Edit…", "Show their pictures", "Open x.com", "Merge into…", "Delete"]
+            await e.js("[...document.querySelectorAll('.menu .menu-item')].find(b => b.textContent === 'Edit…').click(); true")
+            await e.wait("document.querySelector('dialog[open] input[aria-label=\"Also known as\"]')")
+            assert await e.js("document.querySelector('dialog[open] input[aria-label=Name]').value") == "Quill"
+            await e.js("document.querySelector('dialog[open] input[aria-label=\"Also known as\"]').value = 'quill_art'; true")
+            await e.js("document.querySelector('dialog[open] button[type=submit]').click(); true")
+            await e.wait("!document.querySelector('dialog[open]')")
+            assert next(a for a in api("/artists")["artists"] if a["name"] == "Quill")["aliases"] == ["quill_art"]
+            await e.wait(f"{names}.includes('Quill') && !document.querySelector('.c-head')")
+            # Shift+F10 on a card: its menu, from the keyboard; Delete asks, then the pictures have no artist, and Undo brings it back
+            await e.js(card.format("Inkwell") + ".focus(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key: 'F10', shiftKey: true, bubbles: true})); true")
+            await e.wait("document.querySelector('.menu')")
+            assert "Show their pictures" in await e.js(items) and "Open x.com" not in await e.js(items)
+            await e.js("[...document.querySelectorAll('.menu .menu-item')].find(b => b.textContent === 'Delete').click(); true")
+            await e.wait("document.querySelector('dialog[open]')?.textContent.includes('Delete Inkwell?')")
+            await e.js("document.querySelector('dialog[open] button[type=submit]').click(); true")
+            await e.wait(f"!{names}.includes('Inkwell') && document.querySelector('.toast')?.textContent.includes('Deleted the artist Inkwell')")
+            assert api(f"/file/{two['id']}/info")["credit"]["artist"] is None and api(f"/file/{two['id']}/info")["path"]
+            assert api("/ops")["ops"][0]["kind"] == "artist_delete"
+            await e.js("[...document.querySelectorAll('.toast .btn')].find(b => b.textContent === 'Undo').click(); true")
+            await e.wait(f"{names}.includes('Inkwell')")
+            assert api(f"/file/{two['id']}/info")["credit"]["artist"]["name"] == "Inkwell"
+            assert not await e.js("window.__errors.length")
+    try:
+        asyncio.run(go())
+    finally:  # the shared sample library as it was
+        for a in api("/artists")["artists"]:
+            if a["name"] in ("Quill", "Inkwell"):
+                urllib.request.urlopen(urllib.request.Request(f"{api.base}/api/artists/{a['id']}", headers={"X-MLG-Token": api.token}, method="DELETE"))
+        for f in (one, two):
+            api(f"/file/{f['id']}/credit", {"artist": None})
+        api("/library/kind", {"kinds": ["ai"]})
+    assert not any(a["name"] in ("Quill", "Inkwell") for a in api("/artists")["artists"])
+
+
 def test_swipe_review_and_smart_albums(server):
     url, api = server
     total = api("/files")["total"]

@@ -2,8 +2,9 @@
 // (the file, its name, where it was downloaded from, an Artists\<name> folder) or typed by you; another name of theirs
 // (a handle on another site) makes two into one.
 
-import { api, ask, emptyArt, h, icon, initial, media, plural, stacks, toast } from "./util.js";
+import { api, ask, emptyArt, h, icon, initial, media, menu, modal, plural, stacks, toast } from "./util.js";
 import { preview } from "./characters.js";
+import { done } from "./organize.js";
 
 function thumb(id, alt = "") {
   const none = () => h("div.c-thumb.none", { "aria-hidden": "true" }, h("span.c-initial", {}, initial(alt)));
@@ -30,7 +31,8 @@ export async function renderArtists(root, ctx) {
   const show = () => {
     const q = find.value.trim().toLowerCase();
     const list = data.artists.filter((a) => !q || a.name.toLowerCase().includes(q) || a.aliases.some((x) => x.toLowerCase().includes(q)));
-    grid.replaceChildren(...list.map((a) => h("button.c-card", { type: "button", onclick: () => ctx.show("artist", a.id) },
+    grid.replaceChildren(...list.map((a) => h("button.c-card", { type: "button", onclick: () => ctx.show("artist", a.id),
+      oncontextmenu: (e) => { e.preventDefault(); artistMenu(e, a, data.artists, ctx, () => renderArtists(root, ctx)); } },
       thumb(a.cover, a.name),
       h("span.c-name", {}, a.name),
       h("span.c-n", {}, plural(a.n, "picture")),
@@ -38,6 +40,9 @@ export async function renderArtists(root, ctx) {
   };
   find.addEventListener("input", show);
   find.addEventListener("keydown", (e) => e.stopPropagation());
+  grid.addEventListener("keydown", (e) => {  // Shift+F10 on a card: its menu, as the menu key opens it
+    if (e.shiftKey && e.key === "F10" && e.target.closest(".c-card")) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); }
+  });
   show();
   root.replaceChildren(...[
     h("header.st-head", {}, h("h1", {}, "Artists"),
@@ -48,6 +53,49 @@ export async function renderArtists(root, ctx) {
         h("p", {}, "Who made a picture is found in it as it's indexed: in the file's own details, in the name a site gives its downloads (Pixiv, Danbooru, DeviantArt and more), in where it was downloaded from, or in a folder called Artists with one folder per artist inside. You can also type it in a picture's details, or for many pictures at once."),
         h("button.btn.primary", { type: "button", onclick: () => editArtist(null, ctx) }, "New artist")),
   ].filter(Boolean));
+}
+
+// right-click on an artist in the list (or the menu key, Shift+F10): what can be done with them from here
+function artistMenu(e, a, all, ctx, redraw) {
+  const at = e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : null;  // (from the keyboard: under the card)
+  menu(e.currentTarget, [
+    { label: "Edit…", icon: "pen", onclick: () => editArtist(a, ctx, {}, redraw) },
+    a.n ? { label: "Show their pictures", icon: "grid", onclick: () => ctx.open([{ key: "artist", value: a.name }]) } : false,
+    ...a.links.map((u) => ({ label: `Open ${host(u)}`, icon: "send", onclick: () => openLink(u) })),
+    all.length > 1 ? { label: "Merge into…", icon: "people", onclick: () => mergeArtist(a, all, redraw) } : false,
+    null,
+    { label: "Delete", icon: "trash", danger: true, onclick: () => deleteArtist(a) },
+  ].filter((x) => x !== false), { at });
+}
+
+// one artist into another: their names become the other's other names, and their pictures and pages go with them
+async function mergeArtist(a, all, redraw) {
+  const others = all.filter((x) => x.id !== a.id);
+  const list = h("datalist", { id: "artist-merge" }, others.map((x) => h("option", { value: x.name })));
+  const input = h("input", { type: "text", placeholder: "Another artist", "aria-label": "Merge into", autocomplete: "off", spellcheck: false });
+  input.setAttribute("list", list.id);
+  const into = await modal(`Merge ${a.name} into…`, h("div", {},
+    h("label.field-row", {}, h("span", {}, "Into"), input, list),
+    h("p.st-none", {}, `${[a.name, ...a.aliases].join(", ")} become their other names; ${a.n ? `the ${plural(a.n, "picture")} and ` : ""}the pages go with them.`)), {
+    ok: "Merge", onok: async () => {
+      const want = input.value.trim().toLowerCase();
+      const b = others.find((x) => x.name.toLowerCase() === want) || others.find((x) => x.aliases.some((n) => n.toLowerCase() === want));
+      if (!b) throw new Error(want ? "That isn't another artist on the list." : "Which artist?");
+      return api(`/artists/${b.id}`, { method: "POST", body: { aliases: [...b.aliases, a.name, ...a.aliases] } });
+    } });
+  if (!into) return;
+  toast(`${a.name} is ${into.name} now.`);
+  redraw();
+}
+
+// an artist gone: their pictures say No artist (the files stay), one History step to undo
+export async function deleteArtist(a) {
+  if (!await ask(`Delete ${a.name}?`, `${a.n ? `Their ${plural(a.n, "picture")} will have no artist, even a name found in them; the files stay where they are.` : "The files stay where they are."} Undo, or History, brings ${a.name} back.`,
+    { ok: "Delete", danger: true })) return false;
+  try {
+    done(await api(`/artists/${a.id}`, { method: "DELETE" }), `Deleted the artist ${a.name}: the files stay where they are.`);
+    return true;
+  } catch (e) { toast(e.message, true); return false; }
 }
 
 // ---------------------------------------------------------------- one artist
@@ -77,11 +125,7 @@ export async function renderArtist(root, id, ctx) {
         h("div.row", {},
           h("button.btn.primary", { type: "button", onclick: () => filter(), disabled: !a.n }, icon("grid"), "Show all pictures"),
           h("button.btn", { type: "button", onclick: () => editArtist(a, ctx) }, "Edit"),
-          h("button.btn.danger.c-del", { type: "button", onclick: async () => {
-            if (!await ask(`Take ${a.name} off the list?`, "The artist you typed for their pictures goes too. A name found in a picture itself (its file, its name, where it was downloaded from) brings the artist straight back: to keep them off, say No artist for those pictures.", { ok: "Take them off", danger: true })) return;
-            await api(`/artists/${id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
-            ctx.show("artists");
-          } }, "Delete")))),
+          h("button.btn.danger.c-del", { type: "button", onclick: async () => { if (await deleteArtist(a)) ctx.show("artists"); } }, "Delete")))),
     stacks([
       h("section.st-card", { "aria-label": "Where they're from" },
         h("div.st-card-head", {}, h("h2", {}, "Where they're from"), h("span", {}, "The sites their pictures came from")),
@@ -110,7 +154,7 @@ export async function renderArtist(root, id, ctx) {
 }
 
 // ---------------------------------------------------------------- the editor
-export function editArtist(a, ctx, preset = {}) {
+export function editArtist(a, ctx, preset = {}, saved = null) {  // (saved: what follows, else their page)
   const isNew = !a;
   const name = h("input", { type: "text", value: a ? a.name : preset.name || "", placeholder: "Their name", "aria-label": "Name", required: true });
   const aliases = h("input", { type: "text", value: a ? a.aliases.join(", ") : "", placeholder: "Their handles elsewhere, separated by commas", "aria-label": "Also known as" });
@@ -123,9 +167,9 @@ export function editArtist(a, ctx, preset = {}) {
       const body = { name: name.value.trim(), aliases: aliases.value.split(",").map((s) => s.trim()).filter(Boolean),
         links: links.value.split(/\s+/).map((s) => s.trim()).filter(Boolean) };
       try {
-        const saved = await api(isNew ? "/artists" : `/artists/${a.id}`, { method: "POST", body });
+        const got = await api(isNew ? "/artists" : `/artists/${a.id}`, { method: "POST", body });
         dlg.close();
-        ctx.show("artist", saved.id);
+        saved ? saved(got) : ctx.show("artist", got.id);
       } catch (ex) { err.textContent = ex.message; }
     } },
       h("h2", {}, isNew ? "New artist" : `Edit ${a.name}`),

@@ -701,3 +701,37 @@ def test_a_series_tells_two_names_apart(lib, media):
     with lib.db.read() as c:
         assert chars.find(c, "rin (fate)") == fate and chars.find(c, "Rin") is None
         assert chars.same_name("Lumen Vale", "vale_lumen_(nightglass)") and not chars.same_name("rin (fate)", "rin (vocaloid)")
+
+
+def test_deleting_an_artist_leaves_their_pictures_without_one_and_undo_brings_them_back(lib, media):
+    illustrations(lib)
+    image(media / "Artists" / "Ren" / "a.png", seed=1)
+    image(media / "Artists" / "Ren" / "b.png", seed=2)
+    image(media / "c.png", seed=3)
+    image(media / "d.png", seed=4)
+    index(lib, folder(lib, media))
+    got = items(lib)
+    lib.set_credit(got["c.png"]["id"], artist="Ren", url="https://www.pixiv.net/artworks/12345")  # typed, with its source
+    aid = next(a["id"] for a in lib.artists()["artists"] if a["name"] == "Ren")
+    lib.artist_save(aid, "Ren", aliases=["ren_draws"], links=["https://x.com/ren_draws"])
+    total = lib.files()["total"]
+    r = lib.artist_delete(aid)
+    assert r["deleted"] == 1 and r["n"] == 3 and r["op"]
+    # gone, and not straight back from the folder they're in: their pictures say No artist; the files stay
+    assert lib.artists()["artists"] == [] and lib.files(q="has:artist")["total"] == 0 and lib.files()["total"] == total
+    assert lib.info(got["c.png"]["id"])["credit"]["url"] == "https://www.pixiv.net/artworks/12345"  # (its source stays)
+    with lib.db.write() as c:
+        c.execute("UPDATE files SET credited=0")
+    while lib.credits.run_once():
+        pass
+    assert lib.artists()["artists"] == []
+    assert lib.artist_delete(aid) is None
+    lib.set_credit(got["b.png"]["id"], artist="Mika")  # given another artist since: that stays
+    fileops.undo(lib.db, r["op"])
+    listed = {a["name"]: a for a in lib.artists()["artists"]}
+    assert listed["Ren"]["n"] == 2 and listed["Ren"]["aliases"] == ["ren_draws"]
+    assert listed["Ren"]["links"] == ["https://x.com/ren_draws"] and listed["Mika"]["n"] == 1
+    cr = lib.info(got["c.png"]["id"])["credit"]
+    assert cr["artist"]["name"] == "Ren" and cr["artist_from"] == "user" and cr["url"] == "https://www.pixiv.net/artworks/12345"
+    assert lib.info(got["a.png"]["id"])["credit"]["artist_from"] == "folder"  # (found in it again, nothing typed)
+    assert lib.info(got["d.png"]["id"])["credit"]["artist"] is None

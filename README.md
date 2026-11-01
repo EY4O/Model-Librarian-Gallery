@@ -267,6 +267,7 @@ If the Gallery helps you find your way around your generations, you can support 
 
 Each version's full notes are on its [release page](https://github.com/EY4O/Model-Librarian-Gallery/releases). 1.15.0 to 1.17.1 went out together in 1.18.0, 1.2.0 with 1.3.0, and versions before 1.1.3 came before the Gallery had releases.
 
+- **1.23.0** — Artists: right-click one in the list to edit it, show its pictures, open its pages, merge it into another or delete it; deleting leaves its pictures with no artist, and Undo brings it back.
 - **1.22.0** — Smart folders: rules that keep collecting what meets them, edited as in Eagle (with groups inside), and Eagle's own brought in; brackets and OR in the search.
 - **1.21.1** — New downloads: several artists' downloads filed together each go into their own artist's folder.
 - **1.21.0** — Recipes: Model Librarian's recipes in the sidebar, brought in from pictures, files, CivitAI links and the Chrome extension, and opened in ComfyUI.

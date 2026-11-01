@@ -186,7 +186,7 @@ export function dayLabel(day) {
 }
 
 // ---------------------------------------------------------------- in-app dialogs (never the browser's grey boxes)
-function modal(title, body, { ok = "OK", danger = false, cancel = "Cancel", onok } = {}) {
+export function modal(title, body, { ok = "OK", danger = false, cancel = "Cancel", onok } = {}) {
   return new Promise((resolve) => {
     let result = null;
     const err = h("p.form-err", { role: "alert" });
