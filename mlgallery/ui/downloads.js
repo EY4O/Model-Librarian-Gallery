@@ -30,11 +30,12 @@ export async function renderDownloads(root, ctx) {
     draw();
   };
   const after = (r, text) => org.done(r, text);  // (which draws this screen again, as Undo does)
-  const fileThem = async (keys, dest, artist) => {
+  // each: every one into the folder suggested for it (dest: for any with no suggestion)
+  const fileThem = async (keys, dest, artist, each = false) => {
     try {
-      const r = await api("/inbox/file", { method: "POST", body: { items: keys, folder: dest.folder, sub: dest.sub, ...(artist !== undefined ? { artist } : {}) } });
+      const r = await api("/inbox/file", { method: "POST", body: { items: keys, folder: dest.folder, sub: dest.sub, ...(artist !== undefined ? { artist } : {}), ...(each ? { each } : {}) } });
       keys.forEach((k) => sel.delete(k));
-      after(r, `Filed ${plural(r.filed, "download")} in ${baseName(r.dest)}${r.failed.length ? `; ${r.failed.length} couldn't be: ${r.failed[0].error}` : ""}.`);
+      after(r, `Filed ${plural(r.filed, "download")} in ${r.folders > 1 ? `${r.folders} folders` : baseName(r.dest)}${r.failed.length ? `; ${r.failed.length} couldn't be: ${r.failed[0].error}` : ""}.`);
     } catch (e) { toast(e.message, true); }
   };
   const dismiss = async (keys) => {
@@ -66,13 +67,23 @@ export async function renderDownloads(root, ctx) {
     if (!folders.length) return toast("Add a folder to the library first: downloads are filed into your library folders.", true);
     const picked = data.items.filter((it) => keys.includes(it.key));
     const differ = new Set(picked.map((it) => (it.suggest ? `${it.suggest.folder}/${it.suggest.sub}` : ""))).size > 1;
-    // (several with different suggestions - other artists' folders, say: not all into the first one's)
+    // (several with different suggestions - other artists' folders, say: each into its own, unless you untick it and
+    // pick one place for them all; an artist typed makes them one artist's, so they go to one place)
     const s = differ ? { folder: first?.suggest?.folder || folders[0].id, sub: "" } : first?.suggest || { folder: folders[0].id, sub: "" };
     const folder = h("select", { "aria-label": "Folder" }, folders.map((f) => h("option", { value: f.id, selected: f.id === s.folder }, `${baseName(f.path)}  —  ${f.path}`)));
     const sub = h("input", { type: "text", value: s.sub || "", placeholder: "Optional: a folder inside it, e.g. Artists/their name", "aria-label": "Folder inside", spellcheck: false });
     const list = h("datalist", { id: "file-artists" });
     const artist = h("input", { type: "text", placeholder: keys.length === 1 && first?.artist ? first.artist : "Leave empty to keep what was found", "aria-label": "Artist", autocomplete: "off", spellcheck: false });
     artist.setAttribute("list", list.id);
+    const each = h("input", { type: "checkbox", checked: differ, id: "file-each" });
+    const eachNow = () => differ && each.checked && !artist.value.trim();
+    const sync = () => {
+      each.disabled = !!artist.value.trim();
+      folder.disabled = sub.disabled = eachNow();
+    };
+    each.addEventListener("change", sync);
+    artist.addEventListener("input", sync);
+    sync();
     artist.addEventListener("input", async () => {
       const { items } = await api(`/suggest?field=artist&q=${encodeURIComponent(artist.value)}`).catch(() => ({ items: [] }));
       list.replaceChildren(...items.map((it) => h("option", { value: it.name })));
@@ -81,9 +92,10 @@ export async function renderDownloads(root, ctx) {
       h("label.field-row", {}, h("span", {}, "Into"), folder),
       h("label.field-row", {}, h("span", {}, "Folder inside"), sub),
       h("label.field-row", {}, h("span", {}, "Artist"), h("div", {}, artist, list)),
-      h("p.note", {}, `${differ ? "They're suggested for different folders, so they all go where you pick here. " : ""}They're moved out of the downloads folder into the library, with who made them and where they're from. History can undo it.`)), {
+      differ ? h("label.check", { for: each.id }, each, h("span", {}, "Each into its own artist's folder, as suggested")) : null,
+      h("p.note", {}, `${differ ? "They're suggested for different folders: ticked, each goes to the one its card shows; unticked, they all go where you pick here. " : ""}They're moved out of the downloads folder into the library, with who made them and where they're from. History can undo it.`)), {
       submitLabel: "File",
-      submit: () => fileThem(keys, { folder: Number(folder.value), sub: sub.value }, artist.value.trim() ? artist.value.trim() : undefined),
+      submit: () => fileThem(keys, { folder: Number(folder.value), sub: sub.value }, artist.value.trim() ? artist.value.trim() : undefined, eachNow()),
     });
   };
   // a character from the picture's note: made (character null), or added to one of yours

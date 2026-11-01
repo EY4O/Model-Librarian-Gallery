@@ -490,6 +490,51 @@ def test_artists_and_new_downloads(server, tmp_path):
     assert os.path.isfile(got) and api("/files")["total"] == total
 
 
+def test_filing_several_artists_downloads_at_once(server, tmp_path):
+    url, api = server
+    from conftest import image
+    dl = tmp_path / "Downloads"
+    names = ["harbour_by_painter_d1a2b3c.png", "dawn_by_otherone_d9z8y7x.png"]
+    for i, n in enumerate(names):
+        os.utime(image(dl / n, (96, 72), seed=20 + i), (time.time() - 600, time.time() - 600))
+    api("/library/kind", {"kinds": ["ai", "illustrations"]})
+    api("/inbox/folders", {"downloads": False, "add": str(dl)})  # (the made-up ones alone: never your own Downloads)
+    first = api("/files?limit=1")["items"][0]
+    api(f"/file/{first['id']}/credit", {"artist": "Painter"})
+    op = None
+
+    async def go():
+        nonlocal op
+        async with page(url) as e:
+            await e.wait("!document.getElementById('inbox-count').hidden")
+            await e.click("#view-downloads")
+            await e.wait("document.querySelectorAll('.dl-card').length >= 2")
+            await e.js("[...document.querySelectorAll('.btn')].find(b => b.textContent.startsWith('Select all')).click(); true")
+            await e.wait("document.querySelector('.dl-bar .btn.primary')")
+            await e.js("document.querySelector('.dl-bar .btn.primary').click(); true")
+            # suggested for different folders: each into its own, ticked to begin with (Into and Folder inside left alone)
+            await e.wait("document.getElementById('file-each')")
+            assert await e.js("document.getElementById('file-each').checked && document.querySelector('dialog[open] select').disabled")
+            await e.js("const a = document.querySelector('dialog[open] input[aria-label=Artist]'); a.value = 'Someone'; a.dispatchEvent(new Event('input')); true")
+            assert await e.js("document.getElementById('file-each').disabled && !document.querySelector('dialog[open] select').disabled")  # (one artist typed: one place)
+            await e.js("const a = document.querySelector('dialog[open] input[aria-label=Artist]'); a.value = ''; a.dispatchEvent(new Event('input')); true")
+            await e.js("document.querySelector('dialog[open] button[type=submit]').click(); true")
+            await e.wait("document.querySelector('.toast')?.textContent.includes(' folders')")
+            op = api("/ops")["ops"][0]
+            assert not await e.js("window.__errors.length")
+    try:
+        asyncio.run(go())
+        where = {i["name"]: os.path.dirname(api(f"/file/{i['id']}/info")["path"]) for i in api("/files?q=" + urllib.parse.quote("site:deviantart") + "&limit=50")["items"]}
+        assert where[names[1]].replace("\\", "/").endswith("/Artists/otherone")
+        assert where[names[0]] == os.path.dirname(api(f"/file/{first['id']}/info")["path"]), "where Painter's other picture is"
+    finally:  # the shared sample library as it was
+        if op and op["kind"] == "file":
+            api(f"/ops/{op['id']}/undo", {"x": 1})
+        api(f"/file/{first['id']}/credit", {"artist": None})
+        api("/inbox/folders", {"remove": str(dl)})
+        api("/library/kind", {"kinds": ["ai"]})
+
+
 def test_swipe_review_and_smart_albums(server):
     url, api = server
     total = api("/files")["total"]

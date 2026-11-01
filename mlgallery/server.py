@@ -1136,7 +1136,8 @@ async def inbox_file(request):
         artist = b.get("artist")
         if artist is not None and not isinstance(artist, str):
             raise ValueError("artist is text")
-        return web.json_response(await asyncio.to_thread(_lib(request).inbox.file, _keys(b), int(b.get("folder") or 0), str(b.get("sub") or ""), artist))
+        return web.json_response(await asyncio.to_thread(_lib(request).inbox.file, _keys(b), int(b.get("folder") or 0), str(b.get("sub") or ""), artist,
+                                                                  b.get("each") is True))
     except (OpError, ValueError) as ex:
         return _err(str(ex), 422)
 

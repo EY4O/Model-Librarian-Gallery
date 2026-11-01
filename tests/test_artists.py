@@ -280,6 +280,34 @@ def test_filing_a_download_and_undoing_it(inbox, media):
     assert os.path.isfile(a) and not there.exists() and "sunset_by_someartist_d1a2b3c.png" not in items(lib)
 
 
+def test_filing_several_artists_each_into_their_own_folder(inbox, media):
+    lib, f, dl = inbox
+    image(media / "Commissions" / "kept.png", seed=9)  # one of someartist's already: where more of theirs go
+    index(lib, f)
+    lib.set_credit(items(lib)["kept.png"]["id"], artist="someartist")
+    pics = {"sunset_by_someartist_d1a2b3c.png": "https://www.deviantart.com/someartist/art/Sunset-987654321",
+            "dawn_by_otherone_d9z8y7x.png": "https://www.deviantart.com/otherone/art/Dawn-123456789", "nobody.png": None}
+    for i, (name, page) in enumerate(pics.items()):
+        p = image(dl / name, seed=i + 1)
+        if page:
+            downloaded(p, page=page)
+        settled(p)
+    got = {it["name"]: it for it in lib.inbox.items()["items"]}
+    assert [got[n]["suggest"]["sub"] for n in pics] == ["Commissions", "Artists/otherone", ""]
+    keys = [it["key"] for it in got.values()]
+    r = lib.inbox.file(keys, f["id"], "Unsorted", each=True)
+    assert r["filed"] == 3 and r["folders"] == 3 and not r["failed"]
+    for rel in ("Commissions/sunset_by_someartist_d1a2b3c.png", "Artists/otherone/dawn_by_otherone_d9z8y7x.png", "nobody.png"):
+        assert (media / rel).is_file(), rel
+    assert artist_of(lib, "dawn_by_otherone_d9z8y7x.png")["artist"]["name"] == "otherone"
+    assert fileops.history(lib.db)[0]["summary"] == "Filed 3 downloads in 3 folders"
+    fileops.undo(lib.db, r["op"])  # one step takes them all back
+    assert all((dl / n).is_file() for n in pics) and lib.inbox.items()["total"] == 3
+    # unticked, they all go where you pick
+    r = lib.inbox.file(keys, f["id"], "Unsorted")
+    assert r["folders"] == 1 and sorted(p.name for p in (media / "Unsorted").iterdir()) == sorted(pics)
+
+
 def test_filing_with_your_artist_and_dismissing(inbox, media):
     lib, f, dl = inbox
     a, b = image(dl / "one.png", seed=1), image(dl / "two.png", seed=2)

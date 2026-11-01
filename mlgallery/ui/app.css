@@ -54,6 +54,8 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
 .btn:hover { border-color: var(--line-3); color: var(--text); }
 .btn:disabled { opacity: .45; cursor: default; }
 .btn:disabled:hover { border-color: var(--line-2); color: var(--text-2); }
+.field-row:has(> :is(input, select):disabled) { opacity: .45; }  /* (switched off: several downloads filed each into its own folder, say) */
+.check:has(input:disabled) { opacity: .45; cursor: default; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #171512; font-weight: 600; }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn[aria-pressed="true"] { background: var(--raise); border-color: var(--line-3); color: var(--text); }

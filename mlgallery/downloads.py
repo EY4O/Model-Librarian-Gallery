@@ -324,20 +324,17 @@ class Inbox:
             sub = ""
         return {"folder": base, "sub": sub, "why": "where you filed last" if last and sub == last["sub"] else ""}
 
-    # ---------------------------------------------------------------- filing
-    def _pick(self, keys) -> list[dict]:
-        want = {str(k) for k in (keys or [])}
-        return [e for e in self.entries() if e["key"] in want]
+    def _where(self, c, about: dict, names: dict, last: dict | None) -> dict | None:
+        """The folder suggested for a download, as its card in the list shows it."""
+        w = credits.winner([{"src": s, "artist": v.get("artist"), "site": v.get("site"), "post": v.get("post"), "url": v.get("url")}
+                            for s, v in about["found"].items()])
+        return self._suggest(c, names.get(credits.norm(w["artist"])) if w["artist"] else None, w["artist"], last)
 
-    def file(self, keys, folder_id: int, sub: str = "", artist=None) -> dict:
-        """Move these downloads into a library folder and index them there, with what was found about each (and your
-        artist for them, if you typed one: '' for none)."""
-        db = self.lib.db
-        picked = self._pick(keys)
-        if not picked:
-            raise fileops.OpError("Those downloads aren't there any more.")
+    # ---------------------------------------------------------------- filing
+    def _dest(self, folder_id: int, sub: str) -> tuple:
+        """(the folder's row, sub as it is on disk, the path they make), or OpError when it can't be filed into."""
         sub = fileops._clean_sub(sub)
-        with db.read() as c:
+        with self.lib.db.read() as c:
             d = c.execute("SELECT id, path, online FROM folders WHERE id=?", (int(folder_id),)).fetchone()
         if not d:
             raise fileops.OpError("That folder isn't in the library.")
@@ -347,44 +344,73 @@ class Inbox:
         if skipped:
             raise fileops.OpError(f"The library leaves folders named {skipped} out (hidden, system or Eagle's): pick another name.")
         sub = fileops._real_sub(d["path"], sub)
-        dest = os.path.join(d["path"], *sub.split("/")) if sub else d["path"]
-        moved, failed, taken = [], [], set()
+        return d, sub, os.path.join(d["path"], *sub.split("/")) if sub else d["path"]
+
+    def _pick(self, keys) -> list[dict]:
+        want = {str(k) for k in (keys or [])}
+        return [e for e in self.entries() if e["key"] in want]
+
+    def file(self, keys, folder_id: int, sub: str = "", artist=None, each: bool = False) -> dict:
+        """Move these downloads into a library folder and index them there, with what was found about each (and your
+        artist for them, if you typed one: '' for none). each: every one into the folder suggested for it (its artist's),
+        the ones with no suggestion into folder_id/sub; one step in History, however many folders it takes."""
+        db = self.lib.db
+        picked = self._pick(keys)
+        if not picked:
+            raise fileops.OpError("Those downloads aren't there any more.")
         abouts = {e["key"]: self._about(e) for e in picked}  # (before they move: on another drive, where it was downloaded from doesn't go with it)
+        groups: dict[tuple[int, str], list[dict]] = {}
+        with db.read() as c:
+            names, last = (credits.name_map(c), self._last(c)) if each else (None, None)
+            for e in picked:
+                s = self._where(c, abouts[e["key"]], names, last) if each else None
+                groups.setdefault((int(s["folder"]), s["sub"]) if s else (int(folder_id), sub), []).append(e)
+        dests, moved, failed, taken = {}, [], [], set()  # dests: (folder, sub) -> the folder's row, its sub on disk, the path they make
+        for (fid, gsub), es in groups.items():
+            try:
+                dests[(fid, gsub)] = self._dest(fid, gsub)
+            except fileops.OpError as ex:
+                if len(groups) == 1:
+                    raise
+                why = str(ex)
+                failed += [{"key": e["key"], "name": e["name"], "error": why} for e in es]
         # a download that's the same as a file the index has lost track of (deleted, or on a drive that isn't there) takes
         # over that file's record, ratings and all: undoing it must give the record back as it was now, not delete it
         with db.read() as c:
             newest = c.execute("SELECT COALESCE(MAX(id), 0) FROM files").fetchone()[0]
             before = {}
-            held = fileops._held(c, d["id"], sub)
-            for e in picked:
-                about = abouts[e["key"]]
-                for r in c.execute("SELECT id, folder_id, rel, missing FROM files WHERE fp=? AND size=?", (about["fp"], e["size"])) if about["fp"] else ():
-                    before[r["id"]] = dict(r)
-                name = fileops._free_name(dest, e["name"], taken, held)
-                rel = f"{sub}/{name}" if sub else name
-                try:
-                    fileops._move_file(e["path"], os.path.join(dest, name))
-                except (OSError, fileops.OpError) as ex:
-                    failed.append({"key": e["key"], "name": e["name"], "error": str(ex)})
-                    continue
-                moved.append({"from": e["path"], "to_folder": d["id"], "to_rel": rel, "found": about["found"], "fp": about["fp"], "size": e["size"],
-                              "note": about.get("note")})
+            for g, (d, sub, dest) in dests.items():
+                held = fileops._held(c, d["id"], sub)
+                for e in groups[g]:
+                    about = abouts[e["key"]]
+                    for r in c.execute("SELECT id, folder_id, rel, missing FROM files WHERE fp=? AND size=?", (about["fp"], e["size"])) if about["fp"] else ():
+                        before[r["id"]] = dict(r)
+                    name = fileops._free_name(dest, e["name"], taken, held)
+                    rel = f"{sub}/{name}" if sub else name
+                    try:
+                        fileops._move_file(e["path"], os.path.join(dest, name))
+                    except (OSError, fileops.OpError) as ex:
+                        failed.append({"key": e["key"], "name": e["name"], "error": str(ex)})
+                        continue
+                    moved.append({"from": e["path"], "to_folder": d["id"], "to_rel": rel, "found": about["found"], "fp": about["fp"], "size": e["size"],
+                                  "note": about.get("note"), "dest": dest})
         if not moved:
             raise fileops.OpError(failed[0]["error"] if failed else "Nothing was filed.")
-        folder = {"id": d["id"], "path": d["path"]}
-        for _ in range(3):  # the folder watcher may be indexing the same new files right now: then they're there already
-            try:
-                scan.index_files(db, folder, [m["to_rel"] for m in moved], skip_eagle=bool(self.lib.settings.get("skip_eagle")))
-                break
-            except Exception:
-                time.sleep(0.3)
+        for d, _, _ in dests.values():
+            rels = [m["to_rel"] for m in moved if m["to_folder"] == d["id"]]
+            for _ in range(3) if rels else ():  # the folder watcher may be indexing the same new files right now: then they're there already
+                try:
+                    scan.index_files(db, {"id": d["id"], "path": d["path"]}, rels, skip_eagle=bool(self.lib.settings.get("skip_eagle")))
+                    break
+                except Exception:
+                    time.sleep(0.3)
         with db.write() as c:
             done = []
             for m in moved:
                 r = c.execute("SELECT id FROM files WHERE folder_id=? AND rel=?", (m["to_folder"], m["to_rel"])).fetchone()
                 if not r:  # (not indexed: back where it came from, rather than lost in a folder nothing looks in)
                     try:
-                        fileops._move_file(os.path.join(dest, m["to_rel"].split("/")[-1]), m["from"])
+                        fileops._move_file(os.path.join(m["dest"], m["to_rel"].split("/")[-1]), m["from"])
                     except (OSError, fileops.OpError):
                         pass
                     failed.append({"key": key_of(m["from"]), "name": os.path.basename(m["from"]), "error": "the library didn't take it in there"})
@@ -411,10 +437,12 @@ class Inbox:
                     if url not in links:
                         c.execute("UPDATE artists SET links=? WHERE id=?", (json.dumps((links + [url])[:16]), aid))
                         m["link"] = [aid, url]  # (taken off again on Undo)
+            went = list(dict.fromkeys(m["dest"] for m in done))  # (the folders they went to, in order)
+            d, sub, dest = next((v for v in dests.values() if went and v[2] == went[-1]), next(iter(dests.values())))
             c.execute("INSERT INTO library_meta (key, value) VALUES ('inbox_last', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                       (json.dumps({"folder": d["id"], "sub": sub}),))
             n = len(done)
-            op = fileops.record(c, "file", f"Filed {n} download{'s' if n != 1 else ''} in {os.path.basename(dest) or dest}",
+            op = fileops.record(c, "file", f"Filed {n} download{'s' if n != 1 else ''} " + (f"in {len(went)} folders" if len(went) > 1 else f"in {os.path.basename(dest) or dest}"),
                                 [{k: m[k] for k in ("id", "from", "to_folder", "to_rel", "was", "user_was", "link", "note", "added_tags", "added_note") if k in m}
                                  for m in done]) if done else None
             fileops._recount(c)
@@ -430,7 +458,7 @@ class Inbox:
         self.lib.meta.nudge()
         self.lib.credits.nudge()
         db.user_change()
-        return {"op": op, "filed": len(done), "failed": failed, "dest": dest}
+        return {"op": op, "filed": len(done), "failed": failed, "dest": dest, "folders": len(went)}
 
     def dismiss(self, keys) -> int:
         picked = self._pick(keys)
