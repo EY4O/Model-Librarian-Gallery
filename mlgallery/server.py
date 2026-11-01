@@ -154,6 +154,8 @@ def make_app(lib: Library, token: str | None = None, *, pick_folder=None, quit=N
     r.add_get("/api/albums/mirrors", album_mirrors)
     r.add_post("/api/albums/delete", albums_delete)
     r.add_post("/api/albums/{aid}", album_update)
+    r.add_get("/api/smart/fields", smart_fields)
+    r.add_post("/api/smart/count", smart_count)
     r.add_delete("/api/albums/{aid}", album_delete)
     r.add_get("/api/duplicates", duplicates)
     r.add_post("/api/duplicates/keep", duplicates_keep)
@@ -1465,10 +1467,11 @@ async def copy_in(request):
 
 async def album_create(request):
     b = await _body(request)
-    try:  # {name, query}: with a query, a smart album (the search, kept)
+    try:  # {name, query}: with a query, a smart album (the search, kept); {name, rules}: a smart folder (rules.py)
         if b.get("query") is not None and not isinstance(b.get("query"), str):
             raise ValueError("query: a search")
-        return web.json_response(await asyncio.to_thread(_lib(request).album_save, None, b.get("name"), query=b.get("query")))
+        kw = {"rules": b["rules"]} if b.get("rules") is not None else {"query": b.get("query")}
+        return web.json_response(await asyncio.to_thread(_lib(request).album_save, None, b.get("name"), **kw))
     except ValueError as ex:
         return _err(str(ex), 422)
 
@@ -1481,12 +1484,27 @@ async def album_update(request):
         cur = next((a for a in await asyncio.to_thread(lib.albums) if a["id"] == aid), None)
         if not cur:
             return _err("not found", 404)
-        kw = {k: b[k] for k in ("cover", "query") if k in b}
+        kw = {k: b[k] for k in ("cover", "query", "rules") if k in b}
         if kw.get("query") is not None and not isinstance(kw.get("query"), str):
             raise ValueError("query: a search")
         return web.json_response(await asyncio.to_thread(lib.album_save, aid, b.get("name", cur["name"]), **kw))
     except KeyError:
         return _err("not found", 404)
+    except ValueError as ex:
+        return _err(str(ex), 422)
+
+
+async def smart_fields(request):
+    """What Edit Rules offers: each field, its comparisons and values (rules.py)."""
+    from . import rules
+    return web.json_response({"fields": rules.fields()})
+
+
+async def smart_count(request):
+    """{rules}: how many pictures they find, and the search they come to (422: rules that can't be one yet)."""
+    b = await _body(request)
+    try:
+        return web.json_response(await asyncio.to_thread(_lib(request).smart_preview, b.get("rules")))
     except ValueError as ex:
         return _err(str(ex), 422)
 

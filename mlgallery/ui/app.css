@@ -624,6 +624,31 @@ select.pick:focus { border-style: solid; border-color: var(--accent); }
 .btn.danger:hover { border-color: #8a4444; color: #ffc1c1; }
 .btn.primary.danger { background: #b4444a; border-color: #b4444a; color: #fff; }
 .dialog.wide { width: min(760px, calc(100vw - 32px)); }
+/* Edit Rules (smart.js): a smart folder's rules, groups inside groups */
+.sr-dialog { width: min(820px, calc(100vw - 32px)); }
+.sr-name { display: flex; flex-direction: column; gap: 6px; }
+.sr-name > span { font-weight: 600; }
+.sr-name input { width: 100%; }
+.sr-rules { max-height: min(52vh, 520px); overflow: auto; padding: 2px; }
+.sr-group { display: flex; flex-direction: column; gap: 8px; }
+.sr-group:not(.top) { margin-left: 14px; padding: 8px 0 8px 12px; border-left: 2px solid var(--line-2); }
+.sr-list { display: flex; flex-direction: column; gap: 8px; }
+.sr-head, .sr-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sr-text, .sr-and, .sr-unit { color: var(--dim); }
+.sr-row .sr-field { width: 160px; }
+.sr-row .sr-op { width: 170px; }
+.sr-row > .sr-value, .sr-row > .sr-between { flex: 1; min-width: 150px; }
+.sr-row > .sr-value.none { min-width: 0; }
+.sr-between { display: flex; align-items: center; gap: 6px; }
+.sr-between > .sr-value { flex: 1; min-width: 70px; }
+.sr-swatch { width: 36px; padding: 2px !important; }
+.sr-btns { display: flex; gap: 4px; margin-left: auto; }
+.sr-btn { border: 1px solid var(--line-2); }
+.sr-btn:disabled { opacity: .35; cursor: default; }
+.sr-foot { align-items: center; gap: 8px; }
+.sr-found { font-variant-numeric: tabular-nums; }
+.sr-found.dim { color: var(--dim); }
+@media (max-width: 640px) { .sr-row .sr-field, .sr-row .sr-op { width: calc(50% - 3px); } }
 .dialog select { height: 32px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--control); color: var(--text); max-width: 100%; }
 .dialog .field-row > select, .dialog .field-row > div > input { width: 100%; }
 .plan { min-height: 44px; padding: 10px 12px; border-radius: 8px; background: #211f1c; border: 1px solid var(--line); line-height: 1.55; }

@@ -595,7 +595,7 @@ def test_swipe_review_and_smart_albums(server):
             await e.wait("document.querySelector('.sw-pick').textContent === 'Last 30 days' && document.querySelector('.sw-where').textContent.startsWith('1 / ')")
             await e.key("Escape")
             await e.wait("!document.querySelector('.swipe') && document.querySelector('.toast')?.textContent.startsWith('Swipe review: 2 kept')")
-            # a search kept as a smart album: in Albums with a search icon, holding what the search finds
+            # a search kept as a smart folder (Edit Rules, with the search as its one rule): in Smart Folders, holding what it finds
             await e.js("const q = document.getElementById('q'); q.value = 'lora:aurelia '; q.dispatchEvent(new Event('input')); true")
             await e.wait("!document.getElementById('save-search').hidden")
             want = api("/files?q=lora:aurelia")["total"]
@@ -603,7 +603,8 @@ def test_swipe_review_and_smart_albums(server):
             await e.wait("document.querySelector('dialog[open] input')")
             await e.js("const i = document.querySelector('dialog[open] input'); i.value = 'Aurelia picks'; i.form.requestSubmit(); true")
             await e.wait(f"document.getElementById('view-title').textContent === 'Aurelia picks' && document.getElementById('count').textContent === '{want} items'")
-            assert await e.js("[...document.querySelectorAll('#albums .nav-item')].some(b => b.textContent.includes('Aurelia picks') && b.querySelector('[title^=\"Smart album\"]'))")
+            assert await e.js("[...document.querySelectorAll('#smart .nav-item')].some(b => b.textContent.includes('Aurelia picks') && b.querySelector('[title^=\"Smart folder\"]'))")
+            assert not await e.js("[...document.querySelectorAll('#albums .nav-item')].some(b => b.textContent.includes('Aurelia picks'))")
             assert not await e.js("window.__errors.length")
     try:
         asyncio.run(go())
@@ -611,6 +612,76 @@ def test_swipe_review_and_smart_albums(server):
         api("/sort/reset", {"view": {"sort": "newest"}})
         for a in api("/albums")["albums"]:
             if a["name"] in ("Aurelia picks", "Swiped"):
+                req = urllib.request.Request(api.base + f"/api/albums/{a['id']}", method="DELETE", headers={"X-MLG-Token": api.token})
+                urllib.request.urlopen(req).close()
+
+
+def test_smart_folders_edit_rules(server):
+    """Edit Rules: a name, rows of rules with − and +, any / all, a group inside, the count as it's changed; saved, it's
+    in Smart Folders; edited again from its row; deleted."""
+    import urllib.parse
+    url, api = server
+    count = lambda q: api("/files?q=" + urllib.parse.quote(q))["total"]  # noqa: E731
+    jpg, both = count('name:"*_jpg.jpg"'), count('name:"*_jpg.jpg" OR name:"*webp.webp"')
+    assert 0 < jpg < both
+    found = "document.querySelector('.sr-found')?.textContent"
+    setv = lambda sel, v, i=0, ev="change": f"(() => {{ const x = document.querySelectorAll('.sr-dialog {sel}')[{i}]; x.value = {json.dumps(v)}; x.dispatchEvent(new Event('{ev}')); return true; }})()"  # noqa: E731
+
+    async def go():
+        async with page(url) as e:
+            await e.wait("document.querySelectorAll('.tile').length > 4")
+            await e.click("#smart-new")
+            await e.wait("document.querySelector('.sr-dialog[open] .sr-row')")
+            assert await e.js("document.querySelector('.sr-row .sr-btn').disabled")  # (the only rule: − can't take it out)
+            await e.js("document.querySelector('.sr-dialog input[aria-label=\"Smart Folder Name\"]').value = 'Jpegs and webps'; true")
+            await e.js(setv(".sr-row .sr-op", "ends"))
+            await e.js(setv(".sr-row input.sr-value", "_jpg.jpg", ev="input"))
+            await e.wait(f"{found} === 'Found {jpg} items'")
+            # + adds a rule after it; "any" of them
+            await e.js("document.querySelectorAll('.sr-row .sr-btn')[1].click(); true")
+            await e.wait("document.querySelectorAll('.sr-row').length === 2")
+            await e.js(setv(".sr-row .sr-op", "ends", 1))
+            await e.js(setv(".sr-row input.sr-value", "webp.webp", 1, "input"))
+            await e.wait(f"{found} === 'Found 0 items'")  # (all of them: none is both)
+            await e.js(setv(".sr-head select", "any"))
+            await e.wait(f"{found} === 'Found {both} items'")
+            # a group inside, with its own any / all and true / false; its − takes it out again
+            await e.js("document.querySelectorAll('.sr-group.top > .sr-head .sr-btn')[1].click(); true")
+            await e.wait("document.querySelectorAll('.sr-group:not(.top)').length === 1 && document.querySelectorAll('.sr-row').length === 3")
+            await e.js(setv(".sr-group:not(.top) .sr-row .sr-op", "begins"))
+            await e.js(setv(".sr-group:not(.top) .sr-row input.sr-value", "sample_0000", ev="input"))
+            await e.js(setv(".sr-group:not(.top) > .sr-head select", "false", 1))
+            await e.wait("document.querySelector('.sr-found').title.endsWith('-(name:\"sample_0000*\"))')")
+            query = (await e.js("document.querySelector('.sr-found').title")).split(": ", 1)[1]
+            assert query == '(name:"*_jpg.jpg" OR name:"*webp.webp" OR -(name:"sample_0000*"))'
+            await e.wait(f"{found} === 'Found {count(query)} items'")
+            await e.js("document.querySelector('.sr-group:not(.top) > .sr-head .sr-btn').click(); true")
+            await e.wait(f"!document.querySelector('.sr-group:not(.top)') && {found} === 'Found {both} items'")
+            # saved: in Smart Folders, shown
+            await e.js("document.querySelector('.sr-dialog button[type=submit]').click(); true")
+            await e.wait(f"document.getElementById('view-title').textContent === 'Jpegs and webps' && document.getElementById('count').textContent === '{both} items'")
+            row = "[...document.querySelectorAll('#smart .nav-item')].find(b => b.textContent.includes('Jpegs and webps'))"
+            assert await e.js(f"!!{row}")
+            # edited from its row: the rules as they were made; all of them now
+            await e.js(f"{row}.querySelector('.act[title=\"Edit rules\"]').click(); true")
+            await e.wait("document.querySelectorAll('.sr-dialog[open] .sr-row').length === 2")
+            assert await e.js("document.querySelectorAll('.sr-row input.sr-value')[1].value") == "webp.webp"
+            await e.wait(f"{found} === 'Found {both} items'")
+            await e.js(setv(".sr-head select", "all"))
+            await e.wait(f"{found} === 'Found 0 items'")
+            await e.js("document.querySelector('.sr-dialog button[type=submit]').click(); true")
+            await e.wait("!document.querySelector('.sr-dialog')")
+            a = next(x for x in api("/albums")["albums"] if x["name"] == "Jpegs and webps")
+            assert a["query"] == 'name:"*_jpg.jpg" name:"*webp.webp"' and a["rules"]["match"] == "all"
+            # deleted from its row (Undo in the toast)
+            await e.js(f"{row}.querySelector('.act[title^=\"Delete\"]').click(); true")
+            await e.wait("![...document.querySelectorAll('#smart .nav-item')].some(b => b.textContent.includes('Jpegs and webps'))")
+            assert not await e.js("window.__errors.length")
+    try:
+        asyncio.run(go())
+    finally:
+        for a in api("/albums")["albums"]:
+            if a["name"] == "Jpegs and webps":
                 req = urllib.request.Request(api.base + f"/api/albums/{a['id']}", method="DELETE", headers={"X-MLG-Token": api.token})
                 urllib.request.urlopen(req).close()
 

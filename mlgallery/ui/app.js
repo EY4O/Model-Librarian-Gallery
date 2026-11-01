@@ -12,6 +12,7 @@ import { renderDownloads } from "./downloads.js";
 import * as org from "./organize.js";
 import { renderSettings } from "./settings.js";
 import { renderRecipe, renderRecipes, saveAsRecipes } from "./recipes.js";
+import { editRules } from "./smart.js";
 
 const PAGE = 300;
 const HEAD = 40;      // a day heading's height
@@ -39,7 +40,8 @@ const state = {
 
 // ---------------------------------------------------------------- the search
 const FIELDS = ["model", "lora", "tag", "sampler", "scheduler", "seed", "steps", "rating", "is", "has", "no", "neg", "vae", "ext",
-  "cfg", "size", "after", "before", "on", "date", "strength", "character", "review", "album", "color", "artist", "site"];
+  "cfg", "size", "after", "before", "on", "date", "strength", "character", "review", "album", "color", "artist", "site",
+  "name", "note", "url", "prompt", "negative", "dir", "width", "height", "filesize", "duration", "shape", "created", "modified", "imported"];
 const SUGGESTED = new Set(["model", "lora", "tag", "sampler", "scheduler", "vae", "color", "artist", "site"]);
 // the colour families' own swatches (as in colors.py), for color: chips
 const COLOR_FAMILIES = { red: "#e53935", orange: "#fb8c00", yellow: "#fdd835", green: "#43a047", cyan: "#00acc1", blue: "#1e88e5",
@@ -92,6 +94,7 @@ function searchChanged({ now = true } = {}) {
 
 // "model:krea" or 'lora:"paper cut"' typed and confirmed becomes a chip
 function takeChips(text, final) {
+  if (/(^|\s)-?\(|\sOR(\s|$)/.test(text)) return { rest: text, took: false };
   const re = /(?:^|\s)(\w+):("[^"]*"|\S+)(?=\s|$)/g;
   let rest = text, m, took = false;
   while ((m = re.exec(text))) {
@@ -194,8 +197,8 @@ function renderSide() {
   $("view-recipes").classList.toggle("sel", state.view === "recipes" || state.view === "recipe");
   const trees = new Map(state.folders.map((f) => [f.id, dirTree(state.dirs[f.id] || [])]));
   const anyDirs = [...trees.values()].some((t) => t.kids.size);
-  const hadRow = document.activeElement?.closest?.("#folders [role=treeitem], #albums [role=treeitem]");  // (drawn again: focus stays on it)
-  const had = hadRow?.dataset.key, hadIn = hadRow?.closest("#folders, #albums")?.id;
+  const hadRow = document.activeElement?.closest?.("#folders [role=treeitem], #smart [role=treeitem], #albums [role=treeitem]");  // (drawn again: focus stays on it)
+  const had = hadRow?.dataset.key, hadIn = hadRow?.closest("#folders, #smart, #albums")?.id;
   const items = state.folders.flatMap((f) => {
     const sel = state.view === "folder" && state.folder === f.id && !state.sub, tree = trees.get(f.id), key = `f:${f.id}`;
     return [h("div.nav-item" + (sel ? ".sel" : ""), { ...treeRow(key, null, 1, tree.kids.size > 0, sel), title: f.path, onclick: () => selectView("folder", f.id),
@@ -213,10 +216,13 @@ function renderSide() {
   });
   $("folders").replaceChildren(...(items.length ? items
     : [h("p.nav-empty", {}, "No folders yet. ", h("button", { type: "button", onclick: addFolder }, "Add one"))]));
-  const tree = albumTree(state.albums);
-  $("albums").replaceChildren(...(state.albums.length ? albumRows(tree, 0, [...tree.kids.values()].some((n) => n.kids.size))
+  const plain = state.albums.filter((a) => a.query == null), smart = state.albums.filter((a) => a.query != null);
+  const tree = albumTree(plain), smartTree = albumTree(smart);
+  $("albums").replaceChildren(...(plain.length ? albumRows(tree, 0, [...tree.kids.values()].some((n) => n.kids.size))
     : [h("p.nav-empty", {}, "Albums gather files from any folder.")]));
-  for (const box of [$("folders"), $("albums")]) roving(box, box.id === hadIn ? had : null);
+  $("smart").replaceChildren(...(smart.length ? albumRows(smartTree, 0, [...smartTree.kids.values()].some((n) => n.kids.size), "s")
+    : [h("p.nav-empty", {}, "Smart folders gather what meets their rules. ", h("button", { type: "button", onclick: () => editSmart() }, "Make one"))]));
+  for (const box of [$("folders"), $("smart"), $("albums")]) roving(box, box.id === hadIn ? had : null);
   renderToolbar();
 }
 
@@ -236,9 +242,9 @@ function roving(box, had) {
   else if (had && at) at.focus({ preventScroll: true });  // (the row it was on is gone: the one shown)
 }
 
-for (const box of [$("folders"), $("albums")]) {
+for (const box of [$("folders"), $("smart"), $("albums")]) {
   box.setAttribute("role", "tree");
-  box.setAttribute("aria-label", box.id === "folders" ? "Folders" : "Albums");
+  box.setAttribute("aria-label", { folders: "Folders", smart: "Smart Folders", albums: "Albums" }[box.id]);
   box.addEventListener("keydown", (e) => {
     const row = e.target.closest?.("[role=treeitem]");
     if (!row || e.ctrlKey || e.altKey || e.metaKey) return;
@@ -491,13 +497,13 @@ async function copyInRun(entries, loose, f, rel) {
 let dragging = null;  // the album being dragged in the sidebar (its name), to drop into another or on Albums for the top
 const canDrop = (target) => dragging && !sameName(target, dragging) && !inside(target, dragging) && !sameName(parentName(dragging), target);
 
-function albumRows(node, depth, nested) {
+function albumRows(node, depth, nested, pre = "a") {  // (pre: the tree's own keys, "s" for Smart Folders)
   const groups = new Map(state.albumGroups.map((g) => [g.name.toLowerCase(), g]));
   return [...node.kids.values()].flatMap((n) => {
-    const a = n.album, g = groups.get(n.path.toLowerCase()), key = `a:${n.path.toLowerCase()}`;
+    const a = n.album, g = groups.get(n.path.toLowerCase()), key = `${pre}:${n.path.toLowerCase()}`;
     const sel = state.view === "album" && sameName(state.album, n.path);
     const count = g ? g.n : a ? a.n : 0;
-    const row = h("div.nav-item" + (sel ? ".sel" : ""), { ...treeRow(key, parentName(n.path) ? `a:${parentName(n.path).toLowerCase()}` : null, depth + 1, n.kids.size > 0, sel),
+    const row = h("div.nav-item" + (sel ? ".sel" : ""), { ...treeRow(key, parentName(n.path) ? `${pre}:${parentName(n.path).toLowerCase()}` : null, depth + 1, n.kids.size > 0, sel),
       draggable: "true", style: indent(depth), title: n.path, onclick: () => selectView("album", n.path),
       oncontextmenu: (e) => { e.preventDefault(); a ? lookMenu(e.currentTarget, "album", a) : parentMenu(e.currentTarget, n.path); },
       ondragstart: (e) => { dragging = n.path; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", n.path); },
@@ -514,12 +520,13 @@ function albumRows(node, depth, nested) {
       } },
       nested ? twist(key, n.kids.size > 0) : null,
       a ? lookIcon(a, a.query != null ? "filter" : "album") : icon("album"),
-      h("span.label", { title: a?.query != null ? `Smart album: ${a.query}` : n.path }, n.name), h("span.n", {}, count.toLocaleString()),
+      h("span.label", { title: a?.query != null ? `Smart folder: ${a.query}` : n.path }, n.name), h("span.n", {}, count.toLocaleString()),
       h("span.acts", {},
+        a?.query != null ? h("span.act", { "aria-hidden": "true", title: "Edit rules", onclick: (e) => { e.stopPropagation(); editSmart(a); } }, icon("filter")) : null,
         h("span.act", { "aria-hidden": "true", title: "Rename", onclick: async (e) => { e.stopPropagation(); a ? renameAlbum(a) : renameParent(n.path); } }, icon("tag")),
         a ? h("span.act", { "aria-hidden": "true", title: "Delete the album (its files stay where they are)",
           onclick: async (e) => { e.stopPropagation(); deleteAlbum(a); } }, icon("remove")) : null));
-    return [row, ...(n.kids.size && opened.has(key) ? albumRows(n, depth + 1, nested) : [])];
+    return [row, ...(n.kids.size && opened.has(key) ? albumRows(n, depth + 1, nested, pre) : [])];
   });
 }
 
@@ -648,12 +655,12 @@ function lookMenu(anchor, kind, it) {
       ? [...(it.online ? [{ label: "New folder…", icon: "plus", onclick: () => newDir(it, "") }] : []),
         { label: "Look again", icon: "rescan", onclick: () => rescan(it) }, { label: "Show in Explorer", icon: "explorer", onclick: () => api(`/folders/${it.id}/reveal`, { method: "POST" }).catch((e) => toast(e.message, true)) }]
       : [{ label: "Rename…", icon: "pen", onclick: () => renameAlbum(it) },
-        it.query != null ? { label: "Change its search…", icon: "filter", onclick: () => smartSearch(it) } : null,
-        { label: "New album inside…", icon: "plus", onclick: () => newAlbumIn(albumName(it.name)) },
+        it.query != null ? { label: "Edit rules…", icon: "filter", onclick: () => editSmart(it) } : null,
+        it.query == null ? { label: "New album inside…", icon: "plus", onclick: () => newAlbumIn(albumName(it.name)) } : null,
         { label: "Move to…", icon: "move", onclick: () => moveToDialog(albumName(it.name)) }].filter(Boolean)),
     null,
     kind === "folder" ? { label: `Remove ${name} from the library`, icon: "remove", danger: true, onclick: () => removeFolder(it) }
-      : { label: insideCount(it.name) ? "Delete just this album" : "Delete the album", icon: "remove", danger: true, onclick: () => deleteAlbum(it) },
+      : { label: it.query != null ? "Delete the smart folder" : insideCount(it.name) ? "Delete just this album" : "Delete the album", icon: "remove", danger: true, onclick: () => deleteAlbum(it) },
     ...(kind === "album" && insideCount(it.name)
       ? [{ label: `Delete it and the ${plural(insideCount(it.name), "album")} inside`, icon: "remove", danger: true, onclick: () => deleteBranch(albumName(it.name)) }] : []),
   ]);
@@ -675,29 +682,24 @@ function iconPicker(anchor, it, pick) {
       h("span.spacer"), h("button.btn.small", { type: "button", onclick: () => choose(null) }, "Default"))) }], { cls: "look-menu" });
 }
 
-// a search kept as a smart album: in Albums, always up to date
-async function saveSearch() {
-  const q = queryString();
-  if (!q) return;
-  const name = await askText("Save this search as a smart album", "Name", "", { ok: "Save", placeholder: q.slice(0, 40) });
-  if (!name) return;
+// smart folders (Edit Rules, smart.js): a new one, one changed, or a search kept as one (its one rule, to add to)
+async function editSmart(a = null, rules = null) {
+  const was = a && albumName(a.name);
   try {
-    const a = await api("/albums", { method: "POST", body: { name, query: q } });
-    clearSearch();
-    await loadAlbums();
-    selectView("album", a.name);
-    toast(`${a.name} holds what "${q}" finds, as it changes.`);
+    await editRules({ album: a, rules, albums: state.albums, done: async (saved) => {
+      if (rules) clearSearch();
+      if (was && !sameName(was, saved.name)) followMove(was, saved.name);
+      await loadAlbums();
+      if (!a) selectView("album", saved.name);
+      else if (state.view === "album" && sameName(state.album, saved.name)) reload(true);
+      toast(a ? `${leafName(saved.name)}: its rules are saved.` : `${leafName(saved.name)} keeps collecting what meets its rules.`);
+    } });
   } catch (e) { toast(e.message, true); }
 }
 
-async function smartSearch(a) {
-  const q = await askText(`The search ${a.name} keeps`, "Search", a.query, { ok: "Save" });
-  if (q == null || q === a.query) return;
-  try {
-    await api(`/albums/${a.id}`, { method: "POST", body: { query: q } });
-    await loadAlbums();
-    if (state.view === "album" && state.album === a.name) reload(true);
-  } catch (e) { toast(e.message, true); }
+function saveSearch() {
+  const q = queryString();
+  if (q) editSmart(null, { match: "all", is: true, rules: [{ field: "search", op: "matches", value: q }] });
 }
 
 async function newAlbum() {
@@ -2472,6 +2474,7 @@ $("view-duplicates").onclick = () => selectView("duplicates");
 $("view-history").onclick = () => selectView("history");
 $("view-settings").onclick = () => selectView("settings");
 $("album-new").onclick = newAlbum;
+$("smart-new").onclick = () => editSmart();
 $("album-tidy").onclick = tidyAlbums;
 $("empty-trash").onclick = () => org.emptyTrash(null, state.total);
 $("view-characters").onclick = () => selectView("characters");
@@ -2644,7 +2647,11 @@ function showHelp() {
     ["rating:4  rating:2-4  rating:0", "rated 4 or more, 2 to 4, unrated"], ["is:fav  is:video  is:review", "favourites, videos, waiting for review"],
     ["date:today  date:7d  date:2026-10", "when it was made (also after: before: on:)"], ["seed:  steps:  cfg:  sampler:  size:1024x1024", "settings"],
     ["has:workflow  no:prompt  neg:blurry", "what's saved in it; words in the negative prompt"],
-    ["artist:  site:pixiv  has:artist  has:source", "who made it, where it's from"]];
+    ["artist:  site:pixiv  has:artist  has:source", "who made it, where it's from"],
+    ["name:INK-*  name:*_v2  name:=a.png  name:/^ink-\\d+/", "its name begins, ends, is, a regex (also note: url: prompt: dir:)"],
+    ["width:>1000  filesize:>2mb  shape:portrait", "its size and shape (height: duration: too)"],
+    ["imported:7d  modified:>=2026-10-01", "when it came in, was changed (created: too)"],
+    ["(lora:a OR lora:b)  -(tag:wip OR tag:draft)", "either one; none of them (OR in capitals)"]];
   const table = (rows) => h("dl.help-list", {}, rows.map(([k, v]) => [h("dt", {}, h("kbd", {}, k)), h("dd", {}, v)]));
   const dlg = h("dialog.dialog.wide.help", { "aria-label": "Shortcuts and search" },
     h("div.help-body", {},

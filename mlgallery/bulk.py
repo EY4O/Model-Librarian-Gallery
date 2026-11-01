@@ -212,8 +212,11 @@ def undo(db, kind: str, data) -> dict:
                 else:
                     failed.append(aid)  # (its old name is another album's now)
             if not failed:  # (a search names the old names: only right if they're all back)
-                for aid, q, q2 in data.get("queries") or []:
-                    c.execute("UPDATE albums SET query=? WHERE id=? AND query=?", (q, aid, q2))
+                for aid, q, q2, *r in data.get("queries") or []:  # (and a smart folder's rules, as they were)
+                    if r:
+                        c.execute("UPDATE albums SET query=?, rules=? WHERE id=? AND query=?", (q, r[0], aid, q2))
+                    else:
+                        c.execute("UPDATE albums SET query=? WHERE id=? AND query=?", (q, aid, q2))
             return {"undone": back, "failed": failed}
         if kind == "review":
             review_restore(c, data["character"], data["items"])
@@ -232,8 +235,9 @@ def undo(db, kind: str, data) -> dict:
                 else:
                     free = not c.execute("SELECT 1 FROM albums WHERE id=?", (a["id"],)).fetchone()
                     cover = a.get("cover") if a.get("cover") and c.execute("SELECT 1 FROM files WHERE id=?", (a["cover"],)).fetchone() else None
-                    aid = c.execute("INSERT INTO albums (id, name, cover, created, icon, color, query) VALUES (?,?,?,?,?,?,?)",
-                                    (a["id"] if free else None, a["name"], cover, a.get("created"), a.get("icon"), a.get("color"), a.get("query"))).lastrowid
+                    aid = c.execute("INSERT INTO albums (id, name, cover, created, icon, color, query, rules) VALUES (?,?,?,?,?,?,?,?)",
+                                    (a["id"] if free else None, a["name"], cover, a.get("created"), a.get("icon"), a.get("color"), a.get("query"),
+                                     a.get("rules"))).lastrowid
                 for f in a["files"]:
                     if c.execute("SELECT 1 FROM files WHERE id=?", (f["file_id"],)).fetchone():
                         c.execute("INSERT OR IGNORE INTO album_files (album_id, file_id, source, removed, added) VALUES (?,?,?,?,?)",

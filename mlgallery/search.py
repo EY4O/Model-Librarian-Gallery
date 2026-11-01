@@ -1,4 +1,4 @@
-"""The search box: free text plus filters, turned into SQL.
+r"""The search box: free text plus filters, turned into SQL.
 
     lighthouse dusk            words in the file name, prompt, models or tags (each as a prefix: "light" finds "lighthouse")
     "paper cut"                a phrase
@@ -17,37 +17,149 @@
     lora:aurelia@0.6-0.8  lora:aurelia@>=0.7  strength:0.7   (a LoRA used at that strength; strength: any LoRA)
     color:#140d17  color:red   a colour that looks like it (5% of the picture or more), or of that family (10%; colors.py)
     -fog  -tag:dusk  -lora:aurelia   (a minus leaves out what follows it: words and filters alike)
+    name:INK-*  name:*_final  name:dusk  name:=cat.png  name:/^ink-\d+/   (begins with, ends with, contains, is, a regex)
+                               and the same for note: url: (its source page) prompt: negative: dir: (the folder it's in)
+    width:>1000  height:500-900  filesize:>2mb  duration:<10 (seconds)  shape:portrait|landscape|square|wide|tall
+    created:2026-10  modified:>=2026-10-01  imported:<2026-10-01  imported:7d  created:2026-10-01..2026-10-23
+    has:note  has:url  has:album  has:negative   tag:dusk* (a tag beginning so)  cfg:5-7
+    (lora:aurelia OR lora:bellamy) rating:>=4   -(tag:wip OR tag:draft)   brackets group, OR (in capitals) is either one
 
 Unknown keys are treated as text. Every value is passed as a parameter, never pasted into the SQL.
 """
 from __future__ import annotations
 
 import datetime
+import functools
 import re
 import time
 
 TOKEN = re.compile(r'(-?)(?:(\w+):)?(?:"([^"]*)"?|(\S+))')
 KEYS = {"model", "lora", "tag", "rating", "is", "has", "no", "sampler", "scheduler", "seed", "steps", "neg", "vae", "ext",
-        "cfg", "size", "after", "before", "on", "character", "review", "album", "date", "strength", "color", "colour", "artist", "site", "path"}
+        "cfg", "size", "after", "before", "on", "character", "review", "album", "date", "strength", "color", "colour", "artist", "site", "path",
+        "name", "note", "url", "prompt", "negative", "dir", "width", "height", "filesize", "duration", "shape", "created", "modified", "imported"}
+
+
+def _token(m) -> tuple[str | None, str] | None:
+    neg, key, quoted, bare = m.groups()
+    value = quoted if quoted is not None else (bare or "")
+    key = key.lower() if key else None
+    if key and key not in KEYS:
+        value, key = f"{key}:{value}", None
+    if neg and not key:
+        value = "-" + value
+    elif neg:
+        key = "-" + key
+    return (key, value) if value or key else None
 
 
 def tokens(q: str) -> list[tuple[str | None, str]]:
     """[(key or None, value)] in order; a left-out filter (-tag:x) has its key as "-tag". A key the search
     doesn't know stays part of the text."""
-    out = []
-    for m in TOKEN.finditer(q or ""):
-        neg, key, quoted, bare = m.groups()
-        value = quoted if quoted is not None else (bare or "")
-        key = key.lower() if key else None
-        if key and key not in KEYS:
-            value, key = f"{key}:{value}", None
-        if neg and not key:
-            value = "-" + value
-        elif neg:
-            key = "-" + key
-        if value or key:
-            out.append((key, value))
+    return [t for t in map(_token, TOKEN.finditer(q or "")) if t]
+
+
+def _lex(q: str) -> list:
+    """The search as tokens, with "(" (or "-(", a group left out), ")" and OR between them. A bracket opens a group only
+    at the start of a word, and closes one only when one is open (so lora:"char (v2)" and a word like v2) stay as they are)."""
+    out, i, depth, q = [], 0, 0, q or ""
+    while i < len(q):
+        if q[i].isspace():
+            i += 1
+        elif q[i] == "(" or q.startswith("-(", i):
+            neg = q[i] == "-"
+            out.append(("(", neg))
+            depth += 1
+            i += 2 if neg else 1
+        elif q[i] == ")" and depth:
+            out.append((")",))
+            depth -= 1
+            i += 1
+        else:
+            m = TOKEN.match(q, i)
+            i = m.end()
+            bare = m.group(4)
+            close = 0
+            if bare and depth and bare.endswith(")"):  # lora:x) - the ) that closes a group, not part of the name
+                extra = bare.count(")") - bare.count("(")
+                close = min(len(bare) - len(bare.rstrip(")")), max(extra, 0), depth)
+                if close:
+                    i -= close
+            t = _token(m)
+            if t and close:
+                t = (t[0], t[1][:-close]) if t[1][:-close] or t[0] else None
+            if t == (None, "OR"):
+                out.append(("OR",))
+            elif t:
+                out.append(("t", t))
     return out
+
+
+def _parse(items: list):
+    """-> ("or", [alternatives]) / ("and", [tokens and groups]) / ("not", group): AND binds closer than OR."""
+    pos = 0
+
+    def expr():
+        nonlocal pos
+        alts = [seq()]
+        while pos < len(items) and items[pos][0] == "OR":
+            pos += 1
+            alts.append(seq())
+        alts = [a for a in alts if a[1]] or alts[:1]  # (an OR with nothing on one side: the other side)
+        return alts[0] if len(alts) == 1 else ("or", alts)
+
+    def seq():
+        nonlocal pos
+        parts = []
+        while pos < len(items) and items[pos][0] not in ("OR", ")"):
+            it = items[pos]
+            pos += 1
+            if it[0] == "(":
+                g = expr()
+                if pos < len(items) and items[pos][0] == ")":
+                    pos += 1
+                parts.append(("not", g) if it[1] else g)
+            else:
+                parts.append(it[1])
+        return ("and", parts)
+
+    return expr()
+
+
+def build(q: str, db=None, _depth: int = 0) -> tuple[list[str], list]:
+    """-> (SQL conditions on files f, their parameters). Each filter picks its files with one indexed lookup
+    (f.id IN (...)), never a lookup per file, so they stay quick on a big library. Without `db` (tests of the
+    grammar) names aren't resolved and matching uses LIKE. Brackets and OR (search grouped) are worked out
+    here; a plain search is the filters one after another, as it always was."""
+    items = _lex(q)
+    if all(it[0] == "t" for it in items):
+        return _flat([it[1] for it in items], db, _depth)
+    sql, args = _node(_parse(items), db, _depth)
+    return ([sql] if sql else []), args
+
+
+def _node(n, db, depth) -> tuple[str | None, list]:
+    """A part of a grouped search as one condition (None: it picks everything)."""
+    kind, parts = n
+    if kind == "not":
+        sql, args = _node(parts, db, depth)
+        return (f"NOT ({sql})" if sql else "0"), args
+    if kind == "or":
+        sqls, args = [], []
+        for p in parts:
+            s, a = _node(p, db, depth)
+            if s is None:
+                return None, []  # (one side picks everything: so does the whole)
+            sqls.append(f"({s})")
+            args += a
+        return " OR ".join(sqls), args
+    where, args = _flat([p for p in parts if isinstance(p[1], str)], db, depth)  # (a token's value is text; a group's isn't)
+    for p in parts:
+        if not isinstance(p[1], str):
+            s, a = _node(p, db, depth)
+            if s:
+                where.append(f"({s})")
+                args += a
+    return (" AND ".join(where) if where else None), args
 
 
 def _terms(words: list[str]) -> tuple[list[str], list[str]]:
@@ -124,6 +236,64 @@ def _in(values: list) -> str:
     return ",".join("?" * len(values))
 
 
+# text filters: where the text is ({cond} on {col})
+TEXT = {"name": "{cond}", "dir": "{cond}",
+        "note": "f.id IN (SELECT file_id FROM file_notes WHERE {cond})",
+        "url": "f.id IN (SELECT file_id FROM credits WHERE {cond})",
+        "prompt": "f.id IN (SELECT file_id FROM generations WHERE {cond})",
+        "negative": "f.id IN (SELECT file_id FROM generations WHERE {cond})"}
+TEXT_COL = {"name": "f.name", "dir": "substr(f.rel, 1, length(f.rel) - length(f.name) - 1)",  # (the folder it's in, inside the library folder)
+            "note": "note", "url": "url", "prompt": "positive", "negative": "negative"}
+NUMBERS = {"width": ("f.width", 1), "height": ("f.height", 1), "filesize": ("f.size", 1 << 20), "duration": ("f.duration", 1)}
+DATES = {"created": "f.shot", "modified": "f.mtime", "imported": "f.first_seen"}  # (created: the date it's shown by - taken, or else modified)
+_RATIO = "f.width * 1.0 / f.height"
+SHAPES = {"square": f"{_RATIO} BETWEEN 0.95 AND 1.0527", "landscape": f"{_RATIO} > 1.0527", "portrait": f"{_RATIO} < 0.95",
+          "wide": f"{_RATIO} >= 2", "panorama": f"{_RATIO} >= 2", "tall": f"{_RATIO} <= 0.5"}
+
+
+@functools.lru_cache(256)
+def pattern(p: str):
+    """A regex as typed (any case), or None when it isn't one."""
+    try:
+        return re.compile(p, re.I)
+    except (re.error, RecursionError, OverflowError):
+        return None
+
+
+def regexp(p, s) -> int:
+    """SQLite's REGEXP (db.py gives every connection it)."""
+    r = pattern(p) if isinstance(p, str) else None
+    return 1 if r is not None and isinstance(s, str) and r.search(s) else 0
+
+
+def _text(v: str) -> tuple[str, list]:
+    """name:dusk (holds it), name:INK-* (begins so), name:*-v2 (ends so), name:=cat.png (is it), name:/^ink-\\d+/ (a regex):
+    -> (a condition on {col}, its parameters). Any case."""
+    v = v.strip()
+    if len(v) > 2 and v.startswith("/") and v.endswith("/"):
+        return ("{col} REGEXP ?", [v[1:-1]]) if pattern(v[1:-1]) else ("0", [])
+    if len(v) > 1 and v.startswith("="):
+        return "{col} = ? COLLATE NOCASE", [v[1:]]
+    if "*" in v:
+        return "{col} LIKE ? ESCAPE '\\'", ["%".join(_like(p) for p in v.split("*"))]
+    return "{col} LIKE ? ESCAPE '\\'", [f"%{_like(v)}%"]
+
+
+def _when(v: str):
+    """created:2026-10 (that month), >=2026-10-01 (from that day), <2026-10-01 (before it), 7d, 2026-10-01..2026-10-23
+    (the two days and those between) -> [start, end) as timestamps, or None."""
+    v, big = v.strip().lower(), 1e18
+    m = re.fullmatch(r"(.+?)\.\.(.+)", v)
+    if m:
+        a, b = _date_span(m.group(1)), _date_span(m.group(2))
+        return [a[0], b[1]] if a and b and a[0] < b[1] else None
+    m = re.fullmatch(r"(>=|<=|>|<)(.+)", v)
+    if m:
+        s = _date_span(m.group(2))
+        return s and {">=": [s[0], big], ">": [s[1], big], "<": [-big, s[0]], "<=": [-big, s[1]]}[m.group(1)]
+    return _date_span(v)
+
+
 def album_name(name, cut: bool = True) -> str:
     """An album's name with its nesting written one way: "Trips/Coast" and "Trips /Coast" are "Trips / Coast" (in Trips).
     Within 100 letters (never ending in a /), and with ' for " (a search quotes names with "). cut=False, for a name
@@ -156,12 +326,10 @@ def _smart(db, name: str) -> str | None:
     return db.cached(("smart-albums",), load).get(name.strip().lower())
 
 
-def build(q: str, db=None, _depth: int = 0) -> tuple[list[str], list]:
-    """-> (SQL conditions on files f, their parameters). Each filter picks its files with one indexed lookup
-    (f.id IN (...)), never a lookup per file, so they stay quick on a big library. Without `db` (tests of the
-    grammar) names aren't resolved and matching uses LIKE."""
+def _flat(toks: list, db=None, _depth: int = 0) -> tuple[list[str], list]:
+    """Filters and words one after another (all of them): -> (SQL conditions, their parameters)."""
     where, args, words, neg_words = [], [], [], []
-    for key, v in tokens(q):
+    for key, v in toks:
         if key and not v.strip():
             continue  # "lora:" being typed: no filter yet
         if key and key.startswith("-"):  # -tag:x: everything but what tag:x picks
@@ -263,6 +431,33 @@ def build(q: str, db=None, _depth: int = 0) -> tuple[list[str], list]:
         elif key == "album":
             where.append("f.id IN (SELECT af.file_id FROM album_files af JOIN albums al ON al.id=af.album_id WHERE af.removed=0 AND al.name = ? COLLATE NOCASE)")
             args.append(v)
+        elif key in TEXT:  # name:INK-*, note:=x, url:pixiv, prompt:/regex/...
+            cond, a = _text(v)
+            where.append(TEXT[key].format(cond=cond.format(col=TEXT_COL[key])))
+            args += a
+        elif key in NUMBERS:
+            col, scale = NUMBERS[key]
+            r = _frange(v[:-2] if key == "filesize" and v.lower().rstrip().endswith(("kb", "mb", "gb")) else v)
+            if not r:
+                where.append("0")
+                continue
+            if key == "filesize":  # (megabytes, unless it says kb or gb)
+                scale = {"kb": 1 << 10, "gb": 1 << 30}.get(v.lower().strip()[-2:], 1 << 20)
+            where.append(f"{col} BETWEEN ? AND ?")
+            args += [r[0] * scale, r[1] * scale]
+        elif key == "shape":
+            cond = SHAPES.get(v.strip().lower())
+            where.append(f"f.width > 0 AND f.height > 0 AND ({cond})" if cond else "0")
+        elif key in DATES:
+            span = _when(v)
+            if span is None:
+                where.append("0")
+                continue
+            where.append(f"{DATES[key]} >= ? AND {DATES[key]} < ?")
+            args += span
+        elif key == "tag" and "*" in v:  # tag:dusk*: the tags beginning so (*dusk, *dusk*: ending, holding)
+            where.append("f.id IN (SELECT ft.file_id FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.removed=0 AND t.name LIKE ? ESCAPE '\\')")
+            args.append("%".join(_like(p) for p in v.split("*")))
         elif key == "tag":
             where.append("f.id IN (SELECT ft.file_id FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.removed=0 AND t.name = ? COLLATE NOCASE)")
             args.append(v)
@@ -304,7 +499,11 @@ def build(q: str, db=None, _depth: int = 0) -> tuple[list[str], list]:
                     "tags": "f.id IN (SELECT file_id FROM file_tags WHERE removed = 0)",
                     "lora": "f.id IN (SELECT file_id FROM uses WHERE kind = 'lora')",
                     "artist": "f.artist_id IS NOT NULL",
-                    "source": "f.site IS NOT NULL"}.get(v)
+                    "source": "f.site IS NOT NULL",
+                    "note": "f.id IN (SELECT file_id FROM file_notes WHERE note <> '')",
+                    "url": "f.id IN (SELECT file_id FROM credits WHERE COALESCE(url, '') <> '')",
+                    "album": "f.id IN (SELECT file_id FROM album_files WHERE removed = 0)",
+                    "negative": "f.id IN (SELECT file_id FROM generations WHERE COALESCE(negative, '') <> '')"}.get(v)
             if cond:
                 where.append(cond if key == "has" else f"NOT ({cond})")
             else:
@@ -319,11 +518,14 @@ def build(q: str, db=None, _depth: int = 0) -> tuple[list[str], list]:
         elif key == "cfg":
             try:
                 cfg = float(v)
+                span = [cfg - 0.001, cfg + 0.001]
             except ValueError:
+                span = _frange(v)  # cfg:5-7, cfg:>=6
+            if not span:
                 where.append("0")
                 continue
             where.append("f.id IN (SELECT file_id FROM generations WHERE cfg BETWEEN ? AND ?)")
-            args += [cfg - 0.001, cfg + 0.001]
+            args += span
         elif key == "size":
             m = re.fullmatch(r"(\d+)\s*[x×*]\s*(\d+)", v.strip().lower())
             if m:

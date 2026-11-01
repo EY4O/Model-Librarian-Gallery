@@ -13,6 +13,7 @@ import time
 import json
 
 from . import bulk, charfiles, charstore, charsync, colors, credits, dates, downloads, families, fileops, looks, recipes
+from . import rules as smart_rules
 from . import characters as chars
 from . import metadata
 from . import scan as scanner
@@ -499,6 +500,9 @@ class Library:
                 return [{"name": r[0], "n": r[1]} for r in c.execute(
                     "SELECT site, COUNT(*) n FROM files WHERE site IS NOT NULL AND missing=0 AND site LIKE ? ESCAPE '\\'"
                     " GROUP BY site ORDER BY n DESC LIMIT ?", (like, n))]
+            if field == "character":
+                return [{"name": r[0]} for r in c.execute(
+                    "SELECT name FROM characters WHERE name LIKE ? ESCAPE '\\' ORDER BY name COLLATE NOCASE LIMIT ?", (like, n))]
             if field in ("sampler", "scheduler"):
                 return [dict(r) for r in c.execute(
                     f"SELECT {field} AS name, COUNT(*) AS n FROM generations WHERE {field} LIKE ? ESCAPE '\\'"
@@ -1170,10 +1174,12 @@ class Library:
     def albums(self) -> list[dict]:
         with self.db.read() as c:
             out = [dict(r) for r in c.execute(
-                "SELECT al.id, al.name, al.cover, al.icon, al.color, al.query, (SELECT COUNT(*) FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0) n,"
+                "SELECT al.id, al.name, al.cover, al.icon, al.color, al.query, al.rules, (SELECT COUNT(*) FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0) n,"
                 " (SELECT af.file_id FROM album_files af JOIN files f ON f.id=af.file_id WHERE af.album_id=al.id AND af.removed=0 AND f.missing=0 ORDER BY f.shot DESC LIMIT 1) latest"
                 " FROM albums al ORDER BY al.name COLLATE NOCASE")]
-        for a in out:  # a smart album holds what its search finds (counted ahead, like Statistics: the last count at once,
+        for a in out:
+            a["rules"] = _rules_of(a)  # (a smart folder's, for Edit Rules)
+            # a smart album holds what its search finds (counted ahead, like Statistics: the last count at once,
             if a["query"] is not None:  # and stale: True while it's counted again, for the sidebar to ask once more)
                 (a["n"], a["latest"]), fresh = self.db.cached_lazy(("smart", a["query"]), lambda q=a["query"]: self._smart_count(q))
                 a["stale"] = not fresh
@@ -1238,11 +1244,22 @@ class Library:
                 if name.casefold() != old.casefold() and not name.casefold().startswith(old.casefold() + " / "):
                     return m.group(0)
                 return f'{m.group(1)}"{" / ".join([new, *name.split(" / ")[depth:]])}"'
-            for aid, q in c.execute("SELECT id, query FROM albums WHERE query IS NOT NULL").fetchall():
-                q2 = search.ALBUM_FILTER.sub(renamed_filter, q)
-                if q2 != q:
-                    c.execute("UPDATE albums SET query=? WHERE id=?", (q2, aid))
-                    changed_queries.append([aid, q, q2])
+            def renamed_name(name):
+                name = search.album_name(name)
+                if name.casefold() != old.casefold() and not name.casefold().startswith(old.casefold() + " / "):
+                    return None
+                return " / ".join([new, *name.split(" / ")[depth:]])
+            for aid, q, r in c.execute("SELECT id, query, rules FROM albums WHERE query IS NOT NULL").fetchall():
+                q2, r2 = search.ALBUM_FILTER.sub(renamed_filter, q), r
+                if r:  # a smart folder: the new name in its rules, and its search from them
+                    try:
+                        got = smart_rules.rename_album(json.loads(r), renamed_name)
+                        q2, r2 = smart_rules.compile(got), json.dumps(got)
+                    except ValueError:
+                        pass  # (rules that no longer make a search: the search alone follows)
+                if q2 != q or r2 != r:
+                    c.execute("UPDATE albums SET query=?, rules=? WHERE id=?", (q2, r2, aid))
+                    changed_queries.append([aid, q, q2, r, r2])
             same_place = old.rsplit(" / ", 1)[0] == new.rsplit(" / ", 1)[0] if " / " in old and " / " in new else " / " not in old and " / " not in new
             what = f"Renamed the album {old} to {new.split(' / ')[-1]}" if same_place else f"Moved the album {old} to {new}"
             op = fileops.record(c, "album_move", what + (f" (with the {len(renamed) - 1} inside it)" if len(renamed) > 1 else ""),
@@ -1286,7 +1303,7 @@ class Library:
         with self.db.write() as c:
             gone = []
             for aid in ids:
-                a = c.execute("SELECT id, name, cover, created, icon, color, query FROM albums WHERE id=?", (aid,)).fetchone()
+                a = c.execute("SELECT id, name, cover, created, icon, color, query, rules FROM albums WHERE id=?", (aid,)).fetchone()
                 if a:
                     files = [dict(r) for r in c.execute("SELECT file_id, source, removed, added FROM album_files WHERE album_id=?", (aid,))]
                     gone.append({**dict(a), "files": files})
@@ -1298,6 +1315,12 @@ class Library:
             op = fileops.record(c, "album_delete", summary or (f"Deleted the album {gone[0]['name']}" if n == 1 else f"Deleted {n} albums"), {"albums": gone})
         return {"deleted": n, "op": op}
 
+    def smart_preview(self, rules) -> dict:
+        """Edit Rules' count as the rules are changed: {query, n} (ValueError: rules that can't be a search)."""
+        q = smart_rules.compile(smart_rules.tidy(rules))
+        frm, args = self._from(None, None, q, "newest")
+        return {"query": q, "n": self.count(frm, args)}
+
     def _smart_count(self, q: str) -> tuple[int, int | None]:
         try:
             got = self.files(limit=1, q=q)
@@ -1305,10 +1328,16 @@ class Library:
         except Exception:  # a search that can't be made (old, or odd): empty, not an error for the whole list
             return 0, None
 
-    def album_save(self, aid: int | None, name: str, cover=..., query=...) -> dict:
-        """Make (aid None) or change an album; query: a smart album's search (None: an album of files you put in it)."""
+    def album_save(self, aid: int | None, name: str, cover=..., query=..., rules=...) -> dict:
+        """Make (aid None) or change an album; query: a smart album's search (None: an album of files you put in it);
+        rules: a smart folder's rules (Edit Rules), kept, with the search they come to as its query."""
         if not isinstance(name or "", str):
             raise ValueError("An album's name is text.")
+        if rules is not ... and rules is not None:
+            rules = smart_rules.tidy(rules)
+            query = smart_rules.compile(rules)
+        elif query is not ...:
+            rules = None  # (a search given as it is: its rules are that search)
         if query is not ... and query is not None:
             query = str(query).strip()[:2000]
             if not query:
@@ -1332,7 +1361,7 @@ class Library:
             if cover is not ...:
                 c.execute("UPDATE albums SET cover=? WHERE id=?", (int(cover) if cover else None, aid))
             if query is not ...:
-                c.execute("UPDATE albums SET query=? WHERE id=?", (query, aid))
+                c.execute("UPDATE albums SET query=?, rules=? WHERE id=?", (query, json.dumps(rules) if rules else None, aid))
                 if query is not None:
                     c.execute("DELETE FROM album_files WHERE album_id=?", (aid,))  # what it holds is what the search finds
         out = next(a for a in self.albums() if a["id"] == aid)
@@ -1489,3 +1518,13 @@ class Library:
                 "queued": len(self._queue), "thumbs_pending": self.thumbs.pending(), "thumbs_failed": self.thumbs.failed,
                 "meta_pending": self.meta.pending(), "trash": trash, "kinds": kinds, "inbox": inbox,
                 "dates_pending": self.dater.pending(), "dates_moved": self.dater.moved, "credits_pending": self.credits.pending()}
+
+
+def _rules_of(a: dict):
+    """A smart album's rules: as kept, or (one from before Edit Rules) its search as one rule. None: a plain album."""
+    if a.get("query") is None:
+        return None
+    try:
+        return json.loads(a["rules"]) if a.get("rules") else smart_rules.from_query(a["query"])
+    except ValueError:
+        return smart_rules.from_query(a["query"])

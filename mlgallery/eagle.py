@@ -22,6 +22,7 @@ import shutil
 import time
 
 from . import bulk, colors, credits, fileops, metadata, scan, search
+from . import rules as smart_rules
 
 API = "http://localhost:41595"
 MAX_ITEMS = 100_000
@@ -82,6 +83,26 @@ def folder_paths(lib: str) -> dict[str, list[str]]:
             walk(n.get("children"), here)
     walk(_read(os.path.join(lib, "metadata.json"), {}).get("folders"))
     return out
+
+
+def smart_folders(lib: str, names: dict[str, str]) -> list[dict]:
+    """Eagle's smart folders as the Gallery's: [{name, rules (None: none could be), skipped: [why]}]. A smart folder
+    inside another narrows what that one finds, so it has both one's rules ("Parent / Child", the two groups together)."""
+    out: list[dict] = []
+
+    def walk(nodes, parent=None, prefix=""):
+        for n in nodes or []:
+            if not isinstance(n, dict):
+                continue
+            name = f"{prefix}{search.album_name(str(n.get('name') or '').replace('/', '-')) or 'Smart Folder'}"
+            got, skipped = smart_rules.from_eagle(n, names)
+            if got and parent:
+                got = smart_rules.tidy({"match": "all", "is": True, "rules": [parent, got]})
+            got = got or parent
+            out.append({"name": name, "rules": got, "skipped": skipped})
+            walk(n.get("children"), got, name + " / ")
+    walk(_read(os.path.join(lib, "metadata.json"), {}).get("smartFolders"))
+    return out[:500]
 
 
 _RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
@@ -192,7 +213,8 @@ def plan_import(db, path: str, progress=None, stop=None) -> dict:
         elif scan.kind_of(it["name"]):
             missing.append(it)
     return {"library": lib, "name": os.path.basename(lib)[: -len(".library")], "matched": matched, "missing": missing,
-            "tags": sorted(tags, key=str.lower), "albums": sorted(albums, key=str.lower), "rated": rated}
+            "tags": sorted(tags, key=str.lower), "albums": sorted(albums, key=str.lower), "rated": rated,
+            "smart": smart_folders(lib, names)}
 
 
 def summary(plan: dict) -> dict:
@@ -203,6 +225,9 @@ def summary(plan: dict) -> dict:
             "urls": sum(1 for i in plan["matched"] + plan["missing"] if i["url"]),
             "unfiled": sum(1 for i in plan["matched"] + plan["missing"] if not i.get("path")),
             "all": len(plan["matched"]) + len(plan["missing"]),
+            "smart": [s["name"] for s in plan.get("smart") or [] if s["rules"]][:40],
+            "smart_skipped": [f"{s['name']}: {why}" for s in plan.get("smart") or []
+                              for why in (s["skipped"] if s["rules"] else s["skipped"] or ["none of its rules could be brought in"])][:40],
             "all_size": sum(i.get("size") or 0 for i in plan["matched"] + plan["missing"])}
 
 
@@ -339,13 +364,23 @@ def apply_import(db, plan: dict) -> dict:
         for fid in {i["file_id"] for i in plan["matched"]}:
             metadata.refresh_search(c, fid)
         credits.resolve(c, sourced)
+        smart = []  # Eagle's smart folders (rules.py), unless there's an album of that name already
+        for sf in plan.get("smart") or []:
+            if not sf["rules"] or any(search.album_name(r[0]).casefold() == sf["name"].casefold() for r in c.execute("SELECT name FROM albums")):
+                continue
+            try:
+                q = smart_rules.compile(sf["rules"])
+            except ValueError:
+                continue
+            smart.append(c.execute("INSERT INTO albums (name, created, query, rules) VALUES (?,?,?,?)",
+                                   (sf["name"], now, q, json.dumps(sf["rules"]))).lastrowid)
         n = len({i["file_id"] for i in plan["matched"]})
         copied = sorted({i["file_id"] for i in plan["matched"] if i.get("copied_rel")})
         op = fileops.record(c, "eagle", f"Brought in {n:,} file{'s' if n != 1 else ''}' tags, albums and ratings from Eagle ({plan['name']})"
                             + (f", {len(copied)} of them copied in" if copied else ""),
                             {"tags": tagged, "albums": filed, "marks": rated, "notes": noted, "copied": copied, "sources": sourced,
-                             "new_albums": sorted(set(made_albums))})
-    return {"op": op, "files": n, "tags": len(tagged), "albums": len(filed), "ratings": len(rated), "notes": len(noted)}
+                             "new_albums": sorted(set(made_albums)), "smart": smart})
+    return {"op": op, "files": n, "tags": len(tagged), "albums": len(filed), "ratings": len(rated), "notes": len(noted), "smart": len(smart)}
 
 
 def undo_import(db, data: dict) -> dict:
@@ -387,6 +422,8 @@ def undo_import(db, data: dict) -> dict:
         made = data["new_albums"] if "new_albums" in data else [a["album"] for a in data["albums"]]  # (an import from before 1.9.1 didn't say which it made)
         if made:
             c.execute("DELETE FROM albums WHERE id NOT IN (SELECT album_id FROM album_files) AND id IN (%s)" % ",".join(str(int(a)) for a in made))
+        if data.get("smart"):  # the smart folders it made
+            c.execute("DELETE FROM albums WHERE query IS NOT NULL AND id IN (%s)" % ",".join(str(int(a)) for a in data["smart"]))
     out = {"undone": len(data["tags"]) + len(data["albums"]) + len(data["marks"]) + len(data.get("notes") or [])}
     if data.get("copied"):  # the copies it made go to the Gallery's Trash (Eagle's own files were never touched)
         r = fileops.trash(db, data["copied"])

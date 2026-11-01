@@ -323,17 +323,18 @@ function renderBrowse() {
       ...(opened.has(key) ? dirRows(f, tree, 1) : [])];
   });
   const groups = new Map(S.groups.map((g) => [g.name.toLowerCase(), g.n]));
-  const albumRows = (node, depth) => [...node.kids.values()].flatMap((n) => {
-    const key = `a:${n.path.toLowerCase()}`;
+  const albumRows = (node, depth, pre = "a") => [...node.kids.values()].flatMap((n) => {
+    const key = `${pre}:${n.path.toLowerCase()}`;
     return [row(n.album?.query != null ? "filter" : "album", n.name, groups.get(n.path.toLowerCase()) ?? n.album?.n ?? 0, { kind: "album", name: n.path, title: n.name },
-      { depth, key, kids: n.kids.size > 0 }), ...(opened.has(key) ? albumRows(n, depth + 1) : [])];
+      { depth, key, kids: n.kids.size > 0 }), ...(opened.has(key) ? albumRows(n, depth + 1, pre) : [])];
   });
   browse.replaceChildren(...[
     !offerApp() ? null : section("App", [h("div.p-line", {}, h("button.p-row", { type: "button", onclick: install }, icon("save"), h("span.label", {}, "Install app")))]),
     section("Library", [row("grid", "All", null, { kind: "all", title: "All" }), row("clock", "Recently viewed", null, { kind: "recent", title: "Recently viewed" }),
       row("heart", "Favourites", null, { kind: "fav", title: "Favourites" }), row("trash", "Trash", S.trash || null, { kind: "trash", title: "Trash" })]),
     section("Folders", folders),
-    section("Albums", albumRows(albumTree(S.albums), 0)),
+    section("Smart Folders", albumRows(albumTree(S.albums.filter((a) => a.query != null)), 0, "s")),  // (their rules are made on the PC)
+    section("Albums", albumRows(albumTree(S.albums.filter((a) => a.query == null)), 0)),
     section(who(), S.characters.map((c) => row("person", c.name, c.n, { kind: "character", name: c.name, title: c.name }))),
     section("Artists", S.artists.map((a) => row("brush", a.name, a.n, { kind: "artist", name: a.name, title: a.name }))),
   ].filter(Boolean));

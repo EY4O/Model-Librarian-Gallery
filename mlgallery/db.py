@@ -281,6 +281,10 @@ MIGRATIONS = [
         PRIMARY KEY (folder_id, rel)
     );
     """,
+    # 16: smart folders: a smart album's rules as made in Edit Rules (rules.py), with the search they come to as its query
+    """
+    ALTER TABLE albums ADD COLUMN rules TEXT;  -- JSON {match, is, rules}; NULL: its search is its one rule
+    """,
 ]
 CACHE = 256  # cached query results kept (each tied to the index as it was)
 
@@ -311,6 +315,8 @@ class Database:
         c.execute("PRAGMA cache_size=-32768")    # 32 MB of pages per connection
         c.execute("PRAGMA mmap_size=268435456")  # reads straight from the file's pages
         c.execute("PRAGMA temp_store=MEMORY")
+        from .search import regexp
+        c.create_function("regexp", 2, regexp, deterministic=True)  # (name:/^ink-\d+/ in a search, and a smart folder's regex rules)
         return c
 
     def cached_lazy(self, key, fn):

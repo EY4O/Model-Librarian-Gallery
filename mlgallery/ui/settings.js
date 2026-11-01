@@ -502,12 +502,15 @@ async function eagleImport(folders, lb) {
       } else toast(msg);
       return;
     }
-    done(r, `From ${s.name}: ${plural(r.files, "file")} got ${marks}${r.copied ? `; ${plural(r.copied, "file")} copied in` : ""}.${failed}`);
+    done(r, `From ${s.name}: ${plural(r.files, "file")} got ${marks}${r.copied ? `; ${plural(r.copied, "file")} copied in` : ""}${r.smart ? `; ${plural(r.smart, "smart folder")} made` : ""}.${failed}`);
   } },
     h("h2", {}, `Bring in ${s.name}`),
     h("ul.plan-list", {},
       h("li", {}, `${plural(s.all, "item")}: ${plural(s.tags, "tag")}, ${plural(s.album_count, "folder")}${s.albums.length ? ` (${s.albums.slice(0, 6).join(", ")}${s.album_count > 6 ? "…" : ""})` : ""}, ${plural(s.rated, "rating")}, ${plural(s.notes, "note")}${s.urls ? `, ${plural(s.urls, "source link")}` : ""}.`),
-      h("li", {}, "Folders become albums too; notes keep their source link on a line of their own; Eagle's colours come along.")),
+      h("li", {}, "Folders become albums too; notes keep their source link on a line of their own; Eagle's colours come along."),
+      s.smart && s.smart.length ? h("li", {}, `${plural(s.smart.length, "smart folder")} with ${s.smart.length === 1 ? "its" : "their"} rules (${s.smart.slice(0, 6).join(", ")}${s.smart.length > 6 ? "…" : ""}).`) : null,
+      s.smart_skipped && s.smart_skipped.length ? h("li.dim", { title: s.smart_skipped.join("\n") },
+        `Left out (the Gallery has no such rule): ${s.smart_skipped.slice(0, 3).join("; ")}${s.smart_skipped.length > 3 ? "…" : ""}.`) : null),
     h("div.eagle-where", { role: "radiogroup", "aria-label": "Where it goes" },
       h("label.check", { for: "eagle-new" }, rNew, " Into a new library of its own"), newBox,
       h("label.check", { for: "eagle-here" }, rHere, ` Into this library${lb.current.root ? ` (${lb.current.name})` : ""}`), hereBox),

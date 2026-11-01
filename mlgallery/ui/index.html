@@ -100,6 +100,13 @@
       <div class="nav-label">Folders</div>
       <div class="nav-group" id="folders"></div>
       <div class="nav-sep"></div>
+      <div class="nav-label with-act">Smart Folders
+        <button type="button" class="icon-btn small" id="smart-new" aria-label="New smart folder" title="New smart folder: rules that keep collecting what meets them">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <div class="nav-group" id="smart"></div>
+      <div class="nav-sep"></div>
       <div class="nav-label with-act">Albums
         <button type="button" class="icon-btn small" id="album-tidy" aria-label="Tidy up albums" title="Tidy up: albums that only repeat a folder">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l1.6 4.2 4.2 1.6-4.2 1.6L12 15.1l-1.6-4.2-4.2-1.6 4.2-1.6Z"/><path d="M18.5 14.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8Z"/></svg>
@@ -143,7 +150,7 @@
           </button>
           <div class="suggest" id="suggest" role="listbox" hidden></div>
         </div>
-        <button type="button" class="icon-btn" id="save-search" aria-label="Save this search as a smart album" title="Save this search as a smart album" hidden>
+        <button type="button" class="icon-btn" id="save-search" aria-label="Save this search as a smart folder" title="Save this search as a smart folder" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 5 5M10.5 8v5M8 10.5h5"/></svg>
         </button>
         <button type="button" class="btn" id="empty-trash" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Empty the Trash</button>
